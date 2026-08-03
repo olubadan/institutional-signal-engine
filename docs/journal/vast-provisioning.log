@@ -1,0 +1,11 @@
+[20260803T184544Z] SESSION-0007 started on branch chore/vast-environment-bootstrap at commit 7d6a86605b82f1e368802df25e8b00dff4bb3624.
+[20260803T184544Z] Live GitHub state matched the journal: PR #2 open, draft, clean, base main. Authentication succeeded; credentials [REDACTED].
+[20260803T184616Z] COMMAND: vastai search offers 'id=39005761 rentable=true rented=false' --storage 100 --raw | jq '<sanitized exact-offer projection>'
+[20260803T184616Z] RESULT: []
+[20260803T184616Z] EXIT: 0
+[20260803T184627Z] COMMAND: vastai search offers -n 'id=39005761 rentable=true rented=false' --storage 100 --raw | jq '<sanitized exact-offer projection>'
+[20260803T184627Z] RESULT: []
+[20260803T184627Z] EXIT: 0
+[20260803T184627Z] DECISION: Exact offer unavailable. Stopped before rental as instructed; no alternative selected.
+[20260803T184627Z] MUTATIONS: No Vast create, rent, start, stop, destroy, SSH, clone, or bootstrap command executed. No charge created.
+[20260803T184632Z] SANITIZATION: No credentials, tokens, keys, host addresses, connection strings, or one-time codes were captured. No full external log artifact exists because both complete API results are shown above.
