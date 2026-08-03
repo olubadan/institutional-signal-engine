@@ -5,8 +5,8 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 2 — Vast Development Environment (selected offer became
-  unavailable at pre-charge revalidation; no instance was created)
+- **Current phase:** Phase 2 — Vast Development Environment (second exact-offer
+  attempt stopped before charge because the selected offer remains unavailable)
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline
 - **Active branch:** `chore/vast-environment-bootstrap`
@@ -27,7 +27,8 @@
   without exposing account data. The owner-selected offer `40176329` / machine
   `138965` returned no exact marketplace record in two pre-charge queries at
   `20260803T183129Z` and `20260803T183142Z`, including one without default
-  availability filters. No rental, charge, provisioning, or substitution occurred.
+  availability filters, and remained absent in the owner-authorized retry at
+  `20260803T183559Z`. No rental, charge, provisioning, or substitution occurred.
 - **Provider-integration state:** Not implemented. No credentials have been
   requested or stored. The options provider has not been supplied.
 - **Test state:** Phase 1 structural checks passed: canonical tracked paths,
@@ -39,12 +40,11 @@
   `chore/engineering-baseline-bootstrap`; the 14-part owner model is authoritative;
   maintain the append-only Codex journal; GitHub remains authoritative; paper
   trading only; no merge or paid Vast provisioning without explicit approval.
-- **Pending approvals:** A new live candidate inspection and subsequent explicit
-  owner selection/price authorization are required before any Vast charge.
-  Resolution of unavailable private-repository branch protection remains pending.
+- **Pending approvals:** A refreshed shortlist and new explicit offer selection
+  are required because `40176329` cannot be revalidated. No substitute is
+  authorized. Private-repository branch protection remains pending.
 - **Known blockers:** Options-provider details are required for Phase 4. GitHub
   branch protection/rulesets remain unavailable on the current private-repository
   plan.
-- **Next action:** With owner authorization, refresh the Vast shortlist read-only
-  and stop for a new explicit machine selection. Do not reuse or substitute the
-  unavailable offer.
+- **Next action:** Refresh the live shortlist read-only after owner authorization,
+  then stop for a new explicit offer selection and price ceiling.

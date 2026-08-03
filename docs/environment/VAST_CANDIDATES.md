@@ -107,3 +107,11 @@ of `$0.14/hour` including 100 GB. Pre-charge queries at `20260803T183129Z` and
 query with default availability filters disabled. The offer is therefore no
 longer available through the marketplace search endpoint. No rental or charge was
 created, and no alternative was substituted.
+
+## Availability update — 20260803T183559Z
+
+The owner authorized a second exact-offer attempt in SESSION-0006. A new
+pre-charge query for rentable, unrented offer `40176329` with 100 GB pricing again
+returned no record. Because the offer's live specifications and total price could
+not be revalidated, no direct create-by-ID command was issued. No charge or
+substitution occurred.
