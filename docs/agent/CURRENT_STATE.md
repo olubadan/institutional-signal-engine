@@ -11,11 +11,14 @@
   documentation baseline
 - **Active branch:** `chore/vast-environment-bootstrap`
 - **Latest authoritative main commit:** `40f466155236f53cf76d19048507ae4bb1ae50ac`.
-  The authoritative branch head after session closure is the commit containing
-  this snapshot; resolve it from GitHub or `git rev-parse HEAD`.
+  The Phase 2 candidate-report commit is
+  `08469581ff64d3ff13e3005be5166b8d697fafe7`; the active branch head after
+  session closure is the journal-close commit containing this snapshot.
 - **Pull-request state:** PR
   [#1](https://github.com/olubadan/institutional-signal-engine/pull/1) merged into
-  `main` with a normal merge commit. Phase 2 draft PR is pending.
+  `main` with a normal merge commit. Phase 2 PR
+  [#2](https://github.com/olubadan/institutional-signal-engine/pull/2) is open,
+  draft, cleanly mergeable, and unmerged.
 - **Current architecture:** Documentation-only reference architecture. Approved
   boundaries cover configuration, provider adapters, universe, normalization,
   synchronization, signal state, S/F/R/E gates, ranking, paper execution,
