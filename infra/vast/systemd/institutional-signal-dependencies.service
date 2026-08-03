@@ -1,0 +1,19 @@
+[Unit]
+Description=Institutional Signal Engine development dependencies
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/institutional-signal-engine
+EnvironmentFile=/etc/institutional-signal-engine/runtime.env
+ExecStart=/usr/bin/docker compose --env-file /etc/institutional-signal-engine/runtime.env -f /opt/institutional-signal-engine/infra/vast/compose.yaml up -d --wait
+ExecReload=/usr/bin/docker compose --env-file /etc/institutional-signal-engine/runtime.env -f /opt/institutional-signal-engine/infra/vast/compose.yaml up -d --wait
+ExecStop=/usr/bin/docker compose --env-file /etc/institutional-signal-engine/runtime.env -f /opt/institutional-signal-engine/infra/vast/compose.yaml stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

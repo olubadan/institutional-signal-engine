@@ -5,8 +5,8 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 2 — Vast Development Environment (SESSION-0007 stopped
-  before charge because exact offer `39005761` was unavailable)
+- **Current phase:** Phase 2 — Vast Development Environment (SESSION-0008 taking
+  ownership of owner-created instance `46725769`; SSH inspection pending)
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline
 - **Active branch:** `chore/vast-environment-bootstrap`
@@ -23,7 +23,10 @@
   boundaries cover configuration, provider adapters, universe, normalization,
   synchronization, signal state, S/F/R/E gates, ranking, paper execution,
   positions, persistence, observability, and replay. No application exists.
-- **Vast environment state:** Not provisioned. Vast CLI authentication succeeded
+- **Vast environment state:** Prior Codex rental attempts created no instance. The
+  owner now reports instance `46725769` running Ubuntu 22.04 with 20 vCPU, 64 GB
+  RAM, 130 GB disk, `$0.108/hour`, and a 28-day maximum; independent inspection
+  and bootstrap are in progress. Historical evidence: Vast CLI authentication succeeded
   without exposing account data. The owner-selected offer `40176329` / machine
   `138965` returned no exact marketplace record in two pre-charge queries at
   `20260803T183129Z` and `20260803T183142Z`, including one without default
@@ -42,11 +45,10 @@
   `chore/engineering-baseline-bootstrap`; the 14-part owner model is authoritative;
   maintain the append-only Codex journal; GitHub remains authoritative; paper
   trading only; no merge or paid Vast provisioning without explicit approval.
-- **Pending approvals:** A different currently available offer must be explicitly
-  selected and authorized; no substitution is authorized. Private-repository
-  branch protection remains pending.
+- **Pending approvals:** None for bootstrap of existing instance `46725769`.
+  Private-repository branch protection remains pending.
 - **Known blockers:** Options-provider details are required for Phase 4. GitHub
   branch protection/rulesets remain unavailable on the current private-repository
   plan.
-- **Next action:** Owner supplies or authorizes inspection of a currently
-  available offer; revalidate it immediately before any charge.
+- **Next action:** Inspect existing instance `46725769`, implement reproducible
+  Phase 2 bootstrap, verify persistence and health, and update PR #2.

@@ -9,3 +9,15 @@
 [20260803T184627Z] DECISION: Exact offer unavailable. Stopped before rental as instructed; no alternative selected.
 [20260803T184627Z] MUTATIONS: No Vast create, rent, start, stop, destroy, SSH, clone, or bootstrap command executed. No charge created.
 [20260803T184632Z] SANITIZATION: No credentials, tokens, keys, host addresses, connection strings, or one-time codes were captured. No full external log artifact exists because both complete API results are shown above.
+[20260803T190342Z] SESSION-0008 started on chore/vast-environment-bootstrap at 6289991f22c110773d96cf16b533f7218dba5ce9. Public SSH host/port and authentication material [REDACTED].
+[20260803T190431Z] COMMAND: ssh [REDACTED_CONNECTION] '<read-only OS/resource/tool/repository inventory>'
+[20260803T190431Z] RESULT: SSH succeeded as root; Ubuntu 22.04; x86_64; systemd running; 19 visible vCPU; 51,676,916 KiB RAM; 135,084,687,360-byte root filesystem with 125,228,617,728 bytes available; repository absent.
+[20260803T190431Z] RESULT: Existing tools: Docker 29.7.1, Git 2.34.1, Python 3.10.12, Make 4.3, GCC 11.4.0, curl 7.81.0, jq 1.6. Missing: uv, GitHub CLI, PostgreSQL client, Redis client.
+[20260803T190431Z] EXIT: 0
+[20260803T190431Z] DECISION: Runtime-visible resources are authoritative for verification; retain owner/Vast summary fields separately. Proceed because minimum CPU/RAM/disk requirements pass.
+[20260803T190853Z] RECORD: The following read-only inspection actions occurred after 20260803T190431Z; their exact action timestamps were not captured.
+[20260803T190853Z] COMMAND: ssh [REDACTED_CONNECTION] '<read-only Docker/systemd/filesystem inspection>'
+[20260803T190853Z] RESULT: Docker Compose 5.4.0; daemon 29.7.1; Docker enabled and active. A dpkg format expression was expanded under set -u and stopped the remaining read-only subcommands; no mutation occurred.
+[20260803T190853Z] RECOVERY: Corrected the read-only package query. Docker Compose package installed; ext4 root filesystem; /opt writable; SSH enabled and active; exit 0.
+[20260803T190853Z] DECISION: Add idempotent Ubuntu 22.04/24.04 bootstrap, pinned uv/Python 3.12, local-only persistent PostgreSQL/Redis services, systemd restart recovery, key-only SSH hardening, protected environment files, Make quality gates, verification script, and an ADR for the Ubuntu 22.04/finite-duration exception.
+[20260803T190853Z] LOCAL CHECKS: bash syntax passed for both scripts; Compose YAML parsed; git diff whitespace check passed.
