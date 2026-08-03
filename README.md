@@ -1,2 +1,27 @@
-# institutional-signal-engine
-Deterministic real-time institutional signal engine using Alpaca execution, external options-flow data, and event-driven S/F/R state estimation.
+# Institutional Signal Engine
+
+Documentation baseline for a deterministic, event-driven system that will
+synchronize equity and options market data, evaluate institutional signal gates,
+rank candidates, and support Alpaca paper execution.
+
+> [!IMPORTANT]
+> Phase 1 is documentation-only. No application, provider, infrastructure, or
+> trading implementation is present. Live trading is outside the authorized scope.
+
+## Canonical documentation
+
+- [Project Charter](docs/00_Project_Charter.md)
+- [System Requirements Specification](docs/01_System_Requirements_Specification.md)
+- [Reference Architecture](docs/02_Reference_Architecture.md)
+- [Formal Mathematical Model](docs/03_Formal_Mathematical_Model.md)
+- [Engineering WBS](docs/04_Engineering_WBS.md)
+- [Project Roadmap](docs/05_Project_Roadmap.md)
+- [Acceptance Test Specification](docs/06_Acceptance_Test_Specification.md)
+- [Requirements Traceability Matrix](docs/07_Requirements_Traceability_Matrix.md)
+- [Glossary](docs/08_Glossary.md)
+- [Environment documentation](docs/environment/README.md)
+- [Architecture decision records](docs/adr/README.md)
+- [Codex operating journal](docs/agent/README.md)
+
+GitHub is the source of truth. Work is performed on focused feature branches and
+submitted through draft pull requests; merges require explicit owner approval.
