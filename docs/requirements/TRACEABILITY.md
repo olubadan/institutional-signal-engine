@@ -5,8 +5,8 @@ Evidence must link to tests, documentation, run artifacts, or PR acceptance outp
 
 | ID | Requirement | Phase | Status | Planned verification / current evidence |
 | --- | --- | ---: | --- | --- |
-| REQ-GOV-001 | GitHub is authoritative; focused branches and unmerged draft PRs govern work | 1 | In progress | Branch and Phase 1 draft PR |
-| REQ-GOV-002 | Permanent append-only, redacted Codex journal records every session | 1 | In progress | `docs/agent/`; SESSION-0001 and SESSION-0002 |
+| REQ-GOV-001 | GitHub is authoritative; focused branches and unmerged draft PRs govern work | 1 | Verified | Draft PR #1 from `chore/engineering-baseline-bootstrap`; CI run 30838674051 passed |
+| REQ-GOV-002 | Permanent append-only, redacted Codex journal records every session | 1 | Verified | `docs/agent/`; SESSION-0001 recovery and SESSION-0002 completion records |
 | REQ-SEC-001 | Credentials never enter Git, durable chat output, or logs | 1–8 | In progress | `.gitignore`, `.env.example`, secret policy, diff review |
 | REQ-ENV-001 | Persistent Vast host meets approved Ubuntu, CPU, RAM, disk, network, and tool targets | 2 | Not started | Provisioning evidence after explicit approval |
 | REQ-DATA-001 | Receive resilient real-time equity market data from Alpaca | 4 | Not started | Adapter contract, integration, reconnect tests |
