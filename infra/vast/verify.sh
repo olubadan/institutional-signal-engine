@@ -112,6 +112,10 @@ SQL
   pass "filesystem, PostgreSQL, and Redis state survived service restart"
 fi
 
-sshd -T | grep -qx 'passwordauthentication no' || fail "SSH password authentication is enabled"
+sshd_effective_config=$(sshd -T)
+grep -qx 'passwordauthentication no' <<<"${sshd_effective_config}" ||
+  fail "SSH password authentication is enabled"
+grep -Eq '^permitrootlogin (without-password|prohibit-password)$' <<<"${sshd_effective_config}" ||
+  fail "root SSH permits password login"
 pass "SSH key-only policy active"
 pass "Phase 2 environment verification complete"
