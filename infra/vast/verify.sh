@@ -70,7 +70,7 @@ pass "Docker and dependency service enabled and active"
 wait_healthy() {
   local container=$1
   local attempt
-  for attempt in $(seq 1 60); do
+  for ((attempt = 0; attempt < 60; attempt++)); do
     if [[ $(docker inspect --format '{{.State.Health.Status}}' "${container}" 2>/dev/null || true) == "healthy" ]]; then
       return 0
     fi
