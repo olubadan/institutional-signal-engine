@@ -1,42 +1,26 @@
 # Institutional Signal Engine
 
-Deterministic, event-driven infrastructure for synchronizing equity and options
-market data, evaluating institutional signal gates, ranking candidates, and
-supporting Alpaca paper execution.
+Documentation baseline for a deterministic, event-driven system that will
+synchronize equity and options market data, evaluate institutional signal gates,
+rank candidates, and support Alpaca paper execution.
 
 > [!IMPORTANT]
-> This repository is in its engineering-baseline phase. It does not yet contain a
-> working signal engine or trading integration. Trading must remain disabled by
-> default, and live trading is outside the authorized scope.
+> Phase 1 is documentation-only. No application, provider, infrastructure, or
+> trading implementation is present. Live trading is outside the authorized scope.
 
-## Development baseline
+## Canonical documentation
 
-- Python 3.12
-- [`uv`](https://docs.astral.sh/uv/) for environments and dependency locking
-- Ruff for linting and formatting
-- mypy for strict static analysis
-- pytest for automated verification
-- GitHub Actions for pull-request checks
-
-```bash
-uv sync --all-groups --frozen
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy src tests
-uv run pytest
-```
-
-Copy `.env.example` to a protected local `.env` only when a later phase requires
-runtime configuration. Never commit the resulting file or disclose its values.
-
-## Project documentation
-
-- [Repository operating instructions](AGENTS.md)
-- [Contribution conventions](CONTRIBUTING.md)
-- [Architecture boundaries](docs/architecture/BOUNDARIES.md)
-- [Phase acceptance criteria](docs/requirements/ACCEPTANCE_CRITERIA.md)
-- [Requirements traceability](docs/requirements/TRACEABILITY.md)
-- [Secret-handling policy](docs/security/SECRET_HANDLING.md)
+- [Project Charter](docs/00_Project_Charter.md)
+- [System Requirements Specification](docs/01_System_Requirements_Specification.md)
+- [Reference Architecture](docs/02_Reference_Architecture.md)
+- [Formal Mathematical Model](docs/03_Formal_Mathematical_Model.md)
+- [Engineering WBS](docs/04_Engineering_WBS.md)
+- [Project Roadmap](docs/05_Project_Roadmap.md)
+- [Acceptance Test Specification](docs/06_Acceptance_Test_Specification.md)
+- [Requirements Traceability Matrix](docs/07_Requirements_Traceability_Matrix.md)
+- [Glossary](docs/08_Glossary.md)
+- [Environment documentation](docs/environment/README.md)
+- [Architecture decision records](docs/adr/README.md)
 - [Codex operating journal](docs/agent/README.md)
 
 GitHub is the source of truth. Work is performed on focused feature branches and

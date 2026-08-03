@@ -5,9 +5,9 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 1 — Engineering Baseline (complete; awaiting owner review)
-- **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — Engineering
-  Baseline
+- **Current phase:** Phase 1 — Engineering Baseline (scope reconciliation in
+  progress)
+- **Completed phases:** Phase 0 — Ground the Current State
 - **Active branch:** `chore/engineering-baseline-bootstrap`
 - **Latest implementation commit:** `abc14ea5aaeed89b2987788989343de6f5ae5781`.
   The authoritative branch head after session closure is the commit containing
@@ -38,6 +38,6 @@
 - **Known blockers:** The repository does not contain the formal mathematical
   signal specification required for Phase 5. GitHub reports branch protection and
   rulesets are unavailable on the current plan while the repository is private.
-- **Next action:** Owner reviews draft PR #1. If acceptable, the owner explicitly
-  authorizes its merge and Phase 2 read-only Vast capability/offer inspection. No
-  instance may be rented without a subsequent explicit selection or approval.
+- **Next action:** Reconcile PR #1 to the canonical documentation-only scaffold,
+  remove premature implementation artifacts, verify and publish the correction,
+  and stop with the PR unmerged.
