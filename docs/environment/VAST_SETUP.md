@@ -55,6 +55,18 @@ runtime file `/etc/institutional-signal-engine/runtime.env`, also root-owned mod
 PostgreSQL and Redis credentials are generated locally. Provider variables remain
 empty until their integration phase. Never print or commit the runtime file.
 
+The owner will eventually populate these still-empty variables directly in the
+protected runtime file, not in chat or Git:
+
+- `ALPACA_API_KEY_ID`
+- `ALPACA_API_SECRET_KEY`
+- `OPTIONS_API_KEY`
+- `OPTIONS_API_BASE_URL`
+
+They are not required for Phase 2 and were not requested or configured. The
+bootstrap supplies the non-secret Alpaca paper URL/feed defaults and keeps
+`TRADING_ENABLED=false`.
+
 ## Persistent services
 
 `institutional-signal-dependencies.service` is enabled under systemd and manages

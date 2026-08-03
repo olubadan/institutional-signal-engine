@@ -37,6 +37,26 @@ filesystem is ext4, and `/opt` is writable. Docker Engine 29.7.1, Docker Compose
 3.10.12; Python 3.12, `uv`, GitHub CLI, PostgreSQL client, and Redis client required
 bootstrap installation.
 
+## Final verification — 20260803T191643Z
+
+- Repository cloned at `/opt/institutional-signal-engine` on
+  `chore/vast-environment-bootstrap`.
+- Docker Engine 29.7.1 and Compose 5.4.0 are enabled and active.
+- Python 3.12.13 and `uv` 0.11.28 are installed.
+- GitHub CLI 2.4.0, PostgreSQL client 14.23, Redis client 6.0.16, Git, Make, GCC,
+  curl, jq, and ShellCheck are installed.
+- Runtime and template files are root-owned mode `0600`; provider values remain
+  empty and trading is disabled.
+- Digest-pinned PostgreSQL 16 and Redis 7 containers are healthy and bound only to
+  loopback ports.
+- The dependency unit and Docker are enabled and active.
+- Filesystem, PostgreSQL, and Redis state survived a dependency-service restart.
+- A new SSH connection succeeded after restart; effective SSH policy disables
+  password and keyboard-interactive authentication.
+- A second `make setup` completed successfully, proving idempotence.
+- Outbound HTTPS connectivity to GitHub succeeded.
+- The repository checkout was clean after final runtime verification.
+
 The runtime allocation differs from summary metadata. Reproducible verification
 uses resources visible inside the VM, while the Vast/API and owner-reported fields
 are retained above for auditability.

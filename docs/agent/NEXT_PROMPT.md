@@ -1,13 +1,11 @@
 # Proposed Next Codex Prompt
 
 ```text
-Continue Phase 2 for olubadan/institutional-signal-engine as SESSION-0008.
+Review Phase 2 draft pull request #2 for olubadan/institutional-signal-engine as SESSION-0009.
 
-Before taking any action, read AGENTS.md, docs/agent/CURRENT_STATE.md, docs/agent/JOURNAL_INDEX.md, the most recent session record at docs/agent/sessions/20260803T184544Z-SESSION-0007.md, docs/environment/VAST_CANDIDATES.md, docs/infrastructure/VAST_INSTANCE.md, and all applicable repository instructions. Compare documented state with live GitHub and report discrepancies before changing the repository.
+Before taking any action, read AGENTS.md, docs/agent/CURRENT_STATE.md, docs/agent/JOURNAL_INDEX.md, the most recent session record at docs/agent/sessions/20260803T190342Z-SESSION-0008.md, docs/environment/VAST_SETUP.md, docs/infrastructure/VAST_INSTANCE.md, docs/adr/0001-vast-ubuntu-22-exception.md, docs/07_Requirements_Traceability_Matrix.md, and all applicable repository instructions. Compare documented state with live GitHub and report discrepancies before changing anything.
 
-The previously selected Vast offer 40176329 / machine 138965 is unavailable. Refresh currently available Vast offers read-only using the approved Phase 2 requirements. Update docs/environment/VAST_CANDIDATES.md with a new timestamped shortlist of 3–5 candidates and clearly retain the unavailable-offer history.
+Review the complete PR #2 diff and Phase 2 acceptance evidence. Verify read-only that instance 46725769 remains SSH-accessible, trading remains disabled, the repository checkout is on chore/vast-environment-bootstrap, Docker and institutional-signal-dependencies.service are enabled/active, PostgreSQL and Redis are healthy, protected environment files retain root:root mode 0600, and the documented make lint/typecheck/build/test commands pass. Never display credentials or the public SSH connection string.
 
-Do not rent, provision, modify, or destroy any instance. Do not substitute a candidate or create a charge. Publish the refreshed report and SESSION-0006 journal updates to the existing branch chore/vast-environment-bootstrap and draft PR #2, then stop for my explicit machine selection and price authorization. Do not request provider credentials, implement application or trading code, enable trading, or merge any PR.
-
-Create and complete SESSION-0008 according to the repository journal rules.
+Do not modify or merge PR #2. Do not request provider credentials, provision another instance, implement application/trading code, or enable trading. Report whether Phase 2 is ready to merge, the Ubuntu 22.04/finite-duration exceptions, remaining blockers, and the exact owner decision required. Create a journal record only if repository mutation becomes necessary; otherwise provide a read-only review.
 ```
