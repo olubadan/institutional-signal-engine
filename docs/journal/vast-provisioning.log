@@ -29,3 +29,7 @@
 [20260803T191431Z] BUILD: PostgreSQL 16 Alpine and Redis 7 Alpine image pull completed successfully.
 [20260803T191431Z] TEST: Resource, tool, protected-file, trading-disabled, branch, enabled-service, container-health, connectivity, and filesystem/PostgreSQL/Redis restart-persistence checks passed. Final SSH assertion falsely failed although sshd -T reported passwordauthentication no, kbdinteractiveauthentication no, and permitrootlogin without-password.
 [20260803T191431Z] RECOVERY: Avoid pipefail/SIGPIPE interaction by capturing the complete sshd -T result before asserting password and root-login policy.
+[20260803T191539Z] RECORD: The following verification/reconnection actions occurred after 20260803T191431Z; their exact action timestamps were not captured.
+[20260803T191539Z] VERIFICATION: Full lint, typecheck, build, and test sequence passed. Verified Ubuntu 22.04, 19 visible vCPU, minimum RAM/disk, all required tools, root-only environment files, trading disabled, Phase 2 branch, enabled services, healthy PostgreSQL/Redis, connectivity, restart persistence, and key-only SSH.
+[20260803T191539Z] RECONNECTION: A new SSH connection succeeded after the dependency restart; systemd unit remained active and both containers healthy.
+[20260803T191539Z] CLEANUP DECISION: The test left a generated .state directory in the Git checkout. Move the sentinel to /var/lib/institutional-signal-engine and remove only the generated untracked directory. Pin the verified PostgreSQL/Redis images by their pulled digests.

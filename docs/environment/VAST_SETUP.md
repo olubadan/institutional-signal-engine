@@ -39,7 +39,7 @@ The remaining targets provide the Phase 2 quality gates:
 
 - `lint`: ShellCheck and Bash syntax validation.
 - `typecheck`: Docker Compose schema/interpolation and systemd unit validation.
-- `build`: pull the pinned-major PostgreSQL and Redis images.
+- `build`: pull the digest-pinned PostgreSQL 16 and Redis 7 images.
 - `test`: verify resources, tools, protected environment files, trading-disabled
   state, repository branch, service health, connectivity, and persistence across
   a dependency-service restart.
@@ -72,7 +72,8 @@ docker inspect --format '{{.State.Health.Status}}' institutional-signal-redis
 ```
 
 The verification suite restarts the dependency unit and proves that a filesystem
-sentinel, PostgreSQL row, and Redis AOF-backed key survive. A full VM reboot is not
+sentinel below `/var/lib/institutional-signal-engine`, a PostgreSQL row, and a Redis
+AOF-backed key survive. A full VM reboot is not
 required for this check; enablement plus service restart verifies restart recovery
 without risking the active SSH path.
 

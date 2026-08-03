@@ -4,6 +4,7 @@ set -Eeuo pipefail
 readonly REPO_DIR="${REPO_DIR:-/opt/institutional-signal-engine}"
 readonly CONFIG_DIR="/etc/institutional-signal-engine"
 readonly RUNTIME_ENV="${CONFIG_DIR}/runtime.env"
+readonly STATE_DIR="/var/lib/institutional-signal-engine"
 readonly RUN_PERSISTENCE="${1:-}"
 
 pass() {
@@ -90,8 +91,8 @@ REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli -h 127.0.0.1 ping 2>/dev/null |
 pass "local dependency connectivity"
 
 if [[ ${RUN_PERSISTENCE} == "--persistence" ]]; then
-  install -d -o root -g root -m 0750 "${REPO_DIR}/.state"
-  printf 'phase2-persistence-ok\n' >"${REPO_DIR}/.state/persistence-sentinel"
+  install -d -o root -g root -m 0750 "${STATE_DIR}"
+  printf 'phase2-persistence-ok\n' >"${STATE_DIR}/persistence-sentinel"
   PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 CREATE TABLE IF NOT EXISTS phase2_persistence (id integer PRIMARY KEY, value text NOT NULL);
 INSERT INTO phase2_persistence (id, value) VALUES (1, 'verified')
@@ -103,7 +104,7 @@ SQL
   wait_healthy institutional-signal-postgres || fail "PostgreSQL unhealthy after restart"
   wait_healthy institutional-signal-redis || fail "Redis unhealthy after restart"
 
-  [[ $(<"${REPO_DIR}/.state/persistence-sentinel") == "phase2-persistence-ok" ]] ||
+  [[ $(<"${STATE_DIR}/persistence-sentinel") == "phase2-persistence-ok" ]] ||
     fail "filesystem sentinel did not persist"
   [[ $(PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atqc 'SELECT value FROM phase2_persistence WHERE id = 1') == "verified" ]] ||
     fail "PostgreSQL data did not persist"
