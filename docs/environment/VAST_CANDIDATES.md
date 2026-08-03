@@ -98,3 +98,12 @@ charge before any rental. Immediately before rental, revalidate that exact offer
 availability, price, Ubuntu 24.04 image compatibility, resource allocation, and
 host indicators. If it has changed or disappeared, stop and obtain renewed owner
 approval rather than silently substituting another offer.
+
+## Availability update — 20260803T183142Z
+
+The owner selected offer `40176329` / machine `138965` with a total-price ceiling
+of `$0.14/hour` including 100 GB. Pre-charge queries at `20260803T183129Z` and
+`20260803T183142Z` returned no record for the exact offer, including a second
+query with default availability filters disabled. The offer is therefore no
+longer available through the marketplace search endpoint. No rental or charge was
+created, and no alternative was substituted.
