@@ -15,8 +15,9 @@
   Phase 2 implementation is verified through
   `1b2920ce7a6a305c9b9cfa4f395b4f06862d1a68`; the active branch head after
   session closure is the journal-close commit containing this snapshot.
-- **Pull-request state:** PRs #1 and #2 are merged into `main`; the Phase 3
-  branch is pushed and its draft PR is pending creation after the first commit.
+- **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
+  [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
+  draft, and unmerged at commit `6889081bd1d16756e946e56e43816e251c73ea5d`.
 - **Current architecture:** Phase 3 provides typed configuration, canonical
   events, provider adapters, synchronization, signal gates/ranking, persistence,
   replay, and loopback observability. Execution remains absent.
@@ -56,5 +57,6 @@
 - **Known blockers:** Live provider authentication awaits credential entry. GitHub
   branch protection/rulesets remain unavailable on the current private-repository
   plan.
-- **Next action:** Commit/push Phase 3 implementation and create its draft PR,
-  then pause once for protected runtime credential entry. Do not merge.
+- **Next action:** Owner enters the four provider fields in the protected runtime
+  file; then verify field presence and provider authentication without revealing
+  values. Do not merge.
