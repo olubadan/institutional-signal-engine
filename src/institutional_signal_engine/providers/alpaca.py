@@ -22,6 +22,15 @@ class AlpacaEquitiesProvider:
         self.url, self.key_id, self.secret_key, self.timeout = url, key_id, secret_key, timeout
         self.authenticated = False
 
+    @staticmethod
+    def _authentication_result(messages: list[dict[str, Any]]) -> bool:
+        if any(message.get("T") == "error" for message in messages):
+            raise ProviderError("alpaca", "authentication_failed", False)
+        return any(
+            message.get("T") == "success" and message.get("msg") == "authenticated"
+            for message in messages
+        )
+
     async def _connection(self, symbols: Iterable[str]) -> AsyncIterator[CanonicalEvent]:
         try:
             async with websockets.connect(
@@ -30,14 +39,10 @@ class AlpacaEquitiesProvider:
                 await ws.send(
                     json.dumps({"action": "auth", "key": self.key_id, "secret": self.secret_key})
                 )
-                auth = json.loads(await asyncio.wait_for(ws.recv(), self.timeout))
-                if any(message.get("T") == "error" for message in auth):
-                    raise ProviderError("alpaca", "authentication_failed", False)
-                if not any(
-                    message.get("T") == "success" and message.get("msg") == "authenticated"
-                    for message in auth
-                ):
-                    raise ProviderError("alpaca", "authentication_unconfirmed", False)
+                async with asyncio.timeout(self.timeout):
+                    while not self.authenticated:
+                        auth = json.loads(await ws.recv())
+                        self.authenticated = self._authentication_result(auth)
                 self.authenticated = True
                 await ws.send(
                     json.dumps(

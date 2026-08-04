@@ -4,6 +4,7 @@ import pytest
 
 from institutional_signal_engine.config import Settings
 from institutional_signal_engine.providers.alpaca import AlpacaEquitiesProvider
+from institutional_signal_engine.providers.common import ProviderError
 from institutional_signal_engine.providers.thetadata import ThetaDataOptionsProvider
 
 
@@ -31,6 +32,13 @@ def test_provider_health_state_starts_unauthenticated():
     theta = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
     assert not alpaca.authenticated
     assert not theta.connected
+
+
+def test_alpaca_authentication_waits_past_connected_acknowledgement():
+    assert not AlpacaEquitiesProvider._authentication_result([{"T": "success", "msg": "connected"}])
+    assert AlpacaEquitiesProvider._authentication_result([{"T": "success", "msg": "authenticated"}])
+    with pytest.raises(ProviderError):
+        AlpacaEquitiesProvider._authentication_result([{"T": "error", "code": 401}])
 
 
 def test_thetadata_normalizes_official_trade_shape():
