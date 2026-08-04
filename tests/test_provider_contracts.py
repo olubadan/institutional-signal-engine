@@ -1,0 +1,26 @@
+from datetime import UTC
+
+from institutional_signal_engine.providers.alpaca import AlpacaEquitiesProvider
+from institutional_signal_engine.providers.thetadata import ThetaDataOptionsProvider
+
+
+def test_alpaca_normalizes_trade_without_secret_output():
+    provider = AlpacaEquitiesProvider("wss://example.invalid", "key", "secret")
+    event = provider._normalize(
+        {"T": "t", "S": "AAPL", "t": "2026-01-01T14:30:00Z", "i": 4, "p": 100, "s": 1000}
+    )
+    assert event is not None and event.symbol == "AAPL"
+    assert event.source_timestamp.tzinfo == UTC
+    assert "secret" not in repr(event)
+
+
+def test_thetadata_normalizes_official_trade_shape():
+    provider = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
+    event = provider._normalize(
+        {
+            "header": {"type": "TRADE", "status": "CONNECTED"},
+            "contract": {"root": "AAPL"},
+            "trade": {"ms_of_day": 3600000, "sequence": 7, "size": 12, "date": 20260101},
+        }
+    )
+    assert event is not None and event.kind.value == "options"
