@@ -20,7 +20,8 @@ export THETADATA_API_KEY="${theta_api_key}"
 cd "${state_dir}"
 exec /usr/bin/docker run --rm \
   --name institutional-signal-thetadata \
-  --network host \
+  --publish 127.0.0.1:25503:25503 \
+  --publish 127.0.0.1:25520:25520 \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=128m \
   --env THETADATA_API_KEY \
