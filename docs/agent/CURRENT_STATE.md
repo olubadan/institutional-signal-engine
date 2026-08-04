@@ -17,8 +17,8 @@
   session closure is the journal-close commit containing this snapshot.
 - **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
   [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
-  draft, cleanly mergeable, and unmerged. Latest substantive provider fix:
-  `9aa3c7e750c2115b084fd20a21212cd31d104745`; the journal-close commit follows.
+  draft, cleanly mergeable, and unmerged at
+  `bcdd889a2d95e2c652106cb854d1fe760e7cb02a`.
 - **Current architecture:** Phase 3 provides typed configuration, canonical
   events, provider adapters, synchronization, signal gates/ranking, persistence,
   replay, and loopback observability. Execution remains absent.
@@ -37,7 +37,7 @@
   standard and no-default exact-ID searches at `20260803T184616Z` and
   `20260803T184627Z`. No rental, charge, provisioning, or substitution occurred.
 - **Provider-integration state:** Fixture-testable Alpaca and ThetaData v3
-  adapters implemented. Required provider fields are present in the protected
+  adapters implemented. Runtime loading is data-only; required provider fields are present in the protected
   runtime file; values were never displayed. Alpaca feed-name parsing is fixed and
   regression-tested. The official Theta Terminal runtime is active with both
   ports loopback-only. Alpaca authenticated and delivered 7,500 events in the
@@ -51,7 +51,7 @@
   files, trading-disabled state, branch, systemd/Docker enablement, container
   health, local connectivity, filesystem/PostgreSQL/Redis restart persistence,
   SSH key-only policy, reconnection, outbound HTTPS, and clean checkout. Phase 3
-  checks pass: `uv sync`, Ruff, mypy, 15 pytest tests split across provider,
+  checks pass: `uv sync`, Ruff, mypy, 16 pytest tests split across provider,
   reconnection, signal, persistence, and replay groups. ThetaData service/runtime
   startup and loopback binding passed. The six internal runtime variables were
   restored under explicit authority; dependency connectivity and filesystem,
