@@ -65,9 +65,11 @@
 - **Pending approvals:** Owner decision on ThetaData Options Pro entitlement versus
   an exact-contract Options Standard follow-up; private-repository branch
   protection remains pending.
-- **Known blockers:** ThetaData's Options Standard account cannot use the current
-  Options Pro bulk stream; the latest AAPL contract-list retry again returned
-  HTTP 500. No synchronized option input or ranked signal formed. GitHub branch
+- **Known blockers:** ThetaData MDDS reports CONNECTED, but the exact documented
+  AAPL trade contract-list URL with `/v3`, `trade`, `YYYYMMDD`, and `format=json`
+  still returns Jetty HTTP 500. No Standard exact-contract stream can be selected
+  or validated until ThetaData repairs/explains this endpoint. No synchronized
+  option input or ranked signal formed. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
 - **Next action:** Owner confirms Options Pro access or authorizes an
   exact-contract Options Standard follow-up after the contract-list endpoint is
