@@ -1,17 +1,15 @@
 # Proposed Next Codex Prompt
 
 ```text
-Continue SESSION-0009 after I explicitly authorize secure restoration of the six
-missing internal PostgreSQL/Redis variables from the still-running containers
-into `/etc/institutional-signal-engine/runtime.env`.
+Continue SESSION-0009 after I replace or correct the Alpaca key pair directly in
+`/etc/institutional-signal-engine/runtime.env` and confirm completion.
 
 Read AGENTS.md, CURRENT_STATE.md, JOURNAL_INDEX.md, and the active SESSION-0009
-record first. Reconcile live PR #3 and the Vast checkout. Restore only
-POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, REDIS_PASSWORD, DATABASE_URL, and
-REDIS_URL without printing or logging values. Preserve provider fields,
-root:root mode 0600, and TRADING_ENABLED=false. Restart and verify dependencies,
-authenticate Alpaca and ThetaData with sanitized reporting, run the bounded
-signal-only smoke, finish the journal, and update draft PR #3.
+record first. Reconcile live PR #3 and the Vast checkout. Verify the Alpaca fields
+by presence only, preserve root:root mode 0600 and TRADING_ENABLED=false, then
+authenticate Alpaca with sanitized reporting. If successful, rerun the bounded
+signal-only smoke and record event counts, latency, stale events, rejection
+reasons, and ranked-signal counts. Finish the journal and update draft PR #3.
 
 Do not construct or submit orders, enable trading, expose internal ports,
 provision infrastructure, reveal secrets, or merge PR #3.

@@ -17,7 +17,8 @@
   session closure is the journal-close commit containing this snapshot.
 - **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
   [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
-  draft, and unmerged at commit `6889081bd1d16756e946e56e43816e251c73ea5d`.
+  draft, cleanly mergeable, and unmerged. Latest substantive provider fix:
+  `f90abe95bd89c0f6738c32e76e080c8999e461ad`; the journal-close commit follows.
 - **Current architecture:** Phase 3 provides typed configuration, canonical
   events, provider adapters, synchronization, signal gates/ranking, persistence,
   replay, and loopback observability. Execution remains absent.
@@ -39,32 +40,32 @@
   adapters implemented. Required provider fields are present in the protected
   runtime file; values were never displayed. Alpaca feed-name parsing is fixed and
   regression-tested. The official Theta Terminal runtime is active with both
-  ports loopback-only. Live stream authentication/smoke remains pending recovery
-  of removed internal dependency variables.
+  ports loopback-only. ThetaData authenticated and its event socket connected,
+  though no option events arrived in the bounded smoke. Alpaca returned a
+  sanitized authentication rejection after the handshake was corrected.
 - **Test state:** Phase 1 structural checks remain passed. Phase 2 `make setup`
   passed twice; `make lint`, `make typecheck`, `make build`, and `make test` passed
   on Vast. Verification covered resources, tool versions, root-only environment
   files, trading-disabled state, branch, systemd/Docker enablement, container
   health, local connectivity, filesystem/PostgreSQL/Redis restart persistence,
   SSH key-only policy, reconnection, outbound HTTPS, and clean checkout. Phase 3
-  checks pass: `uv sync`, Ruff, mypy, 12 pytest tests split across provider,
+  checks pass: `uv sync`, Ruff, mypy, 14 pytest tests split across provider,
   reconnection, signal, persistence, and replay groups. ThetaData service/runtime
-  startup and loopback binding passed. A PostgreSQL persistence round-trip exposed
-  missing internal runtime variables after credential entry, so restart recovery
-  is not currently verified.
+  startup and loopback binding passed. The six internal runtime variables were
+  restored under explicit authority; dependency connectivity and filesystem,
+  PostgreSQL, and Redis persistence survived restart.
 - **Approved decisions:** Phase 1 is canonical documentation only; use branch
   `chore/engineering-baseline-bootstrap`; the 14-part owner model is authoritative;
   maintain the append-only Codex journal; GitHub remains authoritative; paper
   trading only; no merge or paid Vast provisioning without explicit approval;
   use owner-created instance `46725769` with the ADR-0001 Ubuntu 22.04 and finite-
   duration exception.
-- **Pending approvals:** Owner authorization to restore the six missing internal
-  PostgreSQL/Redis variables from the still-running containers into the protected
-  runtime file. Private-repository branch protection remains pending.
-- **Known blockers:** `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`,
-  `REDIS_PASSWORD`, `DATABASE_URL`, and `REDIS_URL` are absent from the protected
-  runtime file. Dependency restart recovery, live provider authentication, and the
-  signal-only smoke must wait for secure restoration. GitHub branch protection/
-  rulesets remain unavailable on the current private-repository plan.
-- **Next action:** Owner explicitly authorizes secure restoration of those six
-  internal variables from the running containers. Do not merge.
+- **Pending approvals:** Replacement/correction of the protected Alpaca key pair;
+  private-repository branch protection remains pending.
+- **Known blockers:** Alpaca rejected authentication. ThetaData authenticated but
+  delivered no option events during the 20-second smoke, so end-to-end ranked
+  signals could not form. GitHub branch protection/rulesets remain unavailable on
+  the current private-repository plan.
+- **Next action:** Owner replaces or corrects `ALPACA_API_KEY_ID` and
+  `ALPACA_API_SECRET_KEY` directly in the protected runtime file, then confirms
+  completion. Do not disclose values or merge PR #3.
