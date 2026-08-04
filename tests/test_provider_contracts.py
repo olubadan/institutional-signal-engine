@@ -32,6 +32,7 @@ def test_provider_health_state_starts_unauthenticated():
     theta = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
     assert not alpaca.authenticated
     assert not theta.connected
+    assert not theta.subscription_acknowledged
 
 
 def test_alpaca_authentication_waits_past_connected_acknowledgement():
@@ -59,3 +60,11 @@ def test_thetadata_normalizes_official_trade_shape():
     assert event is not None and event.kind.value == "options"
     assert event.sequence == 4294967289
     assert event.payload["call_premium"] == 1500
+
+
+def test_thetadata_records_subscription_acknowledgement_without_payload():
+    provider = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
+
+    assert provider._observe_control({"header": {"type": "REQ_RESPONSE", "status": "CONNECTED"}})
+    assert provider.subscription_acknowledged
+    assert provider.stream_status == "connected"

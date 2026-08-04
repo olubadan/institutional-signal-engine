@@ -94,6 +94,10 @@ async def run(seconds: float) -> dict[str, object]:
             "alpaca": "success" if alpaca.authenticated else "failed",
             "thetadata": "success" if theta.connected else "failed",
         },
+        "subscription_acknowledgement": {
+            "thetadata": "success" if theta.subscription_acknowledged else "not_observed"
+        },
+        "provider_stream_status": {"thetadata": theta.stream_status},
         "feed_health": {"alpaca": alpaca_health, "thetadata": theta_health},
         "received_event_counts": dict(Counter(event.source for event in all_events)),
         "latency_ms": {

@@ -25,6 +25,8 @@ class ThetaDataOptionsProvider:
     def __init__(self, events_url: str, api_key: str, timeout: float = 10.0) -> None:
         self.events_url, self.api_key, self.timeout = events_url, api_key, timeout
         self.connected = False
+        self.subscription_acknowledged = False
+        self.stream_status = "not_connected"
 
     async def _connection(self, symbols: Iterable[str]) -> AsyncIterator[CanonicalEvent]:
         try:
@@ -32,6 +34,8 @@ class ThetaDataOptionsProvider:
                 self.events_url, open_timeout=self.timeout, ping_interval=20, ping_timeout=10
             ) as ws:
                 self.connected = True
+                self.subscription_acknowledged = False
+                self.stream_status = "connected"
                 roots = {symbol.upper() for symbol in symbols}
                 await ws.send(
                     json.dumps(
@@ -49,6 +53,8 @@ class ThetaDataOptionsProvider:
                     header = message.get("header", {})
                     if header.get("status") in {"ERROR", "UNAUTHORIZED", "DENIED"}:
                         raise ProviderError("thetadata", "stream_rejected", False)
+                    if self._observe_control(message):
+                        continue
                     event = self._normalize(message)
                     if event is not None and (not roots or event.symbol in roots):
                         yield event
@@ -58,6 +64,20 @@ class ThetaDataOptionsProvider:
             raise ProviderError("thetadata", "connection_closed", True) from exc
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ProviderError("thetadata", "malformed_message", True) from exc
+
+    def _observe_control(self, message: dict[str, Any]) -> bool:
+        """Record sanitized stream control state without retaining payload data."""
+        header = message.get("header", {})
+        message_type = header.get("type")
+        status = str(header.get("status", "unknown")).lower()
+        if message_type == "REQ_RESPONSE":
+            self.subscription_acknowledged = status == "connected"
+            self.stream_status = status
+            return True
+        if message_type == "STATUS":
+            self.stream_status = status
+            return True
+        return False
 
     def _normalize(self, message: dict[str, Any]) -> CanonicalEvent | None:
         if message.get("header", {}).get("type") not in {"TRADE", "QUOTE"}:
