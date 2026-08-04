@@ -5,8 +5,15 @@ synchronize equity and options market data, evaluate institutional signal gates,
 rank candidates, and support Alpaca paper execution.
 
 > [!IMPORTANT]
-> Phase 1 is documentation-only. No application, provider, infrastructure, or
+> Phase 1 produced the documentation baseline. Phase 2 adds only the verified Vast
+> development/runtime environment; no market-data, signal, execution, or live-
 > trading implementation is present. Live trading is outside the authorized scope.
+
+## Phase 2 environment
+
+The reproducible Vast bootstrap and verification entrypoints are documented in
+[`docs/environment/VAST_SETUP.md`](docs/environment/VAST_SETUP.md). On the approved
+host, run `make setup`, `make lint`, `make typecheck`, `make build`, and `make test`.
 
 ## Canonical documentation
 

@@ -8,7 +8,8 @@ Status values are `Documented`, `Not started`, `Blocked`, and `Verified`.
 | REQ-GOV-002 — Append-only redacted Codex journal | Owner journal instruction | `AGENTS.md`, `docs/agent/` | AT-103, SESSION-0001–0003 | 1 | Verified |
 | REQ-DOC-001 — Canonical Phase 1 documentation scaffold | Owner reconciliation instruction | Canonical `docs/00`–`08`, `environment/`, `adr/` | AT-100 | 1 | Documented |
 | REQ-SEC-001 — No secrets in Git or durable output | Charter, SRS | `01_System_Requirements_Specification.md`, `.gitignore` | AT-103 and secret scan | 1–8 | Documented |
-| REQ-ENV-001 — Approved persistent Vast environment target | SRS | `docs/environment/README.md` | AT-200, AT-201 | 2 | Not started |
+| REQ-ENV-001 — Approved persistent Vast environment target | SRS | `docs/environment/VAST_SETUP.md`, `docs/infrastructure/VAST_INSTANCE.md`, ADR-0001 | AT-200 | 2 | Blocked: owner-approved Ubuntu 22.04/finite-duration exception does not fully meet the Ubuntu 24.04 persistent target |
+| REQ-ENV-002 — Reproducible Vast toolchain, dependency services, and recovery checks | Mission, SRS | `Makefile`, `infra/vast/`, `docs/environment/VAST_SETUP.md` | AT-201, SESSION-0008 | 2 | Verified on instance 46725769; idempotent setup, quality gates, health, connectivity, service restart, persistence, and SSH reconnection passed |
 | REQ-PORT-001 — Replaceable provider boundaries | Mission, SRS | `02_Reference_Architecture.md` | AT-300 | 3 | Not started |
 | REQ-DATA-001 — Resilient Alpaca equity stream | SRS FR-DATA-001/004 | Equity adapter boundary | AT-400, AT-401 | 4 | Not started |
 | REQ-DATA-002 — Resilient replaceable options stream | SRS FR-DATA-002/004 | Options adapter boundary | AT-400, AT-401 | 4 | Blocked: provider details required |
