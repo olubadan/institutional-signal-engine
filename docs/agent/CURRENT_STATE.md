@@ -18,7 +18,7 @@
 - **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
   [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
   draft, cleanly mergeable, and unmerged. Latest substantive provider fix:
-  `f90abe95bd89c0f6738c32e76e080c8999e461ad`; the journal-close commit follows.
+  `9aa3c7e750c2115b084fd20a21212cd31d104745`; the journal-close commit follows.
 - **Current architecture:** Phase 3 provides typed configuration, canonical
   events, provider adapters, synchronization, signal gates/ranking, persistence,
   replay, and loopback observability. Execution remains absent.
@@ -40,16 +40,18 @@
   adapters implemented. Required provider fields are present in the protected
   runtime file; values were never displayed. Alpaca feed-name parsing is fixed and
   regression-tested. The official Theta Terminal runtime is active with both
-  ports loopback-only. ThetaData authenticated and its event socket connected,
-  though no option events arrived in the bounded smoke. Alpaca returned a
-  sanitized authentication rejection after the handshake was corrected.
+  ports loopback-only. Alpaca authenticated and delivered 7,500 events in the
+  final bounded smoke. ThetaData authenticated and acknowledged the bulk stream,
+  but delivered no events: the terminal reports Options Standard while the bulk
+  stream requires Options Pro. A contract-list HTTP 500 prevented a targeted
+  Standard-stream probe during the regular session.
 - **Test state:** Phase 1 structural checks remain passed. Phase 2 `make setup`
   passed twice; `make lint`, `make typecheck`, `make build`, and `make test` passed
   on Vast. Verification covered resources, tool versions, root-only environment
   files, trading-disabled state, branch, systemd/Docker enablement, container
   health, local connectivity, filesystem/PostgreSQL/Redis restart persistence,
   SSH key-only policy, reconnection, outbound HTTPS, and clean checkout. Phase 3
-  checks pass: `uv sync`, Ruff, mypy, 14 pytest tests split across provider,
+  checks pass: `uv sync`, Ruff, mypy, 15 pytest tests split across provider,
   reconnection, signal, persistence, and replay groups. ThetaData service/runtime
   startup and loopback binding passed. The six internal runtime variables were
   restored under explicit authority; dependency connectivity and filesystem,
@@ -60,12 +62,13 @@
   trading only; no merge or paid Vast provisioning without explicit approval;
   use owner-created instance `46725769` with the ADR-0001 Ubuntu 22.04 and finite-
   duration exception.
-- **Pending approvals:** Replacement/correction of the protected Alpaca key pair;
-  private-repository branch protection remains pending.
-- **Known blockers:** Alpaca rejected authentication. ThetaData authenticated but
-  delivered no option events during the 20-second smoke, so end-to-end ranked
-  signals could not form. GitHub branch protection/rulesets remain unavailable on
-  the current private-repository plan.
-- **Next action:** Owner replaces or corrects `ALPACA_API_KEY_ID` and
-  `ALPACA_API_SECRET_KEY` directly in the protected runtime file, then confirms
-  completion. Do not disclose values or merge PR #3.
+- **Pending approvals:** Owner decision on ThetaData Options Pro entitlement versus
+  an exact-contract Options Standard follow-up; private-repository branch
+  protection remains pending.
+- **Known blockers:** ThetaData's Options Standard account cannot use the current
+  Options Pro bulk stream, and its contract-list request returned HTTP 500. No
+  synchronized option input or ranked signal formed. GitHub branch
+  protection/rulesets remain unavailable on the current private-repository plan.
+- **Next action:** Owner confirms Options Pro access or authorizes an
+  exact-contract Options Standard follow-up after the contract-list endpoint is
+  healthy. Keep PR #3 draft and unmerged.
