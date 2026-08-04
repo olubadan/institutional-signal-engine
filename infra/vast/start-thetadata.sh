@@ -6,11 +6,15 @@ readonly terminal_dir=/opt/thetadata
 readonly state_dir=/var/lib/institutional-signal-engine/thetadata
 
 [[ -r ${runtime_env} ]] || { printf 'ThetaData runtime environment is unavailable\n' >&2; exit 1; }
-set -a
-# shellcheck source=/dev/null
-source "${runtime_env}"
-set +a
-[[ -n ${THETADATA_API_KEY:-} ]] || { printf 'THETADATA_API_KEY is not configured\n' >&2; exit 1; }
+theta_api_key=
+while IFS='=' read -r key value; do
+  if [[ ${key} == THETADATA_API_KEY ]]; then
+    theta_api_key=${value%$'\r'}
+    break
+  fi
+done <"${runtime_env}"
+[[ -n ${theta_api_key} ]] || { printf 'THETADATA_API_KEY is not configured\n' >&2; exit 1; }
+export THETADATA_API_KEY="${theta_api_key}"
 
 cd "${state_dir}"
 exec /usr/bin/docker run --rm \
