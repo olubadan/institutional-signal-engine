@@ -20,6 +20,7 @@ from .common import ProviderError, reconnecting_stream
 class AlpacaEquitiesProvider:
     def __init__(self, url: str, key_id: str, secret_key: str, timeout: float = 10.0) -> None:
         self.url, self.key_id, self.secret_key, self.timeout = url, key_id, secret_key, timeout
+        self.authenticated = False
 
     async def _connection(self, symbols: Iterable[str]) -> AsyncIterator[CanonicalEvent]:
         try:
@@ -32,6 +33,12 @@ class AlpacaEquitiesProvider:
                 auth = json.loads(await asyncio.wait_for(ws.recv(), self.timeout))
                 if any(message.get("T") == "error" for message in auth):
                     raise ProviderError("alpaca", "authentication_failed", False)
+                if not any(
+                    message.get("T") == "success" and message.get("msg") == "authenticated"
+                    for message in auth
+                ):
+                    raise ProviderError("alpaca", "authentication_unconfirmed", False)
+                self.authenticated = True
                 await ws.send(
                     json.dumps(
                         {"action": "subscribe", "trades": list(symbols), "quotes": list(symbols)}
@@ -39,11 +46,15 @@ class AlpacaEquitiesProvider:
                 )
                 async for raw in ws:
                     for message in json.loads(raw):
+                        if message.get("T") == "error":
+                            raise ProviderError("alpaca", "stream_rejected", False)
                         event = self._normalize(message)
                         if event is not None:
                             yield event
         except ProviderError:
             raise
+        except websockets.ConnectionClosed as exc:
+            raise ProviderError("alpaca", "connection_closed", True) from exc
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ProviderError("alpaca", "malformed_message", True) from exc
 

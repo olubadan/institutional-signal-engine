@@ -88,6 +88,10 @@ async def run(seconds: float) -> dict[str, object]:
     )
     return {
         "trading_enabled": False,
+        "provider_authentication": {
+            "alpaca": "success" if alpaca.authenticated else "failed",
+            "thetadata": "success" if theta.connected else "failed",
+        },
         "feed_health": {"alpaca": alpaca_health, "thetadata": theta_health},
         "received_event_counts": dict(Counter(event.source for event in all_events)),
         "latency_ms": {

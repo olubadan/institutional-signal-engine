@@ -26,6 +26,13 @@ def test_alpaca_feed_name_is_not_interpreted_as_a_websocket_url():
         Settings.from_env({"ALPACA_DATA_FEED": "wss://malformed.example"})
 
 
+def test_provider_health_state_starts_unauthenticated():
+    alpaca = AlpacaEquitiesProvider("wss://example.invalid", "key", "secret")
+    theta = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
+    assert not alpaca.authenticated
+    assert not theta.connected
+
+
 def test_thetadata_normalizes_official_trade_shape():
     provider = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
     event = provider._normalize(
