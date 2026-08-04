@@ -83,7 +83,10 @@ python_path=$(uv python find 3.12)
 ln -sfn "${python_path}" /usr/local/bin/python3.12
 
 log "creating protected configuration and persistent state directories"
-install -d -o root -g root -m 0750 "${CONFIG_DIR}" "${STATE_DIR}" "${STATE_DIR}/postgres" "${STATE_DIR}/redis"
+install -d -o root -g root -m 0750 "${CONFIG_DIR}" "${STATE_DIR}" "${STATE_DIR}/redis"
+# The digest-pinned Alpine PostgreSQL image runs as uid/gid 70. The bind-mount
+# root must remain traversable by that account after host or service restarts.
+install -d -o 70 -g 70 -m 0700 "${STATE_DIR}/postgres"
 install -o root -g root -m 0600 "${REPO_DIR}/infra/vast/runtime.env.example" "${RUNTIME_TEMPLATE}"
 
 if [[ ! -e "${RUNTIME_ENV}" ]]; then

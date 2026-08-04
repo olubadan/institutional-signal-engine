@@ -1,13 +1,18 @@
 # Proposed Next Codex Prompt
 
 ```text
-Continue Phase 3 signal-only work on feat/signal-only-vertical-slice. Read the
-current state, journal, latest session record, and applicable implementation
-instructions. Verify the branch and draft PR remain unmerged, trading remains
-disabled, and the protected runtime fields are populated without printing their
-values. Authenticate only against the documented Alpaca and ThetaData contracts,
-run the provider contract/failure/replay suites, and record only presence and
-authentication success. Do not add order execution, expose services publicly,
-merge the PR, or disclose credentials or connection details. Update the journal,
-traceability, and state with sanitized evidence before ending.
+Continue SESSION-0009 after I explicitly authorize secure restoration of the six
+missing internal PostgreSQL/Redis variables from the still-running containers
+into `/etc/institutional-signal-engine/runtime.env`.
+
+Read AGENTS.md, CURRENT_STATE.md, JOURNAL_INDEX.md, and the active SESSION-0009
+record first. Reconcile live PR #3 and the Vast checkout. Restore only
+POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, REDIS_PASSWORD, DATABASE_URL, and
+REDIS_URL without printing or logging values. Preserve provider fields,
+root:root mode 0600, and TRADING_ENABLED=false. Restart and verify dependencies,
+authenticate Alpaca and ThetaData with sanitized reporting, run the bounded
+signal-only smoke, finish the journal, and update draft PR #3.
+
+Do not construct or submit orders, enable trading, expose internal ports,
+provision infrastructure, reveal secrets, or merge PR #3.
 ```

@@ -36,27 +36,35 @@
   standard and no-default exact-ID searches at `20260803T184616Z` and
   `20260803T184627Z`. No rental, charge, provisioning, or substitution occurred.
 - **Provider-integration state:** Fixture-testable Alpaca and ThetaData v3
-  adapters implemented. No credentials have been requested or stored; live
-  authentication remains pending the protected checkpoint.
+  adapters implemented. Required provider fields are present in the protected
+  runtime file; values were never displayed. Alpaca feed-name parsing is fixed and
+  regression-tested. The official Theta Terminal runtime is active with both
+  ports loopback-only. Live stream authentication/smoke remains pending recovery
+  of removed internal dependency variables.
 - **Test state:** Phase 1 structural checks remain passed. Phase 2 `make setup`
   passed twice; `make lint`, `make typecheck`, `make build`, and `make test` passed
   on Vast. Verification covered resources, tool versions, root-only environment
   files, trading-disabled state, branch, systemd/Docker enablement, container
   health, local connectivity, filesystem/PostgreSQL/Redis restart persistence,
   SSH key-only policy, reconnection, outbound HTTPS, and clean checkout. Phase 3
-  local checks pass: `uv sync`, Ruff, mypy, 8 pytest tests, and diff-whitespace.
+  checks pass: `uv sync`, Ruff, mypy, 12 pytest tests split across provider,
+  reconnection, signal, persistence, and replay groups. ThetaData service/runtime
+  startup and loopback binding passed. A PostgreSQL persistence round-trip exposed
+  missing internal runtime variables after credential entry, so restart recovery
+  is not currently verified.
 - **Approved decisions:** Phase 1 is canonical documentation only; use branch
   `chore/engineering-baseline-bootstrap`; the 14-part owner model is authoritative;
   maintain the append-only Codex journal; GitHub remains authoritative; paper
   trading only; no merge or paid Vast provisioning without explicit approval;
   use owner-created instance `46725769` with the ADR-0001 Ubuntu 22.04 and finite-
   duration exception.
-- **Pending approvals:** Provider credential entry remains deferred to the
-  protected checkpoint. Private-
-  repository branch protection remains pending.
-- **Known blockers:** Live provider authentication awaits credential entry. GitHub
-  branch protection/rulesets remain unavailable on the current private-repository
-  plan.
-- **Next action:** Owner enters the four provider fields in the protected runtime
-  file; then verify field presence and provider authentication without revealing
-  values. Do not merge.
+- **Pending approvals:** Owner authorization to restore the six missing internal
+  PostgreSQL/Redis variables from the still-running containers into the protected
+  runtime file. Private-repository branch protection remains pending.
+- **Known blockers:** `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`,
+  `REDIS_PASSWORD`, `DATABASE_URL`, and `REDIS_URL` are absent from the protected
+  runtime file. Dependency restart recovery, live provider authentication, and the
+  signal-only smoke must wait for secure restoration. GitHub branch protection/
+  rulesets remain unavailable on the current private-repository plan.
+- **Next action:** Owner explicitly authorizes secure restoration of those six
+  internal variables from the running containers. Do not merge.
