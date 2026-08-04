@@ -66,8 +66,8 @@
   an exact-contract Options Standard follow-up; private-repository branch
   protection remains pending.
 - **Known blockers:** ThetaData's Options Standard account cannot use the current
-  Options Pro bulk stream, and its contract-list request returned HTTP 500. No
-  synchronized option input or ranked signal formed. GitHub branch
+  Options Pro bulk stream; the latest AAPL contract-list retry again returned
+  HTTP 500. No synchronized option input or ranked signal formed. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
 - **Next action:** Owner confirms Options Pro access or authorizes an
   exact-contract Options Standard follow-up after the contract-list endpoint is
