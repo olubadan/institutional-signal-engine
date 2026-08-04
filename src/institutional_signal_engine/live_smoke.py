@@ -34,7 +34,9 @@ async def _collect(
                 events.append(event)
     except TimeoutError:
         return events, "healthy" if events else "connected_no_events"
-    except (ProviderError, OSError, RuntimeError, ValueError) as exc:
+    except ProviderError as exc:
+        return events, f"failed:{exc.category}"
+    except (OSError, RuntimeError, ValueError) as exc:
         return events, f"failed:{type(exc).__name__}"
     return events, "healthy" if events else "connected_no_events"
 
