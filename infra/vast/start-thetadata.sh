@@ -23,7 +23,7 @@ exec /usr/bin/docker run --rm \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=128m \
   --env THETADATA_API_KEY \
-  --volume "${terminal_dir}:/opt/thetadata:ro" \
+  --volume "${terminal_dir}:/opt/thetadata:rw" \
   --volume "${state_dir}:/var/lib/thetadata:rw" \
   --workdir /var/lib/thetadata \
   eclipse-temurin:21-jre \
