@@ -13,8 +13,14 @@ set +a
 [[ -n ${THETADATA_API_KEY:-} ]] || { printf 'THETADATA_API_KEY is not configured\n' >&2; exit 1; }
 
 cd "${state_dir}"
-exec env -i \
-  HOME="${state_dir}" \
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  THETADATA_API_KEY="${THETADATA_API_KEY}" \
-  /usr/bin/java -jar "${terminal_dir}/ThetaTerminalv3.jar"
+exec /usr/bin/docker run --rm \
+  --name institutional-signal-thetadata \
+  --network host \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=128m \
+  --env THETADATA_API_KEY \
+  --volume "${terminal_dir}:/opt/thetadata:ro" \
+  --volume "${state_dir}:/var/lib/thetadata:rw" \
+  --workdir /var/lib/thetadata \
+  eclipse-temurin:21-jre \
+  java -jar /opt/thetadata/ThetaTerminalv3.jar
