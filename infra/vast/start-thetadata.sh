@@ -9,7 +9,8 @@ readonly state_dir=/var/lib/institutional-signal-engine/thetadata
 theta_api_key=
 while IFS='=' read -r key value; do
   if [[ ${key} == THETADATA_API_KEY ]]; then
-    theta_api_key=${value%$'\r'}
+    theta_api_key=${value#"${value%%[![:space:]]*}"}
+    theta_api_key=${theta_api_key%"${theta_api_key##*[![:space:]]}"}
     break
   fi
 done <"${runtime_env}"
