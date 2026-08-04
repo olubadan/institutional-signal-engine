@@ -9,10 +9,6 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
-
-from institutional_signal_engine.config import read_env_file  # noqa: E402
-
 RUNTIME = Path("/etc/institutional-signal-engine/runtime.env")
 STATE = Path("/var/lib/institutional-signal-engine")
 
@@ -24,6 +20,21 @@ def run(command: list[str], environment: dict[str, str]) -> subprocess.Completed
 def fail(message: str) -> int:
     print(f"[verify] FAIL: {message}", file=sys.stderr)
     return 1
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """Read runtime assignments as data; this verifier has no third-party imports."""
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[name.strip()] = value
+    return values
 
 
 def healthy(container: str, environment: dict[str, str]) -> bool:
