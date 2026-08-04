@@ -1,0 +1,21 @@
+[Unit]
+Description=Institutional Signal Engine ThetaData Terminal
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=thetadata
+Group=thetadata
+ExecStart=/usr/local/sbin/start-institutional-signal-thetadata
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/institutional-signal-engine/runtime.env /opt/thetadata
+ReadWritePaths=/var/lib/institutional-signal-engine/thetadata
+
+[Install]
+WantedBy=multi-user.target

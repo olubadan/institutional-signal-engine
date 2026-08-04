@@ -14,13 +14,14 @@ class Synchronizer:
         self.max_lateness = max_lateness
         self.max_staleness = max_staleness
         self._events: dict[tuple[str, EventKind], CanonicalEvent] = {}
-        self._last_sequence: dict[str, int] = {}
+        self._last_sequence: dict[tuple[str, str, EventKind], int] = {}
 
     def add(self, event: CanonicalEvent) -> bool:
-        previous = self._last_sequence.get(event.source, -1)
+        sequence_key = (event.source, event.symbol, event.kind)
+        previous = self._last_sequence.get(sequence_key, -1)
         if event.sequence <= previous:
             return False
-        self._last_sequence[event.source] = event.sequence
+        self._last_sequence[sequence_key] = event.sequence
         key = (event.symbol, event.kind)
         current = self._events.get(key)
         if current is None or event.normalized_timestamp >= current.normalized_timestamp:

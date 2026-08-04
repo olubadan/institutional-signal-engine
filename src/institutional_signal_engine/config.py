@@ -2,6 +2,7 @@
 
 import os
 from decimal import Decimal
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -25,6 +26,7 @@ class Settings(BaseModel):
     trading_enabled: bool = False
     alpaca_key_id: SecretStr | None = None
     alpaca_secret_key: SecretStr | None = None
+    alpaca_data_feed: str = "iex"
     alpaca_data_url: str = "wss://stream.data.alpaca.markets/v2/iex"
     theta_api_key: SecretStr | None = None
     theta_events_url: str = "ws://127.0.0.1:25520/v1/events"
@@ -36,6 +38,12 @@ class Settings(BaseModel):
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "Settings":
         values = os.environ if environ is None else environ
+        feed = values.get("ALPACA_DATA_FEED", "iex").strip().lower()
+        if "://" in feed:
+            raise ValueError("ALPACA_DATA_FEED must be a feed name, not a URL")
+        data_url = values.get("ALPACA_DATA_URL") or (
+            f"wss://stream.data.alpaca.markets/v2/{quote(feed, safe='')}"
+        )
         return cls(
             trading_enabled=values.get("TRADING_ENABLED", "false").strip().lower()
             in {"1", "true", "yes", "on"},
@@ -45,10 +53,8 @@ class Settings(BaseModel):
             alpaca_secret_key=SecretStr(values["ALPACA_API_SECRET_KEY"])
             if values.get("ALPACA_API_SECRET_KEY")
             else None,
-            alpaca_data_url=values.get(
-                "ALPACA_DATA_URL",
-                values.get("ALPACA_DATA_FEED", cls.model_fields["alpaca_data_url"].default),
-            ),
+            alpaca_data_feed=feed,
+            alpaca_data_url=data_url,
             theta_api_key=SecretStr(values["THETADATA_API_KEY"])
             if values.get("THETADATA_API_KEY")
             else None,

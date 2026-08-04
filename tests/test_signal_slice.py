@@ -6,6 +6,7 @@ from institutional_signal_engine.config import Settings, Thresholds
 from institutional_signal_engine.replay import replay
 from institutional_signal_engine.schemas import CanonicalEvent, EventKind, SynchronizedInput
 from institutional_signal_engine.signals import decide, evaluate
+from institutional_signal_engine.synchronization import Synchronizer
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -99,3 +100,21 @@ def test_replay_is_deterministic():
     first = replay(events, ["AAPL"], Settings())
     second = replay(events, ["AAPL"], Settings())
     assert first == second
+
+
+def test_sequences_are_independent_per_symbol_and_kind():
+    synchronizer = Synchronizer()
+    first = CanonicalEvent(
+        event_id=uuid4(),
+        kind=EventKind.EQUITY,
+        symbol="AAPL",
+        source="alpaca",
+        source_timestamp=NOW,
+        received_timestamp=NOW,
+        normalized_timestamp=NOW,
+        sequence=10,
+        payload={},
+    )
+    second = first.model_copy(update={"event_id": uuid4(), "symbol": "SPY", "sequence": 1})
+    assert synchronizer.add(first)
+    assert synchronizer.add(second)

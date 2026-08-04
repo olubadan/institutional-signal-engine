@@ -3,8 +3,10 @@
 import json
 from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 import websockets
 
@@ -28,22 +30,21 @@ class ThetaDataOptionsProvider:
             async with websockets.connect(
                 self.events_url, open_timeout=self.timeout, ping_interval=20, ping_timeout=10
             ) as ws:
-                for index, symbol in enumerate(symbols):
-                    await ws.send(
-                        json.dumps(
-                            {
-                                "msg_type": "STREAM",
-                                "sec_type": "OPTION",
-                                "req_type": "TRADE",
-                                "add": True,
-                                "id": index,
-                                "contract": {"root": symbol},
-                            }
-                        )
+                roots = {symbol.upper() for symbol in symbols}
+                await ws.send(
+                    json.dumps(
+                        {
+                            "msg_type": "STREAM_BULK",
+                            "sec_type": "OPTION",
+                            "req_type": "TRADE",
+                            "add": True,
+                            "id": 0,
+                        }
                     )
+                )
                 async for raw in ws:
                     event = self._normalize(json.loads(raw))
-                    if event is not None:
+                    if event is not None and (not roots or event.symbol in roots):
                         yield event
         except ProviderError:
             raise
@@ -58,14 +59,17 @@ class ThetaDataOptionsProvider:
         data = message.get("trade") or message.get("quote") or {}
         date = str(data["date"])
         seconds = int(data["ms_of_day"]) / 1000
-        timestamp = datetime.strptime(date, "%Y%m%d").replace(tzinfo=UTC) + timedelta(
-            seconds=seconds
-        )
-        sequence = int(data.get("sequence", data.get("ms_of_day", 0)))
+        timestamp = (
+            datetime.strptime(date, "%Y%m%d").replace(tzinfo=ZoneInfo("America/New_York"))
+            + timedelta(seconds=seconds)
+        ).astimezone(UTC)
+        sequence = int(data.get("sequence", data.get("ms_of_day", 0))) & 0xFFFFFFFF
+        size = int(data.get("size", 0))
+        price = Decimal(str(data.get("price", 0)))
         payload = {
-            "option_volume": int(data.get("size", 0)),
+            "option_volume": size,
             "open_interest": int(data.get("open_interest", 0)),
-            "call_premium": data.get("call_premium", 0),
+            "call_premium": data.get("call_premium", price * size * 100),
             "distance_to_resistance": data.get("distance_to_resistance", 0),
         }
         return CanonicalEvent(

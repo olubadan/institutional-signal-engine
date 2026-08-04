@@ -1,5 +1,8 @@
 from datetime import UTC
 
+import pytest
+
+from institutional_signal_engine.config import Settings
 from institutional_signal_engine.providers.alpaca import AlpacaEquitiesProvider
 from institutional_signal_engine.providers.thetadata import ThetaDataOptionsProvider
 
@@ -14,13 +17,30 @@ def test_alpaca_normalizes_trade_without_secret_output():
     assert "secret" not in repr(event)
 
 
+def test_alpaca_feed_name_is_not_interpreted_as_a_websocket_url():
+    settings = Settings.from_env({"ALPACA_DATA_FEED": "iex"})
+    assert settings.alpaca_data_feed == "iex"
+    assert settings.alpaca_data_url == "wss://stream.data.alpaca.markets/v2/iex"
+
+    with pytest.raises(ValueError, match="feed name"):
+        Settings.from_env({"ALPACA_DATA_FEED": "wss://malformed.example"})
+
+
 def test_thetadata_normalizes_official_trade_shape():
     provider = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
     event = provider._normalize(
         {
             "header": {"type": "TRADE", "status": "CONNECTED"},
             "contract": {"root": "AAPL"},
-            "trade": {"ms_of_day": 3600000, "sequence": 7, "size": 12, "date": 20260101},
+            "trade": {
+                "ms_of_day": 3600000,
+                "sequence": -7,
+                "size": 12,
+                "price": 1.25,
+                "date": 20260101,
+            },
         }
     )
     assert event is not None and event.kind.value == "options"
+    assert event.sequence == 4294967289
+    assert event.payload["call_premium"] == 1500
