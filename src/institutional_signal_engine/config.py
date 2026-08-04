@@ -20,6 +20,22 @@ class Thresholds(BaseModel):
     freshness_seconds: int = Field(default=300, gt=0)
 
 
+def read_env_file(path: str | Path) -> dict[str, str]:
+    """Read ``NAME=value`` records as data, never as executable syntax."""
+    values: dict[str, str] = {}
+    for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[name] = value
+    return values
+
+
 class Settings(BaseModel):
     """Settings loaded from environment; secrets never enter snapshots/logs."""
 
@@ -68,18 +84,7 @@ class Settings(BaseModel):
     @classmethod
     def from_env_file(cls, path: str | Path) -> "Settings":
         """Load ``NAME=value`` lines as data; never parse them as shell syntax."""
-        values: dict[str, str] = {}
-        for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            name, value = line.split("=", 1)
-            name = name.strip()
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-            values[name] = value
-        return cls.from_env(values)
+        return cls.from_env(read_env_file(path))
 
     @field_validator("trading_enabled", mode="before")
     @classmethod
