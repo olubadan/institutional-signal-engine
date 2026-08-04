@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import os
 from collections import Counter
 from datetime import UTC, datetime
 from statistics import median
@@ -46,7 +47,14 @@ def _as_market_input(event: CanonicalEvent, kind: EventKind) -> CanonicalEvent:
 
 
 async def run(seconds: float) -> dict[str, object]:
-    settings = Settings.from_env()
+    runtime_file = os.environ.get(
+        "RUNTIME_ENV_FILE", "/etc/institutional-signal-engine/runtime.env"
+    )
+    settings = (
+        Settings.from_env_file(runtime_file)
+        if os.path.exists(runtime_file)
+        else Settings.from_env()
+    )
     if settings.trading_enabled:
         raise RuntimeError("signal-only smoke refuses trading-enabled configuration")
 

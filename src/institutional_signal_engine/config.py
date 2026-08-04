@@ -2,6 +2,7 @@
 
 import os
 from decimal import Decimal
+from pathlib import Path
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
@@ -63,6 +64,22 @@ class Settings(BaseModel):
             ),
             capacity=int(values.get("CAPACITY", "1")),
         )
+
+    @classmethod
+    def from_env_file(cls, path: str | Path) -> "Settings":
+        """Load ``NAME=value`` lines as data; never parse them as shell syntax."""
+        values: dict[str, str] = {}
+        for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            values[name] = value
+        return cls.from_env(values)
 
     @field_validator("trading_enabled", mode="before")
     @classmethod

@@ -8,6 +8,27 @@ from institutional_signal_engine.providers.common import ProviderError
 from institutional_signal_engine.providers.thetadata import ThetaDataOptionsProvider
 
 
+def test_runtime_file_loader_treats_shell_sensitive_values_as_data(tmp_path):
+    runtime = tmp_path / "runtime.env"
+    runtime.write_text(
+        """TRADING_ENABLED=false
+ALPACA_API_KEY_ID=key;$(must_not_execute)
+ALPACA_API_SECRET_KEY=secret # literal; `text`
+THETADATA_API_KEY=theta$token\\nwith-space
+OPTIONS_API_BASE_URL=ws://127.0.0.1:25520/v1/events
+""",
+        encoding="utf-8",
+    )
+    settings = Settings.from_env_file(runtime)
+    assert settings.alpaca_key_id is not None
+    assert settings.alpaca_key_id.get_secret_value() == "key;$(must_not_execute)"
+    assert settings.alpaca_secret_key is not None
+    assert settings.alpaca_secret_key.get_secret_value() == "secret # literal; `text`"
+    assert settings.theta_api_key is not None
+    assert settings.theta_api_key.get_secret_value() == "theta$token\\nwith-space"
+    assert not settings.trading_enabled
+
+
 def test_alpaca_normalizes_trade_without_secret_output():
     provider = AlpacaEquitiesProvider("wss://example.invalid", "key", "secret")
     event = provider._normalize(
