@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from collections import Counter
+from collections.abc import Callable
 from statistics import median
 
 from pydantic import SecretStr
@@ -25,13 +26,14 @@ def _secret(value: SecretStr | None) -> str:
 
 
 async def _collect(
-    provider: object, symbols: list[str], seconds: float
+    provider: object, symbols: list[str], seconds: float, on_event: Callable[[CanonicalEvent], None]
 ) -> tuple[list[CanonicalEvent], str]:
     events: list[CanonicalEvent] = []
     try:
         async with asyncio.timeout(seconds):
             async for event in provider.events(symbols):  # type: ignore[attr-defined]
                 events.append(event)
+                on_event(event)
     except TimeoutError:
         return events, "healthy" if events else "connected_no_events"
     except ProviderError as exc:
@@ -67,23 +69,24 @@ async def run(seconds: float) -> dict[str, object]:
         _secret(settings.theta_api_key),
         contracts=(SMOKE_AAPL_CONTRACT,),
     )
-    (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
-        _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds),
-        _collect(theta, ["AAPL"], seconds),
-    )
-
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
     )
     if isinstance(repository, PostgresRepository):
         repository.initialize()
     pipeline = SignalPipeline(settings, repository=repository)
-    for event in sorted(equities + options, key=lambda value: value.received_timestamp):
+
+    def process(event: CanonicalEvent) -> None:
         if event.symbol == "SPY":
             event = _as_market_input(event, EventKind.MARKET_INDEX)
         elif event.symbol == "XLK":
             event = _as_market_input(event, EventKind.SECTOR_INDEX)
         pipeline.process(event)
+
+    (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
+        _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds, process),
+        _collect(theta, ["AAPL"], seconds, process),
+    )
     decision = pipeline.decisions[-1] if pipeline.decisions else None
     all_events = equities + options
     latencies = pipeline.metrics.provider_transport_latency_ms
