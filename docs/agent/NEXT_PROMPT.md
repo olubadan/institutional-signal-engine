@@ -9,13 +9,16 @@ draft PR #3 diff. Compare them with live GitHub and Vast state before changing
 anything.
 
 SESSION-0011 added quote conflation, bounded classification windows,
-material-change evaluation, asynchronous persistence with backpressure, and
-consumed-quote replay. Verify the pushed head, keep the throughput run-scoped
-replay proof qualified to recorded versions, and preserve the provider/event-
-kind latency evidence. Treat ThetaData discovery as fixture-verified but not
-live-verified while HTTP 500 remains awaiting support. Verify
-the pushed head on the VM and in GitHub Actions, then run a bounded smoke only
-if the regular session is open.
+material-change evaluation, asynchronous persistence with backpressure,
+consumed-quote replay, historical indicator bootstrap/wiring, and idempotent
+session-boundary handling. The remaining internal blocker is an authoritative
+definition for NEW_QUALIFYING_SWEEP: provide its identity, aggregation window,
+qualification threshold, directional rule, and expiry semantics before
+implementing it. Keep the live historical-bootstrap and replay evidence
+qualified to recorded versions. Treat ThetaData discovery as
+fixture-verified but not live-verified while HTTP 500 remains awaiting
+support. Verify the pushed head on the VM and in GitHub Actions, then run a
+bounded smoke only if the regular session is open.
 Do not infer or purchase a subscription. Keep `TRADING_ENABLED=false`; do not
 construct or submit orders, expose ports, reveal credentials, merge PR #3, or
 begin execution work.
