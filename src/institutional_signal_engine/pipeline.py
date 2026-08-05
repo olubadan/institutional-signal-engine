@@ -99,6 +99,8 @@ class SignalPipeline:
 
     def _enrich_state(self, event: CanonicalEvent) -> CanonicalEvent:
         payload = dict(event.payload)
+        if payload.get("_state_enriched") is True:
+            return event
         key = f"{event.kind.value}:{event.symbol}"
         current_session = session_key(event.source_timestamp)
         if self._sessions.get(key) != current_session:
@@ -131,6 +133,7 @@ class SignalPipeline:
             elif not eligible:
                 payload["eligibility_reason"] = "excluded_or_non_call_or_session_or_size"
             if not eligible:
+                payload["_state_enriched"] = True
                 return event.model_copy(update={"payload": payload})
             self._option_volume[key] += size
             payload["option_volume"] = self._option_volume[key]
@@ -164,4 +167,5 @@ class SignalPipeline:
                     self._net_call_premium[key] += premium
                 payload["ask_premium"] = self._ask_premium[key]
                 payload["call_premium"] = self._net_call_premium[key]
+        payload["_state_enriched"] = True
         return event.model_copy(update={"payload": payload})

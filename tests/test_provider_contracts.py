@@ -117,6 +117,26 @@ def test_thetadata_correlates_acknowledgement_to_outstanding_request():
     assert "unmatched_request_response" in provider.diagnostics
 
 
+def test_thetadata_correlates_official_header_request_id_shape():
+    contract = ThetaContract("AAPL", 20260807, 310000, "C")
+    provider = ThetaDataOptionsProvider(
+        "ws://127.0.0.1:25520/v1/events", "secret", contracts=(contract,)
+    )
+    request = provider.subscription_payloads()[0]
+    assert provider._observe_control(
+        {
+            "header": {
+                "type": "REQ_RESPONSE",
+                "status": "CONNECTED",
+                "req_id": request["id"],
+                "response": "STREAM",
+            }
+        }
+    )
+    assert provider.subscription_acknowledged
+    assert request["id"] not in provider.outstanding
+
+
 def test_thetadata_standard_exact_contract_payload_and_strike_conversion():
     contract = ThetaContract.from_dollars("AAPL", 20260807, Decimal("310.00"), "C")
     provider = ThetaDataOptionsProvider(

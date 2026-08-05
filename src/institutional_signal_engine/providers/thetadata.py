@@ -122,7 +122,7 @@ class ThetaDataOptionsProvider:
         header = message.get("header", {})
         message_type = header.get("type")
         status = str(header.get("status", "unknown")).lower()
-        message_id = message.get("id")
+        message_id = message.get("id", header.get("req_id"))
         if message_type == "REQ_RESPONSE":
             self.stream_status = status
             if not isinstance(message_id, int) or message_id not in self.outstanding:
