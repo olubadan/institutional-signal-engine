@@ -73,6 +73,9 @@ class Synchronizer:
             event_ids=tuple(event.event_id for event in events),
             ask_side_percentage=options.get("ask_side_percentage"),
             quote_validity=options.get("quote_validity"),
+            qualifying_sweep_count=int(options.get("qualifying_sweep_count", 0)),
+            qualifying_sweep_premium=options.get("qualifying_sweep_premium", 0),
+            session_sweep_gate=bool(options.get("session_sweep_gate", False)),
             provenance={
                 f"{name}:{key}": value
                 for name, payload in (

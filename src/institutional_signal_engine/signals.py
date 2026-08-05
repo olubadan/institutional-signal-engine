@@ -44,6 +44,7 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
     market = item.market_delta is not None and item.market_delta > 0
     sector = item.sector_delta is not None and item.sector_delta > 0
     signal = liquidity and options and equity and market and sector
+    signal = signal and item.session_sweep_gate
     if item.first_signal_at is None:
         freshness_score = Decimal(0)
         freshness = False

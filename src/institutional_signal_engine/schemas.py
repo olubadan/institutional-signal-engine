@@ -68,6 +68,9 @@ class SynchronizedInput(BaseModel):
     provenance: dict[str, str] = Field(default_factory=dict)
     ask_side_percentage: Decimal | None = None
     quote_validity: str | None = None
+    qualifying_sweep_count: int = 0
+    qualifying_sweep_premium: Decimal = Decimal(0)
+    session_sweep_gate: bool = False
 
     _utc_as_of = field_validator("as_of")(utc)
     _utc_first = field_validator("first_signal_at")(lambda v: utc(v) if v else v)
@@ -123,6 +126,7 @@ class Decision(BaseModel):
         executable_candidates=0,
     )
     indicator_provenance: dict[str, str] = Field(default_factory=dict)
+    sweep_state: dict[str, object] = Field(default_factory=dict)
 
     _utc_decided = field_validator("decided_at")(utc)
 

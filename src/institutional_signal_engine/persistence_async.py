@@ -17,6 +17,7 @@ class AuditWrite:
     event: CanonicalEvent | None = None
     decision: Decision | None = None
     quote_consumption: Any | None = None
+    sweep: Any | None = None
 
 
 @dataclass
@@ -92,6 +93,10 @@ class AsyncAuditWriter:
                     recorder = getattr(self.repository, "record_quote_consumption", None)
                     if recorder is not None:
                         recorder(record.quote_consumption)
+                if record.sweep is not None:
+                    recorder = getattr(self.repository, "record_sweep", None)
+                    if recorder is not None:
+                        recorder(record.sweep)
                 self.queue.task_done()
             flush = getattr(self.repository, "flush", None)
             if flush is not None:

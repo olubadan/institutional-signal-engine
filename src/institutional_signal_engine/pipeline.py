@@ -26,6 +26,7 @@ from .ports import EventRepository
 from .quote_book import QuoteBook, QuoteConsumption
 from .schemas import CanonicalEvent, Decision, EventKind
 from .signals import decide
+from .sweeps import SweepEngine
 from .synchronization import Synchronizer
 from .thetadata_conditions import CONDITION_MAPPING_VERSION, eligible_condition
 
@@ -105,6 +106,9 @@ class SignalPipeline:
         self._boundary_tokens_seen: set[tuple[str, str]] = set()
         self._pending_boundary_reasons: list[str] = []
         self._session_generation = 0
+        self.sweeps = SweepEngine(self.run_id)
+        self._pending_sweep_reasons: list[str] = []
+        self._pending_closed_sweep_audits: list[dict[str, object]] = []
         self.incomplete_run = False
 
     def process(self, event: CanonicalEvent) -> Decision | None:
@@ -169,6 +173,23 @@ class SignalPipeline:
             self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
         event = self._enrich_state(event)
+        sweep_audit: dict[str, object] | None = None
+        closed_sweep_audits: tuple[dict[str, object], ...] = ()
+        if event.kind == EventKind.OPTIONS:
+            sweep_update = self.sweeps.process(event)
+            closed_sweep_audits = sweep_update.closed_audits
+            payload = dict(event.payload)
+            sweep_state = self.sweeps.snapshot()
+            payload.update(sweep_state)
+            if sweep_update.cluster is not None:
+                sweep_audit = sweep_update.audit
+                payload["sweep_cluster_id"] = str(sweep_update.cluster.cluster_id)
+                payload["sweep_cluster_thresholds"] = (
+                    sweep_update.audit.get("thresholds", {}) if sweep_update.audit else {}
+                )
+            if sweep_update.reason is not None:
+                self._pending_sweep_reasons.append(sweep_update.reason)
+            event = event.model_copy(update={"payload": payload})
         self._ingest_order += 1
         event = event.model_copy(
             update={
@@ -180,6 +201,15 @@ class SignalPipeline:
         )
         if not self._enqueue(AuditWrite(event=event)):
             return None
+        if sweep_audit is not None and not self._enqueue(AuditWrite(sweep=sweep_audit)):
+            return None
+        for audit in closed_sweep_audits:
+            if not self._enqueue(AuditWrite(sweep=audit)):
+                return None
+        for audit in self._pending_closed_sweep_audits:
+            if not self._enqueue(AuditWrite(sweep=audit)):
+                return None
+        self._pending_closed_sweep_audits.clear()
         self.metrics.trades_processed += 1
         if not self.synchronizer.add(event):
             self.metrics.out_of_order_events += 1
@@ -215,6 +245,7 @@ class SignalPipeline:
                 "run_id": self.run_id,
                 "triggering_change_reasons": tuple(reasons),
                 "synchronized_state_identity": ",".join(map(str, sorted(snapshot.event_ids))),
+                "sweep_state": self.sweeps.snapshot(),
             }
         )
         self._decision_order += 1
@@ -225,6 +256,7 @@ class SignalPipeline:
         self.decisions.append(decision)
         if any(reason.startswith("session_boundary_") for reason in reasons):
             self._pending_boundary_reasons.clear()
+        self._pending_sweep_reasons.clear()
         self._record_timing(event, processing_time, age_at_receipt_ms, started)
         return decision
 
@@ -251,7 +283,11 @@ class SignalPipeline:
         assert isinstance(snapshot, SynchronizedInput)
         previous = self._last_evaluated.get(snapshot.symbol)
         if previous is None:
-            initial_reasons = ["initial_state", *self._pending_boundary_reasons]
+            initial_reasons = [
+                "initial_state",
+                *self._pending_boundary_reasons,
+                *self._pending_sweep_reasons,
+            ]
             self._last_evaluated[snapshot.symbol] = snapshot
             return initial_reasons
         assert isinstance(previous, SynchronizedInput)
@@ -259,6 +295,8 @@ class SignalPipeline:
         reasons: list[str] = []
         if self._pending_boundary_reasons:
             reasons.extend(self._pending_boundary_reasons)
+        if self._pending_sweep_reasons:
+            reasons.extend(self._pending_sweep_reasons)
         if (
             previous.price is not None
             and snapshot.price is not None
@@ -325,6 +363,39 @@ class SignalPipeline:
         """Timer-driven freshness check, independent of incoming events."""
         now = self.now().astimezone(UTC)
         self._handle_session_transition(now)
+        for audit in self._pending_closed_sweep_audits:
+            if not self._enqueue(AuditWrite(sweep=audit)):
+                return None
+        self._pending_closed_sweep_audits.clear()
+        sweep_update = self.sweeps.tick(now)
+        if sweep_update.reason is not None:
+            self._pending_sweep_reasons.append(sweep_update.reason)
+        if self._pending_sweep_reasons:
+            current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
+            if current is not None:
+                decision = decide([current], self.settings).model_copy(
+                    update={
+                        "run_id": self.run_id,
+                        "decision_id": uuid5(
+                            NAMESPACE_URL,
+                            f"sweep:{self.run_id}:{','.join(self._pending_sweep_reasons)}:{current.event_ids}",
+                        ),
+                        "triggering_change_reasons": tuple(self._pending_sweep_reasons),
+                        "synchronized_state_identity": ",".join(
+                            map(str, sorted(current.event_ids))
+                        ),
+                        "sweep_state": self.sweeps.snapshot(),
+                    }
+                )
+                self._decision_order += 1
+                decision = decision.model_copy(update={"decision_order": self._decision_order})
+                if not self._enqueue(AuditWrite(decision=decision)):
+                    return None
+                self.metrics.evaluations_triggered += 1
+                self.decisions.append(decision)
+                self._pending_sweep_reasons.clear()
+                self._last_evaluated[current.symbol] = current
+                return decision
         if self._pending_boundary_reasons:
             current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
             if current is not None:
@@ -339,6 +410,7 @@ class SignalPipeline:
                         "synchronized_state_identity": ",".join(
                             map(str, sorted(current.event_ids))
                         ),
+                        "sweep_state": self.sweeps.snapshot(),
                     }
                 )
                 self._decision_order += 1
@@ -370,6 +442,7 @@ class SignalPipeline:
                 ),
                 "triggering_change_reasons": ("freshness_window_expiry",),
                 "synchronized_state_identity": ",".join(map(str, sorted(current.event_ids))),
+                "sweep_state": self.sweeps.snapshot(),
             }
         )
         self._decision_order += 1
@@ -390,17 +463,18 @@ class SignalPipeline:
             if token not in self._boundary_tokens_seen:
                 self._boundary_tokens_seen.add(token)
                 self._session_generation += 1
-                self._reset_session_state()
+                self._reset_session_state(local_date)
                 self._pending_boundary_reasons.append("session_boundary_open")
         elif phase == "AFTER_HOURS" and previous == "REGULAR":
             token = (self._last_session_date or local_date, "close")
             if token not in self._boundary_tokens_seen:
                 self._boundary_tokens_seen.add(token)
                 self._pending_boundary_reasons.append("session_boundary_close")
+                self._pending_closed_sweep_audits.extend(self.sweeps.close_session())
         self._last_session_phase = phase
         self._last_session_date = local_date
 
-    def _reset_session_state(self) -> None:
+    def _reset_session_state(self, session_date: str) -> None:
         self._sessions.clear()
         self._equity_volume.clear()
         self._option_volume.clear()
@@ -408,6 +482,8 @@ class SignalPipeline:
         self._net_call_premium.clear()
         self._last_evaluated.clear()
         self._indicator_results.clear()
+        self.sweeps.reset_session(session_date)
+        self._pending_sweep_reasons.clear()
         self.synchronizer.reset_session()
         if self.indicator_calculator is not None:
             self.indicator_calculator.states.clear()
@@ -597,6 +673,15 @@ class SignalPipeline:
                 classification = classify_ask_side(
                     OptionTradeContext(price_decimal, trade_time, identity), quote_context
                 )
+                if classification == "unknown" and quote_context is not None:
+                    quote_age = trade_time.astimezone(UTC) - quote_context.timestamp.astimezone(UTC)
+                    if (
+                        quote_context.bid > 0
+                        and quote_context.ask >= quote_context.bid
+                        and timedelta(0) <= quote_age <= timedelta(milliseconds=500)
+                        and price_decimal <= quote_context.bid
+                    ):
+                        classification = "bid"
                 payload["trade_classification"] = classification
                 premium = price_decimal * Decimal(size) * Decimal(100)
                 if classification == "ask":

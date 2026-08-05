@@ -149,16 +149,9 @@
   ms and processing p50/p95 `0.036/0.090` ms; Theta option trade queue-wait
   p50/p95 `0.049/0.069` ms and processing p50/p95 `0.410/0.954` ms. No
   persistence soft/hard limit activity occurred.
-- The remaining material-trigger blocker is specifically
-  `NEW_QUALIFYING_SWEEP`: no authoritative sweep identity, aggregation
-  window, qualification threshold, or directional rule exists in the
-  repository or owner definitions. Implementing it would invent strategy
-  behavior. ThetaData discovery HTTP 500 remains the separate external
-  provider blocker; no discovery endpoint was retried.
-- Local verification passed with 43 hermetic tests, Ruff, strict mypy, and
-  the existing network prohibition. Recommendation remains `STILL BLOCKED`
-  until the owner supplies the sweep definition and it is independently
-  reviewed. PR #3 remains draft and unmerged; trading is disabled.
+- This earlier note was superseded by the owner-authorized sweep closure
+  below. ThetaData discovery HTTP 500 remains the separate external provider
+  blocker; no discovery endpoint was retried.
 
 ## Throughput correction — 20260805
 
@@ -209,3 +202,28 @@
   indication appeared in the inspected Terminal log window. Multi-second age
   measurements remain reported without clamping; plan-level throttling was not
   established from official documentation or support confirmation.
+
+## Owner-authorized sweep closure — 20260805
+
+- Implemented `NEW_QUALIFYING_SWEEP` in `sweeps.py` exactly to the owner
+  definition: call-only exact contract identity, fixed inclusive 1,000 ms
+  event-time clusters, three valid exchanges, Decimal premium and directional
+  thresholds, separate session thresholds, one-shot qualification transitions,
+  revocation/requalification, 30-minute freshness expiry, and deterministic
+  correction/cancellation handling.
+- PostgreSQL persists stable cluster IDs, constituents, threshold results,
+  state transitions, session totals, freshness timestamps, mapping/engine
+  versions, and provenance. Closed clusters remain auditable; replay inputs
+  retain the resulting sweep state in decisions.
+- Added hermetic coverage for identity/window boundaries, exchange
+  participation, directional and premium boundaries, transition uniqueness,
+  session gate separation, freshness, corrections, uncorrelated corrections,
+  final audit freezing, and freshness expiry for closed clusters. Local
+  verification: 55 tests passed, Ruff
+  format/lint, and strict mypy passed.
+- The bounded live smoke must not claim sweep qualification unless the feed
+  naturally produces one. Dynamic ThetaData discovery remains a separate
+  external HTTP 500 blocker and was not retried. Trading remains disabled;
+  orders remain unconstructed and unsubmitted. PR #3 remains draft and
+  unmerged. Recommendation: `STILL BLOCKED` pending the external discovery
+  provider blocker and independent review of this closure.

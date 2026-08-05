@@ -10,8 +10,9 @@ from .schemas import CanonicalEvent, Decision
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL, indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb);
+CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL, indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb, sweep_state jsonb NOT NULL DEFAULT '{}'::jsonb);
 CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
+CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 """
 
 
@@ -20,6 +21,7 @@ class InMemoryRepository:
         self.events: list[CanonicalEvent] = []
         self.decisions: list[Decision] = []
         self.quote_consumptions: list[QuoteConsumption] = []
+        self.sweeps: list[dict[str, object]] = []
 
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
@@ -35,6 +37,9 @@ class InMemoryRepository:
     def record_quote_consumption(self, consumption: QuoteConsumption) -> None:
         self.quote_consumptions.append(consumption)
 
+    def record_sweep(self, sweep: dict[str, object]) -> None:
+        self.sweeps.append(sweep)
+
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         if run_id is None:
             return tuple(self.quote_consumptions)
@@ -48,6 +53,7 @@ class PostgresRepository:
         self._pending_events: list[CanonicalEvent] = []
         self._pending_decisions: list[Decision] = []
         self._pending_quote_consumptions: list[QuoteConsumption] = []
+        self._pending_sweeps: list[dict[str, object]] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -89,6 +95,9 @@ class PostgresRepository:
         connection.execute(
             "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb"
         )
+        connection.execute(
+            "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS sweep_state jsonb NOT NULL DEFAULT '{}'::jsonb"
+        )
         for statement in (
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'options'",
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS symbol text NOT NULL DEFAULT ''",
@@ -107,6 +116,7 @@ class PostgresRepository:
             not self._pending_events
             and not self._pending_decisions
             and not self._pending_quote_consumptions
+            and not self._pending_sweeps
         ):
             return
         connection = self._session()
@@ -147,13 +157,19 @@ class PostgresRepository:
         if self._pending_decisions:
             with connection.cursor() as cursor:
                 cursor.executemany(
-                    "INSERT INTO decisions (decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters,indicator_provenance) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    "INSERT INTO decisions (decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters,indicator_provenance,sweep_state) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                     [self._decision_parameters(decision) for decision in self._pending_decisions],
                 )
             self._pending_decisions.clear()
         for consumption in self._pending_quote_consumptions:
             self._record_quote_consumption_now(connection, consumption)
         self._pending_quote_consumptions.clear()
+        for sweep in self._pending_sweeps:
+            connection.execute(
+                "INSERT INTO sweep_clusters (run_id,cluster_id,payload) VALUES (%s,%s,%s) ON CONFLICT (run_id,cluster_id) DO UPDATE SET payload=EXCLUDED.payload",
+                (sweep["run_id"], sweep["cluster_id"], json.dumps(sweep, default=str)),
+            )
+        self._pending_sweeps.clear()
 
     @staticmethod
     def _decision_parameters(decision: Decision) -> tuple[object, ...]:
@@ -174,6 +190,7 @@ class PostgresRepository:
             decision.synchronized_state_identity,
             json.dumps(decision.counters.model_dump()),
             json.dumps(decision.indicator_provenance),
+            json.dumps(decision.sweep_state),
         )
 
     def record_decision(self, decision: Decision) -> None:
@@ -184,6 +201,11 @@ class PostgresRepository:
     def record_quote_consumption(self, consumption: QuoteConsumption) -> None:
         self._pending_quote_consumptions.append(consumption)
         if len(self._pending_quote_consumptions) >= 1000:
+            self.flush()
+
+    def record_sweep(self, sweep: dict[str, object]) -> None:
+        self._pending_sweeps.append(sweep)
+        if len(self._pending_sweeps) >= 100:
             self.flush()
 
     def _record_quote_consumption_now(self, connection: Any, consumption: QuoteConsumption) -> None:
@@ -292,7 +314,7 @@ class PostgresRepository:
     def replay_decisions(self, run_id: UUID | None = None) -> tuple[Decision, ...]:
         """Read decisions as typed models for field-by-field replay comparison."""
         self.flush()
-        query = "SELECT decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters,indicator_provenance FROM decisions"
+        query = "SELECT decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters,indicator_provenance,sweep_state FROM decisions"
         params: tuple[UUID, ...] = ()
         if run_id is not None:
             query += " WHERE run_id = %s"
@@ -317,6 +339,7 @@ class PostgresRepository:
                 synchronized_state_identity=row[13],
                 counters=row[14],
                 indicator_provenance=row[15],
+                sweep_state=row[16],
             )
             for row in rows
         )
