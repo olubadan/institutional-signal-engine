@@ -40,11 +40,9 @@
   adapters implemented. Runtime loading is data-only; required provider fields are present in the protected
   runtime file; values were never displayed. Alpaca feed-name parsing is fixed and
   regression-tested. The official Theta Terminal runtime is active with both
-  ports loopback-only. Alpaca authenticated and delivered 7,500 events in the
-  final bounded smoke. ThetaData authenticated and acknowledged the bulk stream,
-  but delivered no events: the terminal reports Options Standard while the bulk
-  stream requires Options Pro. A contract-list HTTP 500 prevented a targeted
-  Standard-stream probe during the regular session.
+  ports loopback-only. Options Standard exact-contract trade streaming is now
+  implemented for the supplied AAPL contract; the subscription acknowledgement
+  was verified with request ID 1. Discovery helpers remain HTTP 500.
 - **Test state:** Phase 1 structural checks remain passed. Phase 2 `make setup`
   passed twice; `make lint`, `make typecheck`, `make build`, and `make test` passed
   on Vast. Verification covered resources, tool versions, root-only environment
@@ -62,14 +60,13 @@
   trading only; no merge or paid Vast provisioning without explicit approval;
   use owner-created instance `46725769` with the ADR-0001 Ubuntu 22.04 and finite-
   duration exception.
-- **Pending approvals:** Owner decision on ThetaData Options Pro entitlement versus
-  an exact-contract Options Standard follow-up; private-repository branch
-  protection remains pending.
-- **Known blockers:** ThetaData MDDS reports CONNECTED, but the exact documented
-  AAPL trade contract-list URL with `/v3`, `trade`, `YYYYMMDD`, and `format=json`
-  still returns Jetty HTTP 500. No Standard exact-contract stream can be selected
-  or validated until ThetaData repairs/explains this endpoint. No synchronized
-  option input or ranked signal formed. GitHub branch
+- **Pending approvals:** Next regular-session exact-contract smoke; private-
+  repository branch protection remains pending.
+- **Known blockers:** ThetaData MDDS reports CONNECTED and the supplied Standard
+  exact-contract stream acknowledges successfully, but the documented AAPL
+  contract-list, expirations, and strikes helpers return Jetty HTTP 500. The
+  supplied contract is used for validation; the next regular-session smoke is
+  pending. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
 - **Next action:** Owner confirms Options Pro access or authorizes an
   exact-contract Options Standard follow-up after the contract-list endpoint is

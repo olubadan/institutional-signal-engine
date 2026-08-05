@@ -10,13 +10,9 @@ anything.
 
 The final SESSION-0009 smoke authenticated Alpaca and received 7,500 events.
 Theta Terminal authenticated and acknowledged the stream request, but produced
-zero events because the account reported Options Standard while the requested
-bulk option-trade stream requires Options Pro. Contract discovery also returned
-HTTP 500 during the regular session.
-
-Ask the owner to choose one path: confirm/enable Options Pro for the existing
-bulk adapter, or authorize a focused follow-up that implements exact-contract
-Options Standard subscriptions after ThetaData contract discovery is healthy.
+the supplied AAPL Options Standard exact-contract trade subscription was
+acknowledged, while contract discovery helpers still return HTTP 500. Run the
+bounded 60-second smoke after 9:30 AM ET using the supplied contract.
 Do not infer or purchase a subscription. Keep `TRADING_ENABLED=false`; do not
 construct or submit orders, expose ports, reveal credentials, merge PR #3, or
 begin execution work.
