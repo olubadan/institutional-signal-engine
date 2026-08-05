@@ -81,5 +81,24 @@
   with field-by-field equality. This proof applies to this corrected run under
   its recorded engine, configuration and condition-mapping versions; it does
   not claim that every historical run is replayable.
-- **Next action:** Run VM/database/CI verification on the pushed SESSION-0010
-  head, update PR #3 with sanitized evidence, and keep it draft and unmerged.
+- **Next action:** Obtain independent review of PR #3. Keep it draft and
+  unmerged; dynamic ThetaData discovery remains the only provider blocker.
+
+## Closure-pass publication — 20260805T1615Z
+
+- Closure commit `ddfa96adfe60e7251805cad5880bb0c635e57097` is pushed to the
+  feature branch. GitHub Actions CI passed at
+  `https://github.com/olubadan/institutional-signal-engine/actions/runs/31023522485`.
+- Final 60-second run ID `14a4ab65-3c3b-449a-aa49-d6eaf30dd352`: Alpaca 15,845
+  events; ThetaData 38 option events; acknowledgements and authentication
+  succeeded; synchronized evaluations 15,058; stale 0, late 0, duplicate
+  345, out-of-order 153, unknown conditions 8; counters 1/0/0/0; orders 0/0.
+- Run-scoped PostgreSQL contained 15,385 accepted events and 15,058 decisions.
+  Replay produced 15,058 decisions with field-by-field equality under mapping
+  `thetadata-trade-conditions-v3-20260805`.
+- Timing distributions are provider/event-kind specific and preserve raw event
+  age at receipt and processing duration. VM clock synchronization was yes,
+  system timezone UTC, Terminal status CONNECTED, and no reconnect/buffering
+  indication appeared in the inspected Terminal log window. Multi-second age
+  measurements remain reported without clamping; plan-level throttling was not
+  established from official documentation or support confirmation.
