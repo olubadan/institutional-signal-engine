@@ -84,6 +84,46 @@
 - **Next action:** Obtain independent review of PR #3. Keep it draft and
   unmerged; dynamic ThetaData discovery remains the only provider blocker.
 
+## Final engineering review — 20260805
+
+- Implementation head `b991f95091fee78397adfadf4125dda4671f2094` is pushed on
+  `feat/signal-only-vertical-slice`. The review found and corrected one
+  auditability defect: a single quote may classify multiple trades, so each
+  distinct trade now receives its own deterministic consumed-quote audit row;
+  the unique quote counter remains incremented once. Regression coverage was
+  added.
+- Quote counters are defined as follows: `quotes_received` counts every
+  parsed quote message; `current_state_overwrites` counts slot replacement
+  operations and is intentionally overlapping; `quotes_consumed` counts
+  unique quote identities audited at least once; and
+  `quotes_pending_at_shutdown` counts unique latest-slot identities not
+  consumed. The lifecycle invariant is
+  `quotes_consumed + quotes_pending_at_shutdown <= quotes_received`.
+- Final checks passed locally: Ruff format, Ruff lint, strict mypy, and 35
+  hermetic tests. The test harness rejects AF_INET/AF_INET6 sockets for all
+  tests; no tests are marked for live integration. GitHub Actions passed on
+  the final head at
+  `https://github.com/olubadan/institutional-signal-engine/actions/runs/31028561845`.
+- Review evidence confirms the prior run processed and retained all accepted
+  trades (`115/115`), persisted 115 trade events, and replayed persisted
+  decisions with field-by-field equality. Trading stayed disabled and orders
+  constructed/submitted remained `0/0`.
+- Remaining blockers: `IndicatorCalculator` contains the stateful formulas,
+  but the live pipeline does not wire provider historical baselines and
+  calculated RVOL/VWAP/relative-strength values into synchronized decisions;
+  Alpaca normalization still marks these as requiring calculation
+  (`src/institutional_signal_engine/providers/alpaca.py:104`). Also,
+  `_material_change_reasons()` does not implement the required new-sweep or
+  session-boundary triggers (`src/institutional_signal_engine/pipeline.py:216`).
+  These require authoritative strategy wiring/definitions and were not
+  guessed during review. Dynamic ThetaData discovery remains fixture-tested
+  but not live-verified because the documented discovery helpers return HTTP
+  500; the supplied exact-contract stream remains live-verified.
+- Recommendation: STILL BLOCKED for owner review/merge until the live
+  indicator wiring and missing material-change triggers are resolved and
+  independently reviewed. PR #3 remains draft and unmerged; Phase 4 has not
+  begun.
+
 ## Throughput correction — 20260805
 
 - Session-0011 implements O(1) latest-value quote slots, bounded event-time
