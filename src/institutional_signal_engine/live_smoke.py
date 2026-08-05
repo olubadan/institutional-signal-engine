@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from .config import Settings
 from .persistence import InMemoryRepository, PostgresRepository
+from .persistence_async import AsyncAuditWriter
 from .pipeline import EventTiming, SignalPipeline
 from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
@@ -61,6 +62,8 @@ def _distribution(timings: Iterable[EventTiming]) -> dict[str, object]:
     values = list(timings)
     ages = [timing.event_age_at_receipt_ms for timing in values]
     processing = [timing.processing_duration_ms for timing in values]
+    queue_wait = [timing.internal_queue_wait_ms or 0.0 for timing in values]
+    total_age = [timing.total_age_at_completion_ms or 0.0 for timing in values]
 
     def stats(sample: list[float]) -> dict[str, object]:
         return {
@@ -75,6 +78,8 @@ def _distribution(timings: Iterable[EventTiming]) -> dict[str, object]:
     return {
         "event_age_at_receipt_ms": stats(ages),
         "processing_duration_ms": stats(processing),
+        "internal_queue_wait_ms": stats(queue_wait),
+        "total_age_at_completion_ms": stats(total_age),
         "timestamp_conversions": {
             "precision_converted": sum(t.precision_conversion_required for t in values),
             "timezone_converted": sum(t.timezone_conversion_required for t in values),
@@ -109,7 +114,15 @@ async def run(seconds: float) -> dict[str, object]:
     )
     if isinstance(repository, PostgresRepository):
         repository.initialize()
-    pipeline = SignalPipeline(settings, repository=repository)
+    writer = AsyncAuditWriter(
+        repository,
+        soft_limit=settings.persistence_soft_limit,
+        hard_limit=settings.persistence_hard_limit,
+        batch_size=settings.persistence_batch_size,
+        flush_interval=float(settings.persistence_flush_interval),
+    )
+    writer.start()
+    pipeline = SignalPipeline(settings, repository=repository, writer=writer)
 
     def process(event: CanonicalEvent) -> None:
         if event.symbol == "SPY":
@@ -117,13 +130,14 @@ async def run(seconds: float) -> dict[str, object]:
         elif event.symbol == "XLK":
             event = _as_market_input(event, EventKind.SECTOR_INDEX)
         pipeline.process(event)
+        if pipeline.incomplete_run:
+            raise RuntimeError("persistence_backpressure_failure")
 
     (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
         _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds, process),
         _collect(theta, ["AAPL"], seconds, process),
     )
-    if isinstance(repository, PostgresRepository):
-        repository.flush()
+    await writer.close()
     decision = pipeline.decisions[-1] if pipeline.decisions else None
     all_events = equities + options
     timings = pipeline.metrics.timings or []
@@ -177,8 +191,22 @@ async def run(seconds: float) -> dict[str, object]:
         "provider_stream_status": {"thetadata": theta.stream_status},
         "feed_health": {"alpaca": alpaca_health, "thetadata": theta_health},
         "received_event_counts": dict(Counter(event.source for event in all_events)),
+        "received_event_counts_by_kind": dict(
+            Counter(
+                f"{event.source}:{event.payload.get('provider_event_kind', event.kind.value)}"
+                for event in all_events
+            )
+        ),
         "alpaca_event_count": len(equities),
         "theta_option_event_count": len(options),
+        "trades_received": pipeline.metrics.trades_received,
+        "trades_processed": pipeline.metrics.trades_processed,
+        "quotes_received": pipeline.quote_book.metrics.quotes_received,
+        "quotes_superseded": pipeline.quote_book.metrics.quotes_superseded,
+        "quotes_consumed": pipeline.quote_book.metrics.quotes_consumed,
+        "evaluations_triggered": pipeline.metrics.evaluations_triggered,
+        "evaluations_skipped": pipeline.metrics.evaluations_skipped,
+        "evaluation_skip_reasons": pipeline.metrics.skip_reasons or {},
         "synchronized_input_count": synchronized_input_count,
         "timing_distributions": {
             name: _distribution(group) for name, group in timing_groups.items()
@@ -188,6 +216,32 @@ async def run(seconds: float) -> dict[str, object]:
         "out_of_order_events": pipeline.metrics.out_of_order_events,
         "duplicate_events": pipeline.metrics.duplicate_events,
         "unknown_condition_events": pipeline.metrics.unknown_condition_events,
+        "persistence_queue": {
+            "depth_sample_count": len(writer.metrics.queue_depth_samples),
+            "depth_p50": _percentile([float(v) for v in writer.metrics.queue_depth_samples], 0.50),
+            "depth_p95": _percentile([float(v) for v in writer.metrics.queue_depth_samples], 0.95),
+            "depth_maximum": max(writer.metrics.queue_depth_samples, default=0),
+            "batch_sizes": writer.metrics.batch_sizes,
+            "database_write_latency_ms": _distribution(
+                [
+                    EventTiming(
+                        "persistence",
+                        "write",
+                        pipeline.now(),
+                        pipeline.now(),
+                        pipeline.now(),
+                        0,
+                        value,
+                        False,
+                        False,
+                    )
+                    for value in writer.metrics.database_write_latency_ms
+                ]
+            )["processing_duration_ms"],
+            "soft_limit_crossings": writer.metrics.soft_limit_crossings,
+            "hard_limit_failures": writer.metrics.hard_limit_failures,
+            "time_above_soft_limit_seconds": writer.metrics.time_above_soft_limit,
+        },
         "rejection_reasons": reasons,
         "candidates_evaluated": decision.counters.candidates_evaluated if decision else 0,
         "candidates_passing_S": decision.counters.candidates_passing_S if decision else 0,

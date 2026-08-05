@@ -64,6 +64,8 @@ class SynchronizedInput(BaseModel):
     event_ids: tuple[UUID, ...]
     indicator_reasons: tuple[str, ...] = ()
     provenance: dict[str, str] = Field(default_factory=dict)
+    ask_side_percentage: Decimal | None = None
+    quote_validity: str | None = None
 
     _utc_as_of = field_validator("as_of")(utc)
     _utc_first = field_validator("first_signal_at")(lambda v: utc(v) if v else v)
@@ -110,6 +112,8 @@ class Decision(BaseModel):
     config_version: str
     engine_version: str
     condition_mapping_version: str = CONDITION_MAPPING_VERSION
+    triggering_change_reasons: tuple[str, ...] = ()
+    synchronized_state_identity: str = ""
     counters: CandidateCounters = CandidateCounters(
         candidates_evaluated=0,
         candidates_passing_S=0,

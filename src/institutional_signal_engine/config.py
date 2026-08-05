@@ -50,6 +50,11 @@ class Settings(BaseModel):
     database_url: str | None = None
     thresholds: Thresholds = Thresholds()
     capacity: int = Field(default=1, ge=0)
+    allowed_lateness_seconds: int = Field(default=5, ge=0)
+    persistence_soft_limit: int = Field(default=10_000, gt=0)
+    persistence_hard_limit: int = Field(default=20_000, gt=0)
+    persistence_batch_size: int = Field(default=100, gt=0)
+    persistence_flush_interval: Decimal = Field(default=Decimal("0.05"), gt=0)
     config_version: str = "phase3-v1"
     engine_version: str = "0.1.0"
 
@@ -81,6 +86,11 @@ class Settings(BaseModel):
             ),
             database_url=values.get("DATABASE_URL"),
             capacity=int(values.get("CAPACITY", "1")),
+            allowed_lateness_seconds=int(values.get("ALLOWED_LATENESS_SECONDS", "5")),
+            persistence_soft_limit=int(values.get("PERSISTENCE_SOFT_LIMIT", "10000")),
+            persistence_hard_limit=int(values.get("PERSISTENCE_HARD_LIMIT", "20000")),
+            persistence_batch_size=int(values.get("PERSISTENCE_BATCH_SIZE", "100")),
+            persistence_flush_interval=Decimal(values.get("PERSISTENCE_FLUSH_INTERVAL", "0.05")),
         )
 
     @classmethod

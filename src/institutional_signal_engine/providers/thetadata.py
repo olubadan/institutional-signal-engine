@@ -185,6 +185,19 @@ class ThetaDataOptionsProvider:
         sequence = int(data.get("sequence", data.get("ms_of_day", 0))) & 0xFFFFFFFF
         size = int(data.get("size", 0))
         price = Decimal(str(data.get("price", 0)))
+        bid = data.get("bid")
+        ask = data.get("ask")
+        quote_validity = (
+            "VALID"
+            if message["header"]["type"] == "QUOTE"
+            and bid is not None
+            and ask is not None
+            and Decimal(str(bid)) > 0
+            and Decimal(str(ask)) >= Decimal(str(bid))
+            else "INVALID"
+            if message["header"]["type"] == "QUOTE"
+            else None
+        )
         payload = {
             "provider_event_kind": "trade" if message["header"]["type"] == "TRADE" else "quote",
             "timestamp_conversion": {
@@ -196,6 +209,7 @@ class ThetaDataOptionsProvider:
             "condition_code": data.get("condition_code", data.get("condition")),
             "raw_exchange_condition": data.get("condition"),
             "quote_context": {"bid": data.get("bid"), "ask": data.get("ask")},
+            "quote_validity": quote_validity,
             "contract": {
                 "root": symbol,
                 "expiration": contract.get("expiration"),

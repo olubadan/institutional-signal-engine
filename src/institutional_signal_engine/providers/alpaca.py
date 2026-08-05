@@ -77,6 +77,17 @@ class AlpacaEquitiesProvider:
             return None
         ask = message.get("ap")
         bid = message.get("bp")
+        quote_validity = (
+            "VALID"
+            if kind == "q"
+            and bid is not None
+            and ask is not None
+            and float(bid) > 0
+            and float(ask) >= float(bid)
+            else "INVALID"
+            if kind == "q"
+            else None
+        )
         payload = {
             "provider_event_kind": "trade" if kind == "t" else "quote",
             "timestamp_conversion": {
@@ -89,6 +100,7 @@ class AlpacaEquitiesProvider:
             "conditions": tuple(message.get("c", [])),
             "exchange": message.get("x"),
             "quote_context": {"bid": bid, "ask": ask},
+            "quote_validity": quote_validity,
             "feature_reasons": ("requires_historical_baseline", "requires_stateful_calculation"),
         }
         return CanonicalEvent(

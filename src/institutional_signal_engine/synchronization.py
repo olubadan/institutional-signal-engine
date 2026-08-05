@@ -30,7 +30,7 @@ class Synchronizer:
         return False
 
     def snapshot(
-        self, symbol: str, as_of: datetime, positions: int = 0
+        self, symbol: str, as_of: datetime, positions: int = 0, allow_stale: bool = False
     ) -> SynchronizedInput | None:
         as_of = as_of.astimezone(UTC)
         required = {kind: self._events.get((symbol, kind)) for kind in EventKind}
@@ -38,7 +38,9 @@ class Synchronizer:
             return None
         events = tuple(event for event in required.values() if event is not None)
         assert len(events) == len(EventKind)
-        if any(as_of - event.normalized_timestamp > self.max_staleness for event in events):
+        if not allow_stale and any(
+            as_of - event.normalized_timestamp > self.max_staleness for event in events
+        ):
             return None
         equity = next(event for event in events if event.kind == EventKind.EQUITY).payload
         options = next(event for event in events if event.kind == EventKind.OPTIONS).payload
@@ -62,6 +64,8 @@ class Synchronizer:
             first_signal_at=equity.get("first_signal_at"),
             concurrent_positions=positions,
             event_ids=tuple(event.event_id for event in events),
+            ask_side_percentage=options.get("ask_side_percentage"),
+            quote_validity=options.get("quote_validity"),
             indicator_reasons=tuple(
                 sorted(
                     set(
