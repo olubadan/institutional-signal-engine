@@ -9,7 +9,7 @@ from .schemas import CanonicalEvent, Decision
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, counters jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, counters jsonb NOT NULL);
 """
 
 
@@ -64,6 +64,9 @@ class PostgresRepository:
         connection.execute(
             "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS decision_order bigint NOT NULL DEFAULT 0"
         )
+        connection.execute(
+            "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS condition_mapping_version text NOT NULL DEFAULT 'legacy-unknown'"
+        )
 
     def record_event(self, event: CanonicalEvent) -> None:
         self._pending_events.append(event)
@@ -110,7 +113,7 @@ class PostgresRepository:
 
     def record_decision(self, decision: Decision) -> None:
         self._session().execute(
-            "INSERT INTO decisions (decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,counters) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            "INSERT INTO decisions (decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,counters) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
             (
                 decision.decision_id,
                 decision.run_id,
@@ -125,6 +128,7 @@ class PostgresRepository:
                 json.dumps([str(value) for value in decision.input_event_ids]),
                 decision.config_version,
                 decision.engine_version,
+                decision.condition_mapping_version,
                 json.dumps(decision.counters.model_dump()),
             ),
         )
@@ -182,7 +186,7 @@ class PostgresRepository:
     def replay_decisions(self, run_id: UUID | None = None) -> tuple[Decision, ...]:
         """Read decisions as typed models for field-by-field replay comparison."""
         self.flush()
-        query = "SELECT decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,counters FROM decisions"
+        query = "SELECT decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,counters FROM decisions"
         params: tuple[UUID, ...] = ()
         if run_id is not None:
             query += " WHERE run_id = %s"
@@ -202,7 +206,8 @@ class PostgresRepository:
                 input_event_ids=tuple(row[8]),
                 config_version=row[9],
                 engine_version=row[10],
-                counters=row[11],
+                condition_mapping_version=row[11],
+                counters=row[12],
             )
             for row in rows
         )

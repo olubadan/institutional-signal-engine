@@ -8,6 +8,8 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .thetadata_conditions import CONDITION_MAPPING_VERSION
+
 
 def utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -107,6 +109,7 @@ class Decision(BaseModel):
     input_event_ids: tuple[UUID, ...]
     config_version: str
     engine_version: str
+    condition_mapping_version: str = CONDITION_MAPPING_VERSION
     counters: CandidateCounters = CandidateCounters(
         candidates_evaluated=0,
         candidates_passing_S=0,
