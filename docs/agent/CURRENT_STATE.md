@@ -289,5 +289,8 @@
   recent constituent timestamp plus 30 minutes, retaining just-before and
   just-after coverage. The pipeline timer persists and replay reproduces the
   expiry decision field by field.
-- Local verification passed: Ruff format/lint, strict mypy on `src`, and 70
-  hermetic tests. PR #3 remains draft and unmerged; trading remains disabled.
+- Focused implementation commit `5989744bd8caa0c3e5150927cd93d2f36cd928eb`
+  is pushed. Local verification passed: Ruff format/lint, strict mypy on
+  `src`, and 70 hermetic tests. GitHub Actions push run `31040159885` and PR
+  run `31040159733` passed on that exact head. PR #3 remains draft and
+  unmerged; trading remains disabled.
