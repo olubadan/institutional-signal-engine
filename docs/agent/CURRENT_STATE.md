@@ -17,8 +17,7 @@
   session closure is the journal-close commit containing this snapshot.
 - **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
   [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
-  draft, cleanly mergeable, and unmerged at
-  The branch is receiving the SESSION-0010 implementation correction pass.
+  draft, cleanly mergeable, and unmerged at the SESSION-0010 correction head.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
   correlated Standard exact-contract requests, dynamic-universe selection ports,
@@ -43,9 +42,9 @@
   runtime file; values were never displayed. Alpaca feed-name parsing is fixed and
   regression-tested. The official Theta Terminal runtime is active with both
   ports loopback-only. Options Standard exact-contract trade streaming is now
-  implemented for the supplied AAPL contract; the subscription acknowledgement
-  was verified with request ID 1. The 2026-08-05 regular-session smoke received
-  80 option trades and 45,184 Alpaca events, with one synchronized input.
+  implemented for the supplied AAPL contract. The corrected 2026-08-05
+  regular-session smoke received 78 option trades and 18,182 Alpaca events;
+  Terminal connected but did not emit a request-correlated acknowledgement.
 - **Test state:** Phase 1 structural checks remain passed. Phase 2 `make setup`
   passed twice; `make lint`, `make typecheck`, `make build`, and `make test` passed
   on Vast. Verification covered resources, tool versions, root-only environment
@@ -64,8 +63,9 @@
   trading only; no merge or paid Vast provisioning without explicit approval;
   use owner-created instance `46725769` with the ADR-0001 Ubuntu 22.04 and finite-
   duration exception.
-- **Pending approvals:** Next regular-session exact-contract smoke; private-
-  repository branch protection remains pending.
+- **Pending approvals:** Owner review of the explicit specification and
+  provider-acknowledgement blockers; private-repository branch protection
+  remains pending.
 - **Known blockers:** ThetaData MDDS reports CONNECTED and the supplied Standard
   exact-contract stream acknowledges successfully, but the documented AAPL
   contract-list, expirations, and strikes helpers return Jetty HTTP 500. The
@@ -74,5 +74,7 @@
   ask-side classification, or five-day resistance/high formula; implementation
   fails closed with explicit reasons at those missing inputs. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
+  Historical PostgreSQL rows span old and new decision identities, so full
+  field-by-field replay equality is not claimed yet.
 - **Next action:** Run VM/database/CI verification on the pushed SESSION-0010
   head, update PR #3 with sanitized evidence, and keep it draft and unmerged.
