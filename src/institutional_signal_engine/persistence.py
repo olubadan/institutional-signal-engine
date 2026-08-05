@@ -60,7 +60,7 @@ class PostgresRepository:
     def flush(self) -> None:
         if not self._pending_events:
             return
-        self._session().executemany(
+        self._session().cursor().executemany(
             "INSERT INTO canonical_events VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
             [
                 (
