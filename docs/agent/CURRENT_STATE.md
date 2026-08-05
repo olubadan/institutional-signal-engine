@@ -227,3 +227,25 @@
   orders remain unconstructed and unsubmitted. PR #3 remains draft and
   unmerged. Recommendation: `STILL BLOCKED` pending the external discovery
   provider blocker and independent review of this closure.
+
+## Sweep live verification — 20260805
+
+- Run `9b88bcab-d37b-4e2e-b047-35fd1e402c02` ran during regular hours with
+  historical bootstrap success for AAPL/SPY/XLK, Alpaca authentication
+  success, ThetaData authentication and exact-contract acknowledgement
+  success, and the supplied AAPL 2026-08-07 $310 call only. No
+  `STREAM_BULK` was used and no qualifying sweep naturally occurred.
+- Sanitized counts: Alpaca 9,222 events; ThetaData 44 option events; trades
+  received/processed 98/98; stale/late/duplicate/out-of-order 0/0/0/0;
+  evaluations triggered/skipped 9/82; candidates evaluated/passing S/passing
+  S+F+R/executable `1/0/0/0`; orders constructed/submitted `0/0`.
+- Quote lifecycle counters were received 9,168, current-state overwrites
+  9,166, consumed 90, pending at shutdown 1; overwrite operations are not a
+  lifecycle bucket and `consumed + pending <= received` holds. Unknown
+  conditions: 15. Provider and processing distributions were emitted
+  separately; internal queue-wait p50/p95 was below 0.1/0.2 ms and processing
+  p95 was below 0.1 ms for Alpaca quotes and 1.2 ms for Alpaca trades.
+- Run-scoped PostgreSQL contained 98 events, 102 consumed-quote records, 9
+  decisions, and 5 sweep audit rows. Replay produced 9 decisions with
+  field-by-field equality. Dynamic discovery remains an external HTTP 500
+  blocker and was not retried.
