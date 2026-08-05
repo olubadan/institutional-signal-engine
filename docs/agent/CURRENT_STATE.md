@@ -92,8 +92,14 @@
   audit writes, explicit soft/hard backpressure, and deterministic consumed-
   quote replay.
 - Final 60-second run ID `b9e0f47a-a16d-422f-b389-0386d66634ef`: 10,483 total
-  events (`10,376` quotes and `115` trades); quotes received/superseded/
-  consumed `10,376/10,374/91`; trades received/processed `115/115`;
+  events (`10,376` quotes and `115` trades); quotes received/current-state
+  overwrites/consumed were `10,376/10,374/91`; pending-at-shutdown is reported
+  separately by the corrected smoke path;
+  trades received/processed `115/115`;
+  Current-state overwrites are slot-replacement operations and intentionally
+  overlap with consumed/pending quote identities; they are not a lifecycle
+  bucket. The lifecycle invariant is `quotes_consumed +
+  quotes_pending_at_shutdown <= quotes_received`.
   evaluations triggered/skipped `5/101`; stale/late/duplicate/out-of-order
   `0/0/0/0`; unknown conditions `5`; candidate counters `1/0/0/0`.
 - Internal targets passed. Internal queue-wait p50/p95 was below 0.1/0.2 ms
@@ -109,7 +115,9 @@
 
 ## Closure-pass publication — 20260805T1615Z
 
-- Closure commit `ddfa96adfe60e7251805cad5880bb0c635e57097` is pushed to the
+- Implementation head `07587abfe348a95b7625dca92f999e25b4068361`, documentation
+  closure commit `12d435cc78a5fb17870ef67672af129823177b5a`, and journal record
+  correction commit `0421fca66150ca27ba962d8be5594353d3a5de4b` are pushed to the
   feature branch. GitHub Actions CI passed at
   `https://github.com/olubadan/institutional-signal-engine/actions/runs/31023522485`.
 - Final 60-second run ID `14a4ab65-3c3b-449a-aa49-d6eaf30dd352`: Alpaca 15,845

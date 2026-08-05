@@ -65,7 +65,25 @@ def test_quote_slots_overwrite_and_instruments_are_independent():
     assert book.latest(spy) == spy
     assert book.latest(option_a) == option_a
     assert book.latest(option_b) == option_b
-    assert (book.metrics.quotes_received, book.metrics.quotes_superseded) == (5, 1)
+    assert (book.metrics.quotes_received, book.metrics.current_state_overwrites) == (5, 1)
+    assert book.metrics.quotes_consumed == 0
+    assert book.quotes_pending_at_shutdown == 4
+    assert (
+        book.metrics.quotes_consumed + book.quotes_pending_at_shutdown
+        <= book.metrics.quotes_received
+    )
+
+    consumed_old = book.consume(aapl)
+    newer_again = newer_aapl.model_copy(update={"event_id": uuid4(), "sequence": 3})
+    book.receive(newer_again)
+    assert consumed_old.quote_event_id == aapl.event_id
+    assert book.metrics.current_state_overwrites == 2
+    assert book.metrics.quotes_consumed == 1
+    assert book.quotes_pending_at_shutdown == 4
+    assert (
+        book.metrics.quotes_consumed + book.quotes_pending_at_shutdown
+        <= book.metrics.quotes_received
+    )
 
 
 def test_trade_uses_newest_quote_at_or_before_and_expires_old_quotes():

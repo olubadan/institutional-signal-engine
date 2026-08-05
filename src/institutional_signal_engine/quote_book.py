@@ -26,7 +26,7 @@ class QuoteConsumption:
 @dataclass
 class QuoteBookMetrics:
     quotes_received: int = 0
-    quotes_superseded: int = 0
+    current_state_overwrites: int = 0
     quotes_consumed: int = 0
 
 
@@ -66,7 +66,7 @@ class QuoteBook:
         key = self.key(quote)
         self.metrics.quotes_received += 1
         if key in self._latest:
-            self.metrics.quotes_superseded += 1
+            self.metrics.current_state_overwrites += 1
         self._latest[key] = quote
         window = self._windows.setdefault(key, deque())
         window.append(quote)
@@ -137,3 +137,8 @@ class QuoteBook:
 
     def snapshot(self) -> dict[QuoteKey, CanonicalEvent]:
         return dict(self._latest)
+
+    @property
+    def quotes_pending_at_shutdown(self) -> int:
+        consumed_ids = set(self._consumed)
+        return sum(quote.event_id not in consumed_ids for quote in self._latest.values())
