@@ -209,7 +209,7 @@
   participation, directional and premium boundaries, transition uniqueness,
   session gate separation, freshness, corrections, uncorrelated corrections,
   final audit freezing, and freshness expiry for closed clusters. Local
-  verification: 68 tests passed, Ruff
+  verification: 69 tests passed, Ruff
   format/lint, and strict mypy passed.
 - The bounded live smoke must not claim sweep qualification unless the feed
   naturally produces one. Dynamic ThetaData discovery remains a separate
@@ -239,7 +239,7 @@
   validity, 65%/64.99% ask share, exact expiry, session reset, corrections,
   out-of-order events, ordered transition history, nonqualifying audits,
   synchronous/asynchronous writes, timer replay, and pipeline F re-evaluation.
-  Local verification: 68 tests passed, Ruff format/lint, and strict mypy.
+  Local verification: 69 tests passed, Ruff format/lint, and strict mypy.
 
 ## Sweep live verification — 20260805
 
@@ -262,3 +262,19 @@
   decisions, and 5 sweep audit rows. Replay produced 9 decisions with
   field-by-field equality. Dynamic discovery remains an external HTTP 500
   blocker and was not retried.
+
+## Sweep review correction live verification — 20260805
+
+- Corrected-head run `fe7fe601-bbf2-4f4b-b0d7-619e3e62c7ca` ran during regular
+  hours at implementation head `fe2cd46c9979ec352397d1dab96b5b459035a1b9`.
+  Historical bootstrap, provider authentication, exact-contract
+  acknowledgement, and MDDS connectivity succeeded; `STREAM_BULK` was not
+  used. No natural qualifying sweep occurred.
+- Alpaca/ThetaData events were `7,028/96`; trades received/processed `152/152`;
+  stale/late/duplicate/out-of-order `0/0/0/0`; evaluations triggered/skipped
+  `26/109`; candidate counters `1/0/0/0`; unknown conditions `22`; orders
+  constructed/submitted `0/0`.
+- PostgreSQL contained 152 events, 170 consumed-quote records, 26 decisions,
+  12 sweep projections, and 11 immutable transitions. No timer event was
+  generated because no qualifying sweep occurred. Replay produced 26
+  decisions with field-by-field equality. CI and all local checks passed.
