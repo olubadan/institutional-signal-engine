@@ -49,7 +49,16 @@ class ThetaContract:
         }
 
 
-DEFAULT_AAPL_CONTRACT = ThetaContract("AAPL", 20260807, 310000, "C")
+SMOKE_AAPL_CONTRACT = ThetaContract("AAPL", 20260807, 310000, "C")
+
+
+@dataclass(frozen=True)
+class SubscriptionRequest:
+    request_id: int
+    contract: ThetaContract
+    req_type: str
+    add: bool
+    generation: int
 
 
 class ThetaDataOptionsProvider:
@@ -65,13 +74,16 @@ class ThetaDataOptionsProvider:
         events_url: str,
         api_key: str,
         timeout: float = 10.0,
-        contracts: Iterable[ThetaContract] = (DEFAULT_AAPL_CONTRACT,),
+        contracts: Iterable[ThetaContract] = (),
     ) -> None:
         self.events_url, self.api_key, self.timeout = events_url, api_key, timeout
         self.contracts = tuple(contracts)
         self._next_request_id = 1
         self.subscription_ids: list[int] = []
         self.acknowledged_ids: set[int] = set()
+        self.outstanding: dict[int, SubscriptionRequest] = {}
+        self.diagnostics: list[str] = []
+        self.connection_generation = 0
         self.connected = False
         self.subscription_acknowledged = False
         self.stream_status = "not_connected"
@@ -82,6 +94,7 @@ class ThetaDataOptionsProvider:
                 self.events_url, open_timeout=self.timeout, ping_interval=20, ping_timeout=10
             ) as ws:
                 self.connected = True
+                self.connection_generation += 1
                 self.subscription_acknowledged = False
                 self.stream_status = "connected"
                 roots = {symbol.upper() for symbol in symbols}
@@ -110,18 +123,25 @@ class ThetaDataOptionsProvider:
         message_type = header.get("type")
         status = str(header.get("status", "unknown")).lower()
         message_id = message.get("id")
-        if (
-            status == "connected"
-            and isinstance(message_id, int)
-            and message_id in self.subscription_ids
-        ):
-            self.acknowledged_ids.add(message_id)
-            self.subscription_acknowledged = True
-            self.stream_status = status
-            return True
         if message_type == "REQ_RESPONSE":
-            self.subscription_acknowledged = status == "connected"
             self.stream_status = status
+            if not isinstance(message_id, int) or message_id not in self.outstanding:
+                self.diagnostics.append("unmatched_request_response")
+                return True
+            request = self.outstanding[message_id]
+            response_contract = message.get("contract")
+            if (
+                response_contract is not None
+                and response_contract != request.contract.payload(message_id)["contract"]
+            ):
+                self.diagnostics.append("contradictory_request_response")
+                return True
+            if status in {"connected", "success", "ok"}:
+                del self.outstanding[message_id]
+                self.acknowledged_ids.add(message_id)
+                self.subscription_acknowledged = True
+            else:
+                self.diagnostics.append("request_rejected")
             return True
         if message_type == "STATUS":
             self.stream_status = status
@@ -131,7 +151,11 @@ class ThetaDataOptionsProvider:
     def unsubscribe_payload(self, contract: ThetaContract) -> dict[str, object]:
         request_id = self._next_request_id
         self._next_request_id += 1
-        return contract.payload(request_id, add=False)
+        payload = contract.payload(request_id, add=False)
+        self.outstanding[request_id] = SubscriptionRequest(
+            request_id, contract, "TRADE", False, self.connection_generation
+        )
+        return payload
 
     def subscription_payloads(self) -> tuple[dict[str, object], ...]:
         """Build Standard-compatible subscriptions on every connection/reconnect."""
@@ -140,6 +164,9 @@ class ThetaDataOptionsProvider:
             request_id = self._next_request_id
             self._next_request_id += 1
             self.subscription_ids.append(request_id)
+            self.outstanding[request_id] = SubscriptionRequest(
+                request_id, contract, "TRADE", True, self.connection_generation
+            )
             requests.append(contract.payload(request_id))
         return tuple(requests)
 
@@ -159,10 +186,17 @@ class ThetaDataOptionsProvider:
         size = int(data.get("size", 0))
         price = Decimal(str(data.get("price", 0)))
         payload = {
-            "option_volume": size,
-            "open_interest": int(data.get("open_interest", 0)),
-            "call_premium": data.get("call_premium", price * size * 100),
-            "distance_to_resistance": data.get("distance_to_resistance", 0),
+            "trade_size": size,
+            "trade_price": price,
+            "raw_exchange_condition": data.get("condition"),
+            "quote_context": {"bid": data.get("bid"), "ask": data.get("ask")},
+            "contract": {
+                "root": symbol,
+                "expiration": contract.get("expiration"),
+                "strike": contract.get("strike"),
+                "right": contract.get("right"),
+            },
+            "feature_reasons": ("requires_open_interest", "requires_resistance_definition"),
         }
         return CanonicalEvent(
             event_id=uuid5(NAMESPACE_URL, f"thetadata:{symbol}:{timestamp.isoformat()}:{sequence}"),

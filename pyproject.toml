@@ -29,6 +29,7 @@ packages = ["src/institutional_signal_engine"]
 addopts = "--strict-markers"
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = ["integration: explicitly isolated provider or database integration test"]
 
 [tool.ruff]
 line-length = 100

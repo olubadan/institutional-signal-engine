@@ -47,18 +47,28 @@ class Synchronizer:
         return SynchronizedInput(
             symbol=symbol,
             as_of=as_of,
-            price=equity["price"],
-            volume=equity["volume"],
-            spread=equity["spread"],
-            option_volume=options["option_volume"],
-            open_interest=options["open_interest"],
-            call_premium=options["call_premium"],
-            distance_to_resistance=options["distance_to_resistance"],
-            relative_volume=equity["relative_volume"],
-            equity_delta=equity["delta"],
-            market_delta=market["delta"],
-            sector_delta=sector["delta"],
+            price=equity.get("price"),
+            volume=equity.get("volume"),
+            spread=equity.get("spread"),
+            option_volume=options.get("option_volume"),
+            open_interest=options.get("open_interest"),
+            call_premium=options.get("call_premium"),
+            distance_to_resistance=options.get("distance_to_resistance"),
+            relative_volume=equity.get("relative_volume"),
+            equity_delta=equity.get("delta"),
+            market_delta=market.get("delta"),
+            sector_delta=sector.get("delta"),
             first_signal_at=equity.get("first_signal_at"),
             concurrent_positions=positions,
             event_ids=tuple(event.event_id for event in events),
+            indicator_reasons=tuple(
+                sorted(
+                    set(
+                        equity.get("feature_reasons", ())
+                        + options.get("feature_reasons", ())
+                        + market.get("feature_reasons", ())
+                        + sector.get("feature_reasons", ())
+                    )
+                )
+            ),
         )

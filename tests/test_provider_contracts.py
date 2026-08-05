@@ -81,15 +81,40 @@ def test_thetadata_normalizes_official_trade_shape():
     )
     assert event is not None and event.kind.value == "options"
     assert event.sequence == 4294967289
-    assert event.payload["call_premium"] == 1500
+    assert event.payload["trade_size"] == 12
+    assert event.payload["trade_price"] == 1.25
 
 
 def test_thetadata_records_subscription_acknowledgement_without_payload():
     provider = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
 
     assert provider._observe_control({"header": {"type": "REQ_RESPONSE", "status": "CONNECTED"}})
+    assert not provider.subscription_acknowledged
+    assert "unmatched_request_response" in provider.diagnostics
+
+
+def test_thetadata_correlates_acknowledgement_to_outstanding_request():
+    contract = ThetaContract("AAPL", 20260807, 310000, "C")
+    provider = ThetaDataOptionsProvider(
+        "ws://127.0.0.1:25520/v1/events", "secret", contracts=(contract,)
+    )
+    request = provider.subscription_payloads()[0]
+    assert provider._observe_control(
+        {
+            "header": {"type": "REQ_RESPONSE", "status": "CONNECTED"},
+            "id": request["id"],
+            "contract": request["contract"],
+        }
+    )
     assert provider.subscription_acknowledged
-    assert provider.stream_status == "connected"
+    assert request["id"] not in provider.outstanding
+    assert provider._observe_control(
+        {
+            "header": {"type": "REQ_RESPONSE", "status": "CONNECTED"},
+            "id": request["id"],
+        }
+    )
+    assert "unmatched_request_response" in provider.diagnostics
 
 
 def test_thetadata_standard_exact_contract_payload_and_strike_conversion():

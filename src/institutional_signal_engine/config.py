@@ -47,6 +47,7 @@ class Settings(BaseModel):
     alpaca_data_url: str = "wss://stream.data.alpaca.markets/v2/iex"
     theta_api_key: SecretStr | None = None
     theta_events_url: str = "ws://127.0.0.1:25520/v1/events"
+    database_url: str | None = None
     thresholds: Thresholds = Thresholds()
     capacity: int = Field(default=1, ge=0)
     config_version: str = "phase3-v1"
@@ -78,6 +79,7 @@ class Settings(BaseModel):
             theta_events_url=values.get(
                 "OPTIONS_API_BASE_URL", cls.model_fields["theta_events_url"].default
             ),
+            database_url=values.get("DATABASE_URL"),
             capacity=int(values.get("CAPACITY", "1")),
         )
 
@@ -94,4 +96,6 @@ class Settings(BaseModel):
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     def public_snapshot(self) -> dict[str, object]:
-        return self.model_dump(exclude={"alpaca_key_id", "alpaca_secret_key", "theta_api_key"})
+        return self.model_dump(
+            exclude={"alpaca_key_id", "alpaca_secret_key", "theta_api_key", "database_url"}
+        )

@@ -39,7 +39,13 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 def healthy(container: str, environment: dict[str, str]) -> bool:
     for _ in range(60):
-        if run(["docker", "inspect", "--format", "{{.State.Health.Status}}", container], environment).stdout.strip() == "healthy":
+        if (
+            run(
+                ["docker", "inspect", "--format", "{{.State.Health.Status}}", container],
+                environment,
+            ).stdout.strip()
+            == "healthy"
+        ):
             return True
         time.sleep(2)
     return False
@@ -51,7 +57,14 @@ def main() -> int:
         return fail("trading is not disabled")
     print("[verify] PASS: trading disabled")
     environment = os.environ.copy()
-    environment.update({"PGUSER": values.get("POSTGRES_USER", ""), "PGDATABASE": values.get("POSTGRES_DB", ""), "PGPASSWORD": values.get("POSTGRES_PASSWORD", ""), "REDISCLI_AUTH": values.get("REDIS_PASSWORD", "")})
+    environment.update(
+        {
+            "PGUSER": values.get("POSTGRES_USER", ""),
+            "PGDATABASE": values.get("POSTGRES_DB", ""),
+            "PGPASSWORD": values.get("POSTGRES_PASSWORD", ""),
+            "REDISCLI_AUTH": values.get("REDIS_PASSWORD", ""),
+        }
+    )
     if run(["psql", "-h", "127.0.0.1", "-Atqc", "SELECT 1"], environment).stdout.strip() != "1":
         return fail("PostgreSQL connectivity failed")
     if run(["redis-cli", "-h", "127.0.0.1", "ping"], environment).stdout.strip() != "PONG":
@@ -61,19 +74,56 @@ def main() -> int:
         STATE.mkdir(mode=0o750, parents=True, exist_ok=True)
         (STATE / "persistence-sentinel").write_text("phase3-persistence-ok\n", encoding="utf-8")
         sql = "CREATE TABLE IF NOT EXISTS phase2_persistence (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO phase2_persistence (id, value) VALUES (1, 'verified') ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value;"
-        if run(["psql", "-h", "127.0.0.1", "-v", "ON_ERROR_STOP=1", "-c", sql], environment).returncode != 0:
+        if (
+            run(
+                ["psql", "-h", "127.0.0.1", "-v", "ON_ERROR_STOP=1", "-c", sql], environment
+            ).returncode
+            != 0
+        ):
             return fail("PostgreSQL persistence write failed")
-        if run(["redis-cli", "-h", "127.0.0.1", "SET", "phase2:persistence", "verified"], environment).returncode != 0:
+        if (
+            run(
+                ["redis-cli", "-h", "127.0.0.1", "SET", "phase2:persistence", "verified"],
+                environment,
+            ).returncode
+            != 0
+        ):
             return fail("Redis persistence write failed")
-        if run(["systemctl", "restart", "institutional-signal-dependencies.service"], environment).returncode != 0:
+        if (
+            run(
+                ["systemctl", "restart", "institutional-signal-dependencies.service"], environment
+            ).returncode
+            != 0
+        ):
             return fail("dependency service restart failed")
-        if not healthy("institutional-signal-postgres", environment) or not healthy("institutional-signal-redis", environment):
+        if not healthy("institutional-signal-postgres", environment) or not healthy(
+            "institutional-signal-redis", environment
+        ):
             return fail("dependency unhealthy after restart")
-        if (STATE / "persistence-sentinel").read_text(encoding="utf-8").strip() != "phase3-persistence-ok":
+        if (STATE / "persistence-sentinel").read_text(
+            encoding="utf-8"
+        ).strip() != "phase3-persistence-ok":
             return fail("filesystem sentinel did not persist")
-        if run(["psql", "-h", "127.0.0.1", "-Atqc", "SELECT value FROM phase2_persistence WHERE id = 1"], environment).stdout.strip() != "verified":
+        if (
+            run(
+                [
+                    "psql",
+                    "-h",
+                    "127.0.0.1",
+                    "-Atqc",
+                    "SELECT value FROM phase2_persistence WHERE id = 1",
+                ],
+                environment,
+            ).stdout.strip()
+            != "verified"
+        ):
             return fail("PostgreSQL data did not persist")
-        if run(["redis-cli", "-h", "127.0.0.1", "GET", "phase2:persistence"], environment).stdout.strip() != "verified":
+        if (
+            run(
+                ["redis-cli", "-h", "127.0.0.1", "GET", "phase2:persistence"], environment
+            ).stdout.strip()
+            != "verified"
+        ):
             return fail("Redis data did not persist")
         print("[verify] PASS: filesystem, PostgreSQL and Redis state survived service restart")
     return 0

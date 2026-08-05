@@ -18,10 +18,12 @@
 - **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
   [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
   draft, cleanly mergeable, and unmerged at
-  `2043ac17eeb3a8e23d955ae7c8042568c08d48bc`.
-- **Current architecture:** Phase 3 provides typed configuration, canonical
-  events, provider adapters, synchronization, signal gates/ranking, persistence,
-  replay, and loopback observability. Execution remains absent.
+  The branch is receiving the SESSION-0010 implementation correction pass.
+- **Current architecture:** Phase 3 now includes typed stateful indicator
+  primitives, fail-closed missing-data reasons, continuous event processing,
+  correlated Standard exact-contract requests, dynamic-universe selection ports,
+  typed PostgreSQL event replay, separate candidate counters, and hermetic CI.
+  Execution remains absent.
 - **Vast environment state:** Owner-created instance `46725769` is running and
   SSH-accessible. Runtime inspection measured Ubuntu 22.04, 19 visible vCPU,
   approximately 49.3 GiB RAM, and 130 GB allocated disk. Docker/Compose, Python
@@ -50,7 +52,7 @@
   files, trading-disabled state, branch, systemd/Docker enablement, container
   health, local connectivity, filesystem/PostgreSQL/Redis restart persistence,
   SSH key-only policy, reconnection, outbound HTTPS, and clean checkout. Phase 3
-  checks pass: `uv sync`, Ruff, mypy, 18 pytest tests split across provider,
+  checks pass: `uv sync`, Ruff, mypy, 22 pytest tests split across provider,
   reconnection, signal, persistence, and replay groups. ThetaData service/runtime
   startup and loopback binding passed. The six internal runtime variables were
   restored under explicit authority; dependency connectivity and filesystem,
@@ -67,8 +69,10 @@
 - **Known blockers:** ThetaData MDDS reports CONNECTED and the supplied Standard
   exact-contract stream acknowledges successfully, but the documented AAPL
   contract-list, expirations, and strikes helpers return Jetty HTTP 500. The
-  supplied contract is used for validation; the next regular-session smoke is
-  pending. GitHub branch
+  supplied contract is used for validation; dynamic live discovery remains
+  unverified. The formal model does not define the eligible-trade set,
+  ask-side classification, or five-day resistance/high formula; implementation
+  fails closed with explicit reasons at those missing inputs. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
-- **Next action:** Owner reviews the regular-session live evidence. Keep PR #3
-  draft and unmerged; do not begin Phase 4.
+- **Next action:** Run VM/database/CI verification on the pushed SESSION-0010
+  head, update PR #3 with sanitized evidence, and keep it draft and unmerged.

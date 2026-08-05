@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies from lock
+        run: uv sync --frozen
+      - name: Verify lockfile
+        run: uv lock --check
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Strict typing
+        run: uv run mypy src
+      - name: Unit tests (network prohibited by conftest)
+        run: uv run pytest -q
+      - name: Shell validation
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          find infra -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+          find infra -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
+      - name: Structural and secret scan
+        run: |
+          test -f AGENTS.md
+          test -f docs/03_Formal_Mathematical_Model.md
+          ! rg -n --hidden --glob '!.git/**' --glob '!uv.lock' \
+            '(AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|sk-[A-Za-z0-9]{20,})' .

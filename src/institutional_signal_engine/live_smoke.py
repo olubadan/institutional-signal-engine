@@ -5,18 +5,17 @@ import asyncio
 import json
 import os
 from collections import Counter
-from datetime import UTC, datetime
 from statistics import median
 
 from pydantic import SecretStr
 
 from .config import Settings
+from .persistence import InMemoryRepository, PostgresRepository
+from .pipeline import SignalPipeline
 from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
-from .providers.thetadata import DEFAULT_AAPL_CONTRACT, ThetaDataOptionsProvider
+from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent, EventKind
-from .signals import decide
-from .synchronization import Synchronizer
 
 
 def _secret(value: SecretStr | None) -> str:
@@ -66,33 +65,29 @@ async def run(seconds: float) -> dict[str, object]:
     theta = ThetaDataOptionsProvider(
         settings.theta_events_url,
         _secret(settings.theta_api_key),
-        contracts=(DEFAULT_AAPL_CONTRACT,),
+        contracts=(SMOKE_AAPL_CONTRACT,),
     )
     (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
         _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds),
         _collect(theta, ["AAPL"], seconds),
     )
 
-    now = datetime.now(UTC)
-    all_events = equities + options
-    latencies = [
-        max(0.0, (event.received_timestamp - event.source_timestamp).total_seconds() * 1000)
-        for event in all_events
-    ]
-    stale = sum((now - event.normalized_timestamp).total_seconds() > 30 for event in all_events)
-    synchronizer = Synchronizer()
-    for event in equities:
-        if event.symbol == "AAPL":
-            synchronizer.add(event)
-        elif event.symbol == "SPY":
-            synchronizer.add(_as_market_input(event, EventKind.MARKET_INDEX))
+    repository = (
+        PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
+    )
+    if isinstance(repository, PostgresRepository):
+        repository.initialize()
+    pipeline = SignalPipeline(settings, repository=repository)
+    for event in sorted(equities + options, key=lambda value: value.received_timestamp):
+        if event.symbol == "SPY":
+            event = _as_market_input(event, EventKind.MARKET_INDEX)
         elif event.symbol == "XLK":
-            synchronizer.add(_as_market_input(event, EventKind.SECTOR_INDEX))
-    for event in options:
-        synchronizer.add(event)
-    snapshot = synchronizer.snapshot("AAPL", now)
-    decision = decide([snapshot], settings) if snapshot is not None else None
-    synchronized_input_count = int(snapshot is not None)
+            event = _as_market_input(event, EventKind.SECTOR_INDEX)
+        pipeline.process(event)
+    decision = pipeline.decisions[-1] if pipeline.decisions else None
+    all_events = equities + options
+    latencies = pipeline.metrics.provider_transport_latency_ms
+    synchronized_input_count = len(pipeline.decisions)
     reasons = (
         list(decision.rejection_reasons)
         if decision is not None
@@ -126,10 +121,25 @@ async def run(seconds: float) -> dict[str, object]:
             "median": round(median(latencies), 3) if latencies else None,
             "maximum": round(max(latencies), 3) if latencies else None,
         },
-        "stale_events": stale,
+        "stale_events": pipeline.metrics.stale_events,
+        "late_events": pipeline.metrics.late_events,
+        "out_of_order_events": pipeline.metrics.out_of_order_events,
+        "duplicate_events": pipeline.metrics.duplicate_events,
+        "processing_latency_ms": {
+            "median": round(median(pipeline.metrics.processing_latency_ms), 3)
+            if pipeline.metrics.processing_latency_ms
+            else None,
+            "maximum": round(max(pipeline.metrics.processing_latency_ms), 3)
+            if pipeline.metrics.processing_latency_ms
+            else None,
+        },
         "rejection_reasons": reasons,
-        "ranked_signal_count": len(decision.candidates) if decision is not None else 0,
-        "executable_signal_count": int(bool(decision and decision.fire)),
+        "candidates_evaluated": decision.counters.candidates_evaluated if decision else 0,
+        "candidates_passing_S": decision.counters.candidates_passing_S if decision else 0,
+        "candidates_passing_S_and_F_and_R": decision.counters.candidates_passing_S_and_F_and_R
+        if decision
+        else 0,
+        "executable_candidates": decision.counters.executable_candidates if decision else 0,
         "orders_constructed": 0,
         "orders_submitted": 0,
     }

@@ -8,7 +8,7 @@ from .schemas import CanonicalEvent, Decision
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL);
+CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, counters jsonb NOT NULL);
 """
 
 
@@ -41,6 +41,9 @@ class PostgresRepository:
     def initialize(self) -> None:
         with self._connect() as connection:
             connection.execute(SCHEMA)
+            connection.execute(
+                "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS counters jsonb NOT NULL DEFAULT '{}'::jsonb"
+            )
 
     def record_event(self, event: CanonicalEvent) -> None:
         with self._connect() as connection:
@@ -62,7 +65,7 @@ class PostgresRepository:
     def record_decision(self, decision: Decision) -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO decisions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                "INSERT INTO decisions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                 (
                     decision.decision_id,
                     decision.decided_at,
@@ -75,10 +78,62 @@ class PostgresRepository:
                     json.dumps([str(value) for value in decision.input_event_ids]),
                     decision.config_version,
                     decision.engine_version,
+                    json.dumps(decision.counters.model_dump()),
                 ),
             )
 
     def replay_events(self) -> Iterable[CanonicalEvent]:
-        raise NotImplementedError(
-            "Use a typed query/replay export in the next persistence increment"
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT event_id,kind,symbol,source,source_timestamp,received_timestamp,"
+                "normalized_timestamp,sequence,payload FROM canonical_events ORDER BY "
+                "normalized_timestamp,event_id"
+            ).fetchall()
+        from .schemas import EventKind
+
+        return tuple(
+            CanonicalEvent(
+                event_id=row[0],
+                kind=EventKind(row[1]),
+                symbol=row[2],
+                source=row[3],
+                source_timestamp=row[4],
+                received_timestamp=row[5],
+                normalized_timestamp=row[6],
+                sequence=row[7],
+                payload=row[8],
+            )
+            for row in rows
+        )
+
+    def decision_count(self) -> int:
+        with self._connect() as connection:
+            return int(connection.execute("SELECT count(*) FROM decisions").fetchone()[0])
+
+    def event_count(self) -> int:
+        with self._connect() as connection:
+            return int(connection.execute("SELECT count(*) FROM canonical_events").fetchone()[0])
+
+    def replay_decisions(self) -> tuple[Decision, ...]:
+        """Read decisions as typed models for field-by-field replay comparison."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT decision_id,decided_at,selected_symbol,fire,candidates,"
+                "rejection_reasons,input_event_ids,config_version,engine_version,counters "
+                "FROM decisions ORDER BY decided_at,decision_id"
+            ).fetchall()
+        return tuple(
+            Decision(
+                decision_id=row[0],
+                decided_at=row[1],
+                selected_symbol=row[2],
+                fire=row[3],
+                candidates=tuple(row[4]),
+                rejection_reasons=tuple(row[5]),
+                input_event_ids=tuple(row[6]),
+                config_version=row[7],
+                engine_version=row[8],
+                counters=row[9],
+            )
+            for row in rows
         )

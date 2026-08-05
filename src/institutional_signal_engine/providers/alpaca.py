@@ -69,13 +69,20 @@ class AlpacaEquitiesProvider:
             return None
         timestamp = datetime.fromisoformat(message["t"]).astimezone(UTC)
         symbol = str(message["S"]).upper()
-        sequence = int(message.get("i", message.get("t", "0").timestamp() if False else 0))
+        sequence = int(message.get("i", timestamp.timestamp() * 1_000_000_000))
+        price = message.get("p", message.get("ap"))
+        if price is None:
+            return None
+        ask = message.get("ap")
+        bid = message.get("bp")
         payload = {
-            "price": message.get("p", message.get("ap", 0)),
-            "volume": message.get("s", 0),
-            "spread": max(0, float(message.get("ap", 0)) - float(message.get("bp", 0))),
-            "relative_volume": 1,
-            "delta": 0,
+            "price": price,
+            "volume": int(message.get("s", 0)) if kind == "t" else 0,
+            "spread": max(0, float(ask or price) - float(bid or price)),
+            "conditions": tuple(message.get("c", [])),
+            "exchange": message.get("x"),
+            "quote_context": {"bid": bid, "ask": ask},
+            "feature_reasons": ("requires_historical_baseline", "requires_stateful_calculation"),
         }
         return CanonicalEvent(
             event_id=uuid5(NAMESPACE_URL, f"alpaca:{symbol}:{timestamp.isoformat()}:{sequence}"),

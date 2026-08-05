@@ -43,20 +43,22 @@ class SynchronizedInput(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     symbol: str
     as_of: datetime
-    price: Decimal
-    volume: int
-    option_volume: int
-    open_interest: int
-    call_premium: Decimal
-    spread: Decimal
-    distance_to_resistance: Decimal
-    relative_volume: Decimal
-    equity_delta: Decimal
-    market_delta: Decimal
-    sector_delta: Decimal
+    price: Decimal | None
+    volume: int | None
+    option_volume: int | None
+    open_interest: int | None
+    call_premium: Decimal | None
+    spread: Decimal | None
+    distance_to_resistance: Decimal | None
+    relative_volume: Decimal | None
+    equity_delta: Decimal | None
+    market_delta: Decimal | None
+    sector_delta: Decimal | None
     first_signal_at: datetime | None = None
     concurrent_positions: int = Field(ge=0)
     event_ids: tuple[UUID, ...]
+    indicator_reasons: tuple[str, ...] = ()
+    provenance: dict[str, str] = Field(default_factory=dict)
 
     _utc_as_of = field_validator("as_of")(utc)
     _utc_first = field_validator("first_signal_at")(lambda v: utc(v) if v else v)
@@ -81,6 +83,14 @@ class Candidate(BaseModel):
     gates: tuple[GateResult, ...]
 
 
+class CandidateCounters(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    candidates_evaluated: int = Field(ge=0)
+    candidates_passing_S: int = Field(ge=0)
+    candidates_passing_S_and_F_and_R: int = Field(ge=0)
+    executable_candidates: int = Field(ge=0)
+
+
 class Decision(BaseModel):
     model_config = ConfigDict(frozen=True)
     decision_id: UUID
@@ -92,6 +102,12 @@ class Decision(BaseModel):
     input_event_ids: tuple[UUID, ...]
     config_version: str
     engine_version: str
+    counters: CandidateCounters = CandidateCounters(
+        candidates_evaluated=0,
+        candidates_passing_S=0,
+        candidates_passing_S_and_F_and_R=0,
+        executable_candidates=0,
+    )
 
     _utc_decided = field_validator("decided_at")(utc)
 

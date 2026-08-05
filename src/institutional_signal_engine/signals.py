@@ -3,7 +3,7 @@
 from decimal import Decimal
 
 from .config import Settings
-from .schemas import Candidate, Decision, GateResult, SynchronizedInput
+from .schemas import Candidate, CandidateCounters, Decision, GateResult, SynchronizedInput
 
 
 def _gate(name: str, passed: bool, reason: str) -> GateResult:
@@ -14,16 +14,29 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
     t = settings.thresholds
     ratio = (
         (Decimal(item.option_volume) / Decimal(item.open_interest))
-        if item.open_interest
+        if item.option_volume is not None and item.open_interest
         else Decimal(0)
     )
-    liquidity = item.volume >= t.minimum_volume and item.spread <= t.maximum_spread
-    options = (
-        item.call_premium >= t.minimum_call_premium and ratio >= t.minimum_option_volume_oi_ratio
+    missing = set(item.indicator_reasons)
+    liquidity = (
+        item.volume is not None
+        and item.spread is not None
+        and "missing_session_volume" not in missing
+        and item.volume >= t.minimum_volume
+        and item.spread <= t.maximum_spread
     )
-    equity = item.equity_delta > 0
-    market = item.market_delta > 0
-    sector = item.sector_delta > 0
+    options = (
+        "missing_or_zero_open_interest" not in missing
+        and "missing_resistance_distance" not in missing
+        and item.call_premium is not None
+        and item.option_volume is not None
+        and item.open_interest is not None
+        and item.call_premium >= t.minimum_call_premium
+        and ratio >= t.minimum_option_volume_oi_ratio
+    )
+    equity = item.equity_delta is not None and item.equity_delta > 0
+    market = item.market_delta is not None and item.market_delta > 0
+    sector = item.sector_delta is not None and item.sector_delta > 0
     signal = liquidity and options and equity and market and sector
     if item.first_signal_at is None:
         freshness_score = Decimal(0)
@@ -33,14 +46,27 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
         freshness_score = max(Decimal(0), Decimal(1) - elapsed / Decimal(t.freshness_seconds))
         freshness = freshness_score >= t.minimum_decay and options and equity
     room = (
-        item.distance_to_resistance >= t.minimum_room
+        item.distance_to_resistance is not None
+        and item.volume is not None
+        and item.spread is not None
+        and item.distance_to_resistance >= t.minimum_room
         and item.volume >= t.minimum_volume
         and item.spread <= t.maximum_spread
         and item.concurrent_positions < settings.capacity
     )
     gates = (
-        _gate("liquidity", liquidity, "volume_or_spread_threshold"),
-        _gate("options", options, "premium_or_volume_oi_threshold"),
+        _gate(
+            "liquidity",
+            liquidity,
+            "missing_or_volume_or_spread_threshold" if missing else "volume_or_spread_threshold",
+        ),
+        _gate(
+            "options",
+            options,
+            "missing_or_premium_or_volume_oi_threshold"
+            if missing
+            else "premium_or_volume_oi_threshold",
+        ),
         _gate("equity", equity, "equity_delta_not_positive"),
         _gate("market", market, "market_delta_not_positive"),
         _gate("sector", sector, "sector_delta_not_positive"),
@@ -52,10 +78,10 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
     return Candidate(
         symbol=item.symbol,
         freshness_score=freshness_score,
-        call_premium=item.call_premium,
+        call_premium=item.call_premium or Decimal(0),
         option_volume_oi_ratio=ratio,
-        relative_volume=item.relative_volume,
-        distance_to_resistance=item.distance_to_resistance,
+        relative_volume=item.relative_volume or Decimal(0),
+        distance_to_resistance=item.distance_to_resistance or Decimal(0),
         ordinal=ordinal,
         gates=gates,
     )
@@ -93,6 +119,14 @@ def decide(items: list[SynchronizedInput], settings: Settings) -> Decision:
         (item.as_of for item in items),
         default=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
     )
+    passing_s = sum(all(g.passed for g in c.gates if g.name == "S") for c in ranked)
+    passing_sfr = sum(all(g.passed for g in c.gates if g.name in {"S", "F", "R"}) for c in ranked)
+    counters = CandidateCounters(
+        candidates_evaluated=len(ranked),
+        candidates_passing_S=passing_s,
+        candidates_passing_S_and_F_and_R=passing_sfr,
+        executable_candidates=len(executable),
+    )
     return Decision(
         decision_id=Decision.deterministic_id(event_ids, timestamp),
         decided_at=timestamp,
@@ -103,4 +137,5 @@ def decide(items: list[SynchronizedInput], settings: Settings) -> Decision:
         input_event_ids=event_ids,
         config_version=settings.config_version,
         engine_version=settings.engine_version,
+        counters=counters,
     )
