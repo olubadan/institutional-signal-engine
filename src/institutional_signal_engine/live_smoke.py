@@ -87,6 +87,8 @@ async def run(seconds: float) -> dict[str, object]:
         _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds, process),
         _collect(theta, ["AAPL"], seconds, process),
     )
+    if isinstance(repository, PostgresRepository):
+        repository.flush()
     decision = pipeline.decisions[-1] if pipeline.decisions else None
     all_events = equities + options
     latencies = pipeline.metrics.provider_transport_latency_ms

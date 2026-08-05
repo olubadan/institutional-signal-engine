@@ -33,6 +33,7 @@ class PostgresRepository:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
         self._connection: Any | None = None
+        self._pending_events: list[CanonicalEvent] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -52,22 +53,34 @@ class PostgresRepository:
         )
 
     def record_event(self, event: CanonicalEvent) -> None:
-        self._session().execute(
+        self._pending_events.append(event)
+        if len(self._pending_events) >= 500:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._pending_events:
+            return
+        self._session().executemany(
             "INSERT INTO canonical_events VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            (
-                event.event_id,
-                event.kind.value,
-                event.symbol,
-                event.source,
-                event.source_timestamp,
-                event.received_timestamp,
-                event.normalized_timestamp,
-                event.sequence,
-                json.dumps(event.payload, default=str),
-            ),
+            [
+                (
+                    event.event_id,
+                    event.kind.value,
+                    event.symbol,
+                    event.source,
+                    event.source_timestamp,
+                    event.received_timestamp,
+                    event.normalized_timestamp,
+                    event.sequence,
+                    json.dumps(event.payload, default=str),
+                )
+                for event in self._pending_events
+            ],
         )
+        self._pending_events.clear()
 
     def record_decision(self, decision: Decision) -> None:
+        self.flush()
         self._session().execute(
             "INSERT INTO decisions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
             (
@@ -87,6 +100,7 @@ class PostgresRepository:
         )
 
     def replay_events(self) -> Iterable[CanonicalEvent]:
+        self.flush()
         rows = (
             self._session()
             .execute(
@@ -114,13 +128,16 @@ class PostgresRepository:
         )
 
     def decision_count(self) -> int:
+        self.flush()
         return int(self._session().execute("SELECT count(*) FROM decisions").fetchone()[0])
 
     def event_count(self) -> int:
+        self.flush()
         return int(self._session().execute("SELECT count(*) FROM canonical_events").fetchone()[0])
 
     def replay_decisions(self) -> tuple[Decision, ...]:
         """Read decisions as typed models for field-by-field replay comparison."""
+        self.flush()
         rows = (
             self._session()
             .execute(
