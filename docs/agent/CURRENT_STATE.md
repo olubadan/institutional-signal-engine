@@ -124,6 +124,42 @@
   independently reviewed. PR #3 remains draft and unmerged; Phase 4 has not
   begun.
 
+## Indicator and boundary closure pass — 20260805
+
+- Implementation commit `36a8626` wires a typed Alpaca historical bootstrap
+  to split-adjusted completed daily/minute bars, previous-close deltas,
+  session VWAP, same-minute RVOL, timestamp-aligned SPY/sector relative
+  strength, and cached five/twenty/252-session resistance with namespaced
+  provenance and source dates. Missing baselines fail closed with persisted
+  reason codes; adapter placeholders cannot reach Alpaca decisions.
+- The pipeline now persists indicator provenance in decisions, recomputes
+  resistance distance against frozen session ladders, and resets
+  session-scoped state idempotently at ET regular-session open/close. The
+  live smoke timer invokes boundary handling even without incoming events.
+- Live run `4faad966-f4fb-44c4-8f2f-58ec440c59c6` succeeded during regular
+  hours: historical bootstrap success for AAPL/SPY/XLK; Alpaca 11,440 events;
+  ThetaData 16 option events; authentication and exact-contract
+  acknowledgement succeeded; trades received/processed `59/59`; stale,
+  late, duplicate, and out-of-order `0/0/0/0`; evaluations triggered/skipped
+  `3/36`; trigger reasons included `session_boundary_open`; unknown
+  conditions `6`; candidate counters `1/0/0/0`; orders `0/0`.
+- Run-scoped PostgreSQL contained 59 events, 61 consumed-quote audit records,
+  and 3 decisions. Replay produced 3 decisions with field-by-field equality.
+  Internal timing remained low: Alpaca quote queue-wait p50/p95 `0.053/0.122`
+  ms and processing p50/p95 `0.036/0.090` ms; Theta option trade queue-wait
+  p50/p95 `0.049/0.069` ms and processing p50/p95 `0.410/0.954` ms. No
+  persistence soft/hard limit activity occurred.
+- The remaining material-trigger blocker is specifically
+  `NEW_QUALIFYING_SWEEP`: no authoritative sweep identity, aggregation
+  window, qualification threshold, or directional rule exists in the
+  repository or owner definitions. Implementing it would invent strategy
+  behavior. ThetaData discovery HTTP 500 remains the separate external
+  provider blocker; no discovery endpoint was retried.
+- Local verification passed with 43 hermetic tests, Ruff, strict mypy, and
+  the existing network prohibition. Recommendation remains `STILL BLOCKED`
+  until the owner supplies the sweep definition and it is independently
+  reviewed. PR #3 remains draft and unmerged; trading is disabled.
+
 ## Throughput correction — 20260805
 
 - Session-0011 implements O(1) latest-value quote slots, bounded event-time
