@@ -164,6 +164,19 @@ def test_async_writer_batches_and_drains():
     asyncio.run(run())
 
 
+def test_async_writer_persists_sweep_audits():
+    async def run() -> None:
+        repository = InMemoryRepository()
+        writer = AsyncAuditWriter(repository, soft_limit=2, hard_limit=4, batch_size=2)
+        writer.start()
+        audit = {"run_id": "run", "cluster_id": "cluster", "transition": None}
+        assert writer.enqueue(AuditWrite(sweep=audit))
+        await writer.close()
+        assert repository.sweeps == [audit]
+
+    asyncio.run(run())
+
+
 def test_hard_limit_fails_closed_and_drains_accepted_records():
     async def run() -> None:
         repository = InMemoryRepository()

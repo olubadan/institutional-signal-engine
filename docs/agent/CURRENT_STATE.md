@@ -108,21 +108,11 @@
   trades (`115/115`), persisted 115 trade events, and replayed persisted
   decisions with field-by-field equality. Trading stayed disabled and orders
   constructed/submitted remained `0/0`.
-- Remaining blockers: `IndicatorCalculator` contains the stateful formulas,
-  but the live pipeline does not wire provider historical baselines and
-  calculated RVOL/VWAP/relative-strength values into synchronized decisions;
-  Alpaca normalization still marks these as requiring calculation
-  (`src/institutional_signal_engine/providers/alpaca.py:104`). Also,
-  `_material_change_reasons()` does not implement the required new-sweep or
-  session-boundary triggers (`src/institutional_signal_engine/pipeline.py:216`).
-  These require authoritative strategy wiring/definitions and were not
-  guessed during review. Dynamic ThetaData discovery remains fixture-tested
-  but not live-verified because the documented discovery helpers return HTTP
-  500; the supplied exact-contract stream remains live-verified.
-- Recommendation: STILL BLOCKED for owner review/merge until the live
-  indicator wiring and missing material-change triggers are resolved and
-  independently reviewed. PR #3 remains draft and unmerged; Phase 4 has not
-  begun.
+- This earlier review snapshot was superseded by the indicator, boundary, and
+  owner-authorized sweep closure records below. Dynamic ThetaData discovery
+  remains fixture-tested but not live-verified because the documented
+  discovery helpers return HTTP 500; the supplied exact-contract stream
+  remains live-verified.
 
 ## Indicator and boundary closure pass — 20260805
 
@@ -219,7 +209,7 @@
   participation, directional and premium boundaries, transition uniqueness,
   session gate separation, freshness, corrections, uncorrelated corrections,
   final audit freezing, and freshness expiry for closed clusters. Local
-  verification: 55 tests passed, Ruff
+  verification: 68 tests passed, Ruff
   format/lint, and strict mypy passed.
 - The bounded live smoke must not claim sweep qualification unless the feed
   naturally produces one. Dynamic ThetaData discovery remains a separate
@@ -227,6 +217,29 @@
   orders remain unconstructed and unsubmitted. PR #3 remains draft and
   unmerged. Recommendation: `STILL BLOCKED` pending the external discovery
   provider blocker and independent review of this closure.
+
+## Independent sweep review corrections — 20260805
+
+- Corrected F to use only the typed
+  `most_recent_qualifying_sweep_timestamp`, with an exclusive 30-minute
+  boundary; first-signal and equity timestamps no longer determine F.
+- Corrected audit ordering so qualification state is finalized before every
+  projection or transition record. Corrections replace the target constituent
+  while retaining the original trade ID, corrective record ID, and both full
+  records; cancellations remove the target and retain both records separately.
+- Persisted deterministic sweep timer events carrying expiry timestamps.
+  Replay schedules ticks from those events, and timer-driven expiry decisions
+  now match field by field. Sweep audits are written through the repository in
+  synchronous and asynchronous modes.
+- Added append-only `sweep_transitions` history while retaining the latest
+  `sweep_clusters` projection. Added the versioned numeric ThetaData exchange
+  mapping `thetadata-opra-exchanges-v1`; unknown identifiers are retained in
+  audit data but cannot count toward participation.
+- Added explicit negative and positive boundary coverage for exchange
+  validity, 65%/64.99% ask share, exact expiry, session reset, corrections,
+  out-of-order events, ordered transition history, nonqualifying audits,
+  synchronous/asynchronous writes, timer replay, and pipeline F re-evaluation.
+  Local verification: 68 tests passed, Ruff format/lint, and strict mypy.
 
 ## Sweep live verification — 20260805
 

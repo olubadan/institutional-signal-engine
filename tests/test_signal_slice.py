@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -29,12 +29,14 @@ def item(symbol="AAPL", **overrides):
         "qualifying_sweep_count": 3,
         "qualifying_sweep_premium": Decimal(500000),
         "session_sweep_gate": True,
+        "most_recent_qualifying_sweep_timestamp": NOW,
         "first_signal_at": NOW,
         "concurrent_positions": 0,
         "event_ids": (uuid4(),),
     }
     values.update(overrides)
-    return SynchronizedInput(symbol=symbol, as_of=NOW, **values)
+    as_of = values.pop("as_of", NOW)
+    return SynchronizedInput(symbol=symbol, as_of=as_of, **values)
 
 
 def test_formal_gates_boundary_and_reason():
@@ -50,6 +52,27 @@ def test_formal_gates_boundary_and_reason():
 def test_capacity_is_strictly_less_than_maximum():
     candidate = evaluate(item(concurrent_positions=1), Settings(capacity=1))
     assert not next(g for g in candidate.gates if g.name == "R").passed
+
+
+def test_freshness_uses_only_most_recent_qualifying_sweep_timestamp():
+    fresh = evaluate(
+        item(
+            as_of=NOW + timedelta(minutes=29, seconds=59),
+            first_signal_at=NOW + timedelta(minutes=29, seconds=59),
+            most_recent_qualifying_sweep_timestamp=NOW,
+        ),
+        Settings(),
+    )
+    expired = evaluate(
+        item(
+            as_of=NOW + timedelta(minutes=30),
+            first_signal_at=NOW + timedelta(minutes=30),
+            most_recent_qualifying_sweep_timestamp=NOW,
+        ),
+        Settings(),
+    )
+    assert next(g for g in fresh.gates if g.name == "F").passed
+    assert not next(g for g in expired.gates if g.name == "F").passed
 
 
 def test_lexicographic_ranking_and_no_signal_reasons():

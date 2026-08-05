@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id u
 CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL, indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb, sweep_state jsonb NOT NULL DEFAULT '{}'::jsonb);
 CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
 CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
+CREATE TABLE IF NOT EXISTS sweep_transitions (run_id uuid NOT NULL, cluster_id uuid NOT NULL, transition_order bigint NOT NULL, transition text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id, transition_order));
 """
 
 
@@ -22,6 +23,7 @@ class InMemoryRepository:
         self.decisions: list[Decision] = []
         self.quote_consumptions: list[QuoteConsumption] = []
         self.sweeps: list[dict[str, object]] = []
+        self.sweep_transitions: list[dict[str, object]] = []
 
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
@@ -39,6 +41,14 @@ class InMemoryRepository:
 
     def record_sweep(self, sweep: dict[str, object]) -> None:
         self.sweeps.append(sweep)
+        if sweep.get("transition") is not None:
+            self.sweep_transitions.append(sweep)
+
+    def replay_sweep_transitions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.sweep_transitions
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(sorted(values, key=lambda value: int(str(value["transition_order"]))))
 
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         if run_id is None:
@@ -169,6 +179,17 @@ class PostgresRepository:
                 "INSERT INTO sweep_clusters (run_id,cluster_id,payload) VALUES (%s,%s,%s) ON CONFLICT (run_id,cluster_id) DO UPDATE SET payload=EXCLUDED.payload",
                 (sweep["run_id"], sweep["cluster_id"], json.dumps(sweep, default=str)),
             )
+            if sweep.get("transition") is not None:
+                connection.execute(
+                    "INSERT INTO sweep_transitions (run_id,cluster_id,transition_order,transition,payload) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    (
+                        sweep["run_id"],
+                        sweep["cluster_id"],
+                        sweep["transition_order"],
+                        sweep["transition"],
+                        json.dumps(sweep, default=str),
+                    ),
+                )
         self._pending_sweeps.clear()
 
     @staticmethod
@@ -207,6 +228,16 @@ class PostgresRepository:
         self._pending_sweeps.append(sweep)
         if len(self._pending_sweeps) >= 100:
             self.flush()
+
+    def replay_sweep_transitions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM sweep_transitions"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY transition_order"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
 
     def _record_quote_consumption_now(self, connection: Any, consumption: QuoteConsumption) -> None:
         quote = consumption.quote

@@ -115,6 +115,9 @@ class SignalPipeline:
         started = monotonic()
         processing_time = self.now().astimezone(UTC)
         self._handle_session_transition(event.source_timestamp)
+        if event.payload.get("provider_event_kind") == "sweep_timer":
+            self._record_timing(event, processing_time, 0.0, started)
+            return None
         age_at_receipt_ms = (
             event.received_timestamp - event.source_timestamp
         ).total_seconds() * 1000
@@ -206,6 +209,9 @@ class SignalPipeline:
         for audit in closed_sweep_audits:
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None
+        for audit in sweep_update.transition_audits if event.kind == EventKind.OPTIONS else ():
+            if not self._enqueue(AuditWrite(sweep=audit)):
+                return None
         for audit in self._pending_closed_sweep_audits:
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None
@@ -266,6 +272,8 @@ class SignalPipeline:
                 self.repository.record_event(record.event)
             if record.decision is not None:
                 self.repository.record_decision(record.decision)
+            if record.sweep is not None:
+                self.repository.record_sweep(record.sweep)
             return True
         accepted = self.writer.enqueue(record)
         if not accepted:
@@ -368,8 +376,37 @@ class SignalPipeline:
                 return None
         self._pending_closed_sweep_audits.clear()
         sweep_update = self.sweeps.tick(now)
+        self._refresh_sweep_state_in_synchronizer()
         if sweep_update.reason is not None:
             self._pending_sweep_reasons.append(sweep_update.reason)
+            timer_event = CanonicalEvent(
+                event_id=uuid5(
+                    NAMESPACE_URL,
+                    f"sweep-timer:{self.run_id}:{now.isoformat()}:{','.join(value.isoformat() for value in sweep_update.expired_timestamps)}",
+                ),
+                run_id=self.run_id,
+                ingest_order=self._ingest_order + 1,
+                kind=EventKind.OPTIONS,
+                symbol="AAPL",
+                source="engine",
+                source_timestamp=now,
+                received_timestamp=now,
+                normalized_timestamp=now,
+                sequence=self._ingest_order + 1,
+                payload={
+                    "provider_event_kind": "sweep_timer",
+                    "sweep_expiry_timestamps": [
+                        value.isoformat() for value in sweep_update.expired_timestamps
+                    ],
+                    "trigger_reason": sweep_update.reason,
+                },
+            )
+            self._ingest_order += 1
+            if not self._enqueue(AuditWrite(event=timer_event)):
+                return None
+            for audit in sweep_update.transition_audits:
+                if not self._enqueue(AuditWrite(sweep=audit)):
+                    return None
         if self._pending_sweep_reasons:
             current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
             if current is not None:
@@ -453,6 +490,16 @@ class SignalPipeline:
         self.decisions.append(decision)
         self._last_evaluated[current.symbol] = current
         return decision
+
+    def _refresh_sweep_state_in_synchronizer(self) -> None:
+        current = self.synchronizer._events.get(("AAPL", EventKind.OPTIONS))
+        if current is None:
+            return
+        payload = dict(current.payload)
+        payload.update(self.sweeps.snapshot())
+        self.synchronizer._events[("AAPL", EventKind.OPTIONS)] = current.model_copy(
+            update={"payload": payload}
+        )
 
     def _handle_session_transition(self, timestamp: datetime) -> None:
         local_date = timestamp.astimezone(ET).date().isoformat()

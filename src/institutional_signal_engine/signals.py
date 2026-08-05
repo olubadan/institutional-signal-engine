@@ -1,5 +1,6 @@
 """Pure implementation of the formal S/F/R/E model and ranking rule."""
 
+from datetime import timedelta
 from decimal import Decimal
 
 from .config import Settings
@@ -45,13 +46,16 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
     sector = item.sector_delta is not None and item.sector_delta > 0
     signal = liquidity and options and equity and market and sector
     signal = signal and item.session_sweep_gate
-    if item.first_signal_at is None:
+    if item.most_recent_qualifying_sweep_timestamp is None:
         freshness_score = Decimal(0)
         freshness = False
     else:
-        elapsed = max(Decimal(0), Decimal((item.as_of - item.first_signal_at).total_seconds()))
-        freshness_score = max(Decimal(0), Decimal(1) - elapsed / Decimal(t.freshness_seconds))
-        freshness = freshness_score >= t.minimum_decay and options and equity
+        elapsed = max(
+            Decimal(0),
+            Decimal((item.as_of - item.most_recent_qualifying_sweep_timestamp).total_seconds()),
+        )
+        freshness_score = max(Decimal(0), Decimal(1) - elapsed / Decimal(1800))
+        freshness = elapsed < Decimal(timedelta(minutes=30).total_seconds()) and options and equity
     room_distance = item.resistance_state == "NO_OVERHEAD_RESISTANCE" or (
         item.distance_to_resistance is not None and item.distance_to_resistance >= t.minimum_room
     )

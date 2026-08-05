@@ -37,7 +37,10 @@ def replay(
     )
     for event in ordered:
         clock[0] = event.normalized_timestamp
-        pipeline.process(event)
+        if event.payload.get("provider_event_kind") == "sweep_timer":
+            pipeline.tick()
+        else:
+            pipeline.process(event)
     return tuple(pipeline.decisions)
 
 
@@ -79,5 +82,8 @@ def replay_with_consumed_quotes(
     )
     for event in inputs:
         clock[0] = event.normalized_timestamp
-        pipeline.process(event)
+        if event.payload.get("provider_event_kind") == "sweep_timer":
+            pipeline.tick()
+        else:
+            pipeline.process(event)
     return tuple(pipeline.decisions)

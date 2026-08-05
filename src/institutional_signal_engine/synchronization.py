@@ -76,6 +76,9 @@ class Synchronizer:
             qualifying_sweep_count=int(options.get("qualifying_sweep_count", 0)),
             qualifying_sweep_premium=options.get("qualifying_sweep_premium", 0),
             session_sweep_gate=bool(options.get("session_sweep_gate", False)),
+            most_recent_qualifying_sweep_timestamp=options.get(
+                "most_recent_qualifying_sweep_timestamp"
+            ),
             provenance={
                 f"{name}:{key}": value
                 for name, payload in (

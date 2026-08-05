@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator, Iterable
 from typing import Protocol
+from uuid import UUID
 
 from .schemas import CanonicalEvent, Decision
 
@@ -15,6 +16,10 @@ class MarketDataProvider(Protocol):
 class EventRepository(Protocol):
     def record_event(self, event: CanonicalEvent) -> None: ...
     def record_decision(self, decision: Decision) -> None: ...
+    def record_sweep(self, sweep: dict[str, object]) -> None: ...
+    def replay_sweep_transitions(
+        self, run_id: UUID | None = None
+    ) -> Iterable[dict[str, object]]: ...
     def replay_events(self) -> Iterable[CanonicalEvent]: ...
 
 

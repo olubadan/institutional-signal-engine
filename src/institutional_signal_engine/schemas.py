@@ -71,9 +71,13 @@ class SynchronizedInput(BaseModel):
     qualifying_sweep_count: int = 0
     qualifying_sweep_premium: Decimal = Decimal(0)
     session_sweep_gate: bool = False
+    most_recent_qualifying_sweep_timestamp: datetime | None = None
 
     _utc_as_of = field_validator("as_of")(utc)
     _utc_first = field_validator("first_signal_at")(lambda v: utc(v) if v else v)
+    _utc_sweep = field_validator("most_recent_qualifying_sweep_timestamp")(
+        lambda v: utc(v) if v else v
+    )
 
 
 class GateResult(BaseModel):

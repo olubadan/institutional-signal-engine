@@ -94,9 +94,7 @@ class AsyncAuditWriter:
                     if recorder is not None:
                         recorder(record.quote_consumption)
                 if record.sweep is not None:
-                    recorder = getattr(self.repository, "record_sweep", None)
-                    if recorder is not None:
-                        recorder(record.sweep)
+                    self.repository.record_sweep(record.sweep)
                 self.queue.task_done()
             flush = getattr(self.repository, "flush", None)
             if flush is not None:

@@ -208,6 +208,7 @@ class ThetaDataOptionsProvider:
             "trade_price": price,
             "condition_code": data.get("condition_code", data.get("condition")),
             "raw_exchange_condition": data.get("condition"),
+            "exchange": data.get("exchange"),
             "quote_context": {"bid": data.get("bid"), "ask": data.get("ask")},
             "quote_validity": quote_validity,
             "contract": {
