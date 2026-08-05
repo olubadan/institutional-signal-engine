@@ -54,7 +54,7 @@ class PostgresRepository:
 
     def record_event(self, event: CanonicalEvent) -> None:
         self._pending_events.append(event)
-        if len(self._pending_events) >= 500:
+        if len(self._pending_events) >= 100_000:
             self.flush()
 
     def flush(self) -> None:
