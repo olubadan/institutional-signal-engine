@@ -9,7 +9,7 @@ from .schemas import CanonicalEvent, Decision
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, counters jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, counters jsonb NOT NULL);
 """
 
 
@@ -61,6 +61,9 @@ class PostgresRepository:
         connection.execute(
             "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS run_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'"
         )
+        connection.execute(
+            "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS decision_order bigint NOT NULL DEFAULT 0"
+        )
 
     def record_event(self, event: CanonicalEvent) -> None:
         self._pending_events.append(event)
@@ -107,10 +110,11 @@ class PostgresRepository:
 
     def record_decision(self, decision: Decision) -> None:
         self._session().execute(
-            "INSERT INTO decisions (decision_id,run_id,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,counters) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            "INSERT INTO decisions (decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,counters) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
             (
                 decision.decision_id,
                 decision.run_id,
+                decision.decision_order,
                 decision.decided_at,
                 decision.selected_symbol,
                 decision.fire,
@@ -178,26 +182,27 @@ class PostgresRepository:
     def replay_decisions(self, run_id: UUID | None = None) -> tuple[Decision, ...]:
         """Read decisions as typed models for field-by-field replay comparison."""
         self.flush()
-        query = "SELECT decision_id,run_id,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,counters FROM decisions"
+        query = "SELECT decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,counters FROM decisions"
         params: tuple[UUID, ...] = ()
         if run_id is not None:
             query += " WHERE run_id = %s"
             params = (run_id,)
-        query += " ORDER BY decided_at,decision_id"
+        query += " ORDER BY decision_order,decision_id"
         rows = self._session().execute(query, params).fetchall()
         return tuple(
             Decision(
                 decision_id=row[0],
                 run_id=row[1],
-                decided_at=row[2],
-                selected_symbol=row[3],
-                fire=row[4],
-                candidates=tuple(row[5]),
-                rejection_reasons=tuple(row[6]),
-                input_event_ids=tuple(row[7]),
-                config_version=row[8],
-                engine_version=row[9],
-                counters=row[10],
+                decision_order=row[2],
+                decided_at=row[3],
+                selected_symbol=row[4],
+                fire=row[5],
+                candidates=tuple(row[6]),
+                rejection_reasons=tuple(row[7]),
+                input_event_ids=tuple(row[8]),
+                config_version=row[9],
+                engine_version=row[10],
+                counters=row[11],
             )
             for row in rows
         )

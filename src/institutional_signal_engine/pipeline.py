@@ -49,6 +49,7 @@ class SignalPipeline:
         self.now = now or (lambda: datetime.now(UTC))
         self.run_id = run_id or uuid4()
         self._ingest_order = 0
+        self._decision_order = 0
         self.synchronizer = Synchronizer()
         self.metrics = PipelineMetrics([], [], [])
         self._seen: set[object] = set()
@@ -101,6 +102,8 @@ class SignalPipeline:
             return None
         self._decided_states.add(state_id)
         decision = decide([snapshot], self.settings).model_copy(update={"run_id": self.run_id})
+        self._decision_order += 1
+        decision = decision.model_copy(update={"decision_order": self._decision_order})
         self.repository.record_decision(decision)
         self.decisions.append(decision)
         return decision

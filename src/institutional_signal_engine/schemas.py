@@ -98,6 +98,7 @@ class Decision(BaseModel):
     model_config = ConfigDict(frozen=True)
     decision_id: UUID
     run_id: UUID = UUID(int=0)
+    decision_order: int = Field(default=0, ge=0)
     decided_at: datetime
     selected_symbol: str | None
     fire: bool
