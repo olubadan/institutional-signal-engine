@@ -42,16 +42,16 @@
   runtime file; values were never displayed. Alpaca feed-name parsing is fixed and
   regression-tested. The official Theta Terminal runtime is active with both
   ports loopback-only. Options Standard exact-contract trade streaming is now
-  implemented for the supplied AAPL contract. The corrected 2026-08-05
-  regular-session smoke received 78 option trades and 18,182 Alpaca events;
-  Terminal connected but did not emit a request-correlated acknowledgement.
+  implemented for the supplied AAPL contract. The final corrected
+  2026-08-05 smoke received 60 option trades and 15,763 Alpaca events; the
+  Terminal acknowledgement correlated successfully through `header.req_id`.
 - **Test state:** Phase 1 structural checks remain passed. Phase 2 `make setup`
   passed twice; `make lint`, `make typecheck`, `make build`, and `make test` passed
   on Vast. Verification covered resources, tool versions, root-only environment
   files, trading-disabled state, branch, systemd/Docker enablement, container
   health, local connectivity, filesystem/PostgreSQL/Redis restart persistence,
   SSH key-only policy, reconnection, outbound HTTPS, and clean checkout. Phase 3
-  checks pass: `uv sync`, Ruff, mypy, 22 pytest tests split across provider,
+  checks pass: `uv sync`, Ruff, mypy, 27 pytest tests split across provider,
   reconnection, signal, persistence, and replay groups. ThetaData service/runtime
   startup and loopback binding passed. The six internal runtime variables were
   restored under explicit authority; dependency connectivity and filesystem,
@@ -71,9 +71,11 @@
   contract-list, expirations, and strikes helpers return Jetty HTTP 500. The
   supplied contract is used for validation; dynamic live discovery remains
   unverified. The formal model does not define the eligible-trade set,
-  ask-side classification, or five-day resistance/high formula; implementation
-  fails closed with explicit reasons at those missing inputs. GitHub branch
+  ask-side classification, or five-day resistance/high formula; these three
+  definitions are now owner-specified and implemented in SESSION-0010. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
+  Latest run-scoped replay equality passed; the remaining provider blocker is
+  dynamic discovery HTTP 500.
   Historical PostgreSQL rows span old and new decision identities, so full
   field-by-field replay equality is not claimed yet.
 - **Next action:** Run VM/database/CI verification on the pushed SESSION-0010
