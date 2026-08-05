@@ -19,10 +19,8 @@ SESSION_MIN_PREMIUM = Decimal(500000)
 SWEEP_FRESHNESS = timedelta(minutes=30)
 EXCHANGE_MAPPING_VERSION = "thetadata-opra-exchanges-v1"
 
-# ThetaData's published exchange enum is numeric.  The letter aliases are
-# retained only for sanitized historical fixtures; live adapter messages use
-# the numeric values.  A value absent from this versioned map is unknown and
-# cannot satisfy participation.
+# ThetaData's published exchange enum is numeric. A value absent from this
+# versioned map is unknown and cannot satisfy participation.
 THETADATA_EXCHANGE_CODES: dict[str, str] = {
     **{
         str(code): name
@@ -106,9 +104,6 @@ THETADATA_EXCHANGE_CODES: dict[str, str] = {
             77: "24X",
         }.items()
     },
-    "A": "NYSE_AMERICAN_FIXTURE_ALIAS",
-    "B": "BOX_FIXTURE_ALIAS",
-    "C": "CBOE_FIXTURE_ALIAS",
 }
 
 

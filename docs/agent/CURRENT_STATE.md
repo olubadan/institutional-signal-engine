@@ -278,3 +278,16 @@
   12 sweep projections, and 11 immutable transitions. No timer event was
   generated because no qualifying sweep occurred. Replay produced 26
   decisions with field-by-field equality. CI and all local checks passed.
+
+## Final two sweep-review corrections — 20260805
+
+- Removed fixture-only `A`/`B`/`C` aliases from the production ThetaData
+  exchange mapping. All ordinary sweep fixtures use authoritative numeric
+  identifiers; aliases, missing values, and unknown numeric values remain
+  audit-visible but cannot satisfy exchange participation.
+- Added exact freshness-boundary coverage at each qualifying sweep's most
+  recent constituent timestamp plus 30 minutes, retaining just-before and
+  just-after coverage. The pipeline timer persists and replay reproduces the
+  expiry decision field by field.
+- Local verification passed: Ruff format/lint, strict mypy on `src`, and 70
+  hermetic tests. PR #3 remains draft and unmerged; trading remains disabled.

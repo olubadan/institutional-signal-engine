@@ -12,6 +12,7 @@ from institutional_signal_engine.sweeps import (
 
 NOW = datetime(2026, 8, 5, 14, 31, tzinfo=UTC)
 CONTRACT = {"root": "AAPL", "expiration": 20260807, "strike": 310000, "right": "C"}
+VALID_EXCHANGES = ("5", "31", "43")
 
 
 def trade(
@@ -49,7 +50,7 @@ def trade(
 
 def qualifying_cluster(engine: SweepEngine, start: datetime = NOW) -> UUID:
     cluster_id = UUID(int=0)
-    for offset, exchange in enumerate(("A", "B", "C")):
+    for offset, exchange in enumerate(VALID_EXCHANGES):
         update = engine.process(trade(start + timedelta(milliseconds=offset), 5, exchange))
         if update.cluster is not None:
             cluster_id = update.cluster.cluster_id
@@ -59,9 +60,9 @@ def qualifying_cluster(engine: SweepEngine, start: datetime = NOW) -> UUID:
 
 def test_cluster_identity_and_fixed_boundary():
     engine = SweepEngine(uuid4())
-    first = engine.process(trade(NOW, 5, "A"))
-    same = engine.process(trade(NOW + timedelta(seconds=1), 5, "B"))
-    after = engine.process(trade(NOW + timedelta(seconds=1, milliseconds=1), 5, "C"))
+    first = engine.process(trade(NOW, 5, "5"))
+    same = engine.process(trade(NOW + timedelta(seconds=1), 5, "31"))
+    after = engine.process(trade(NOW + timedelta(seconds=1, milliseconds=1), 5, "43"))
     assert first.cluster is same.cluster
     assert after.cluster is not same.cluster
     assert same.cluster is not None and len(same.cluster.trades) == 2
@@ -69,8 +70,8 @@ def test_cluster_identity_and_fixed_boundary():
 
 def test_exact_identity_separates_contracts_and_only_calls_qualify():
     engine = SweepEngine(uuid4())
-    put = engine.process(trade(NOW, 5, "A", contract={**CONTRACT, "right": "P"}))
-    other_strike = engine.process(trade(NOW, 5, "B", contract={**CONTRACT, "strike": 311000}))
+    put = engine.process(trade(NOW, 5, "5", contract={**CONTRACT, "right": "P"}))
+    other_strike = engine.process(trade(NOW, 5, "31", contract={**CONTRACT, "strike": 311000}))
     assert put.reason is None and other_strike.reason is None
     assert put.cluster is None
     assert other_strike.cluster is not None and not other_strike.cluster.qualifying
@@ -78,16 +79,16 @@ def test_exact_identity_separates_contracts_and_only_calls_qualify():
 
 def test_three_distinct_exchanges_and_duplicate_exchange_rule():
     engine = SweepEngine(uuid4())
-    for exchange in ("A", "A", "B"):
+    for exchange in ("5", "5", "31"):
         update = engine.process(trade(NOW, 5, exchange))
     assert update.reason is None
-    update = engine.process(trade(NOW, 5, "C"))
+    update = engine.process(trade(NOW, 5, "43"))
     assert update.reason == "NEW_QUALIFYING_SWEEP"
 
 
 def test_cluster_premium_and_directional_boundaries():
     engine = SweepEngine(uuid4())
-    for exchange in ("A", "B", "C"):
+    for exchange in VALID_EXCHANGES:
         update = engine.process(trade(NOW, 5, exchange))
     assert update.cluster is not None
     assert update.audit is not None
@@ -96,26 +97,26 @@ def test_cluster_premium_and_directional_boundaries():
     assert update.audit["unknown_premium_percentage"] == "0"
 
     failing = SweepEngine(uuid4())
-    for exchange in ("A", "B", "C"):
+    for exchange in VALID_EXCHANGES:
         update = failing.process(trade(NOW, 4, exchange))
     assert update.reason is None
 
 
 def test_unknown_premium_boundary_and_zero_classified_fail_closed():
     at_boundary = SweepEngine(uuid4())
-    for exchange in ("A", "B", "C"):
+    for exchange in VALID_EXCHANGES:
         at_boundary.process(trade(NOW, 5, exchange))
-    update = at_boundary.process(trade(NOW, 5, "D", "unknown"))
+    update = at_boundary.process(trade(NOW, 5, "46", "unknown"))
     assert update.cluster is not None and update.cluster.qualifying
 
     over = SweepEngine(uuid4())
-    for exchange in ("A", "B", "C"):
+    for exchange in VALID_EXCHANGES:
         over.process(trade(NOW, 5, exchange))
-    update = over.process(trade(NOW, 16, "D", "unknown"))
+    update = over.process(trade(NOW, 16, "46", "unknown"))
     assert update.reason == "SWEEP_QUALIFICATION_REVOKED"
 
     zero = SweepEngine(uuid4())
-    for exchange in ("A", "B", "C"):
+    for exchange in VALID_EXCHANGES:
         update = zero.process(trade(NOW, 5, exchange, "unknown"))
     assert update.reason is None
 
@@ -146,10 +147,10 @@ def test_session_gate_requires_three_sweeps_and_five_hundred_thousand():
 def test_freshness_expires_once_and_newer_sweep_refreshes():
     engine = SweepEngine(uuid4())
     qualifying_cluster(engine, NOW)
-    assert (
-        engine.tick(NOW + timedelta(minutes=30, milliseconds=2)).reason == "SWEEP_FRESHNESS_EXPIRED"
-    )
-    assert engine.tick(NOW + timedelta(minutes=30, seconds=1)).reason is None
+    expiry = NOW + timedelta(milliseconds=2) + SWEEP_FRESHNESS
+    assert engine.tick(expiry - timedelta(milliseconds=1)).reason is None
+    assert engine.tick(expiry).reason == "SWEEP_FRESHNESS_EXPIRED"
+    assert engine.tick(expiry + timedelta(milliseconds=1)).reason is None
 
     newer = SweepEngine(uuid4())
     qualifying_cluster(newer, NOW)
@@ -163,7 +164,7 @@ def test_freshness_expires_once_and_newer_sweep_refreshes():
 
 def test_premium_just_below_boundary_does_not_qualify():
     engine = SweepEngine(uuid4())
-    for exchange in ("A", "B", "C"):
+    for exchange in VALID_EXCHANGES:
         update = engine.process(trade(NOW, 5, exchange, price=Decimal("99.99999")))
     assert update.cluster is not None
     assert update.audit["aggregate_eligible_premium"] == "149999.98500"
@@ -172,11 +173,11 @@ def test_premium_just_below_boundary_does_not_qualify():
 
 def test_cancellation_recomputes_qualification_and_uncorrelated_fails_closed():
     engine = SweepEngine(uuid4())
-    first = trade(NOW, 5, "A")
+    first = trade(NOW, 5, "5")
     engine.process(first)
-    second = trade(NOW + timedelta(milliseconds=1), 5, "B")
+    second = trade(NOW + timedelta(milliseconds=1), 5, "31")
     engine.process(second)
-    third = trade(NOW + timedelta(milliseconds=2), 5, "C")
+    third = trade(NOW + timedelta(milliseconds=2), 5, "43")
     assert engine.process(third).reason == "NEW_QUALIFYING_SWEEP"
 
     correction = third.model_copy(
@@ -224,12 +225,12 @@ def test_closed_qualifying_cluster_expires_for_freshness():
 
 def test_missing_and_unknown_exchanges_fail_with_threshold_evidence():
     engine = SweepEngine(uuid4())
-    for exchange in ("A", "", "999"):
+    for exchange in ("A", "B", "C", "", "999"):
         update = engine.process(trade(NOW, 5, exchange))
     assert update.cluster is not None
     assert update.cluster.qualifying is False
     assert update.audit["thresholds"]["three_exchanges"] is False
-    assert update.audit["exchange_identifiers"] == ["", "999", "A"]
+    assert update.audit["exchange_identifiers"] == ["", "999", "A", "B", "C"]
 
 
 def test_numeric_thetadata_exchange_mapping_is_versioned_and_authoritative():
@@ -239,12 +240,20 @@ def test_numeric_thetadata_exchange_mapping_is_versioned_and_authoritative():
     assert "999" not in THETADATA_EXCHANGE_CODES
 
 
+def test_three_valid_numeric_exchange_codes_satisfy_participation():
+    engine = SweepEngine(uuid4())
+    for exchange in VALID_EXCHANGES:
+        update = engine.process(trade(NOW, 5, exchange))
+    assert update.cluster is not None and update.cluster.qualifying
+    assert update.audit["thresholds"]["three_exchanges"] is True
+
+
 def test_ask_percentage_exact_boundary_and_just_below():
     exact = SweepEngine(uuid4())
     exact_specs = (
-        ("A", Decimal(975), "ask"),
-        ("B", Decimal("262.5"), "bid"),
-        ("C", Decimal("262.5"), "bid"),
+        ("5", Decimal(975), "ask"),
+        ("31", Decimal("262.5"), "bid"),
+        ("43", Decimal("262.5"), "bid"),
     )
     for exchange, price, side in exact_specs:
         update = exact.process(trade(NOW, 1, exchange, side, price=price))
@@ -253,9 +262,9 @@ def test_ask_percentage_exact_boundary_and_just_below():
 
     below = SweepEngine(uuid4())
     below_specs = (
-        ("A", Decimal("974.85"), "ask"),
-        ("B", Decimal("262.575"), "bid"),
-        ("C", Decimal("262.575"), "bid"),
+        ("5", Decimal("974.85"), "ask"),
+        ("31", Decimal("262.575"), "bid"),
+        ("43", Decimal("262.575"), "bid"),
     )
     for exchange, price, side in below_specs:
         update = below.process(trade(NOW, 1, exchange, side, price=price))
@@ -274,11 +283,11 @@ def test_session_reset_clears_sweep_count_and_premium():
 
 def test_correction_replaces_trade_and_preserves_both_records():
     engine = SweepEngine(uuid4())
-    first = trade(NOW, 5, "A")
+    first = trade(NOW, 5, "5")
     engine.process(first)
-    second = trade(NOW + timedelta(milliseconds=1), 5, "B")
+    second = trade(NOW + timedelta(milliseconds=1), 5, "31")
     engine.process(second)
-    third = trade(NOW + timedelta(milliseconds=2), 5, "C")
+    third = trade(NOW + timedelta(milliseconds=2), 5, "43")
     engine.process(third)
     corrective = trade(
         NOW + timedelta(milliseconds=3),
@@ -310,8 +319,8 @@ def test_correction_replaces_trade_and_preserves_both_records():
 
 def test_out_of_order_before_open_does_not_mutate_cluster():
     engine = SweepEngine(uuid4())
-    first = engine.process(trade(NOW, 5, "A"))
-    before = engine.process(trade(NOW - timedelta(milliseconds=1), 5, "B"))
+    first = engine.process(trade(NOW, 5, "5"))
+    before = engine.process(trade(NOW - timedelta(milliseconds=1), 5, "31"))
     assert before.reason == "SWEEP_OUT_OF_ORDER_BEFORE_OPEN"
     assert before.cluster is None
     assert first.cluster is not None and len(first.cluster.trades) == 1
@@ -319,13 +328,13 @@ def test_out_of_order_before_open_does_not_mutate_cluster():
 
 def test_transition_history_is_ordered_and_nonqualifying_audit_is_retained():
     nonqualifying = SweepEngine(uuid4())
-    update = nonqualifying.process(trade(NOW, 1, "A"))
+    update = nonqualifying.process(trade(NOW, 1, "5"))
     assert update.audit is not None
     assert update.audit["qualification_state"] is False
     assert update.audit["thresholds"]["cluster_premium"] is False
     engine = SweepEngine(uuid4())
     qualified = None
-    for exchange in ("A", "B", "C"):
+    for exchange in VALID_EXCHANGES:
         qualified = engine.process(trade(NOW, 5, exchange))
     assert qualified is not None
     assert qualified.transition_audits
@@ -370,7 +379,7 @@ def test_synchronous_repository_writes_sweep_audits():
 def test_exact_expiry_timestamp_is_a_transition():
     engine = SweepEngine(uuid4())
     qualifying_cluster(engine)
-    update = engine.tick(NOW + SWEEP_FRESHNESS + timedelta(milliseconds=2))
+    update = engine.tick(NOW + timedelta(milliseconds=2) + SWEEP_FRESHNESS)
     assert update.reason == "SWEEP_FRESHNESS_EXPIRED"
     assert update.transition_audits
     assert update.transition_audits[0]["transition"] == "SWEEP_FRESHNESS_EXPIRED"
@@ -382,7 +391,7 @@ def test_pipeline_freshness_expiry_re_evaluates_and_persists_timer():
     from institutional_signal_engine.pipeline import SignalPipeline
     from institutional_signal_engine.schemas import EventKind
 
-    expiry = NOW + SWEEP_FRESHNESS + timedelta(milliseconds=2)
+    expiry = NOW + timedelta(milliseconds=2) + SWEEP_FRESHNESS
     repository = InMemoryRepository()
     pipeline = SignalPipeline(Settings(), repository=repository, now=lambda: expiry)
     qualifying_cluster(pipeline.sweeps, NOW)
@@ -502,11 +511,11 @@ def test_timer_driven_freshness_replays_field_by_field():
                 "call_premium": Decimal(index * 50000),
             },
         )
-        for index, exchange in enumerate(("A", "B", "C"), 1)
+        for index, exchange in enumerate(VALID_EXCHANGES, 1)
     ]
     for input_event in (equity, market, sector, *option_events):
         pipeline.process(input_event)
-    clock[0] = NOW + SWEEP_FRESHNESS + timedelta(milliseconds=2)
+    clock[0] = NOW + SWEEP_FRESHNESS
     pipeline.tick()
     live_decisions = tuple(repository.decisions)
     replayed = replay(tuple(repository.events), ("AAPL",), Settings())
