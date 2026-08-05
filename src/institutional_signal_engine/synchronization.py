@@ -54,6 +54,7 @@ class Synchronizer:
             open_interest=options.get("open_interest"),
             call_premium=options.get("call_premium"),
             distance_to_resistance=options.get("distance_to_resistance"),
+            resistance_state=options.get("resistance_state"),
             relative_volume=equity.get("relative_volume"),
             equity_delta=equity.get("delta"),
             market_delta=market.get("delta"),

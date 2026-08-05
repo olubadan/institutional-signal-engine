@@ -8,11 +8,13 @@ as reason codes; zero is never used as a valid substitute.
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
+REGULAR_OPEN = time(9, 30)
+REGULAR_CLOSE = time(16, 0)
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,110 @@ def classify_option_trade(price: Decimal, bid: Decimal | None, ask: Decimal | No
     if bid is not None and price <= bid:
         return "bid"
     return "unknown"
+
+
+@dataclass(frozen=True)
+class OptionContractIdentity:
+    root: str
+    expiration: int
+    strike: int
+    right: str
+
+
+@dataclass(frozen=True)
+class OptionQuoteContext:
+    bid: Decimal
+    ask: Decimal
+    timestamp: datetime
+    contract: OptionContractIdentity
+
+
+@dataclass(frozen=True)
+class OptionTradeContext:
+    price: Decimal
+    timestamp: datetime
+    contract: OptionContractIdentity
+
+
+def regular_session(timestamp: datetime) -> bool:
+    local = timestamp.astimezone(ET)
+    return REGULAR_OPEN <= local.time() <= REGULAR_CLOSE
+
+
+def classify_ask_side(trade: OptionTradeContext, quote: OptionQuoteContext | None) -> str:
+    """Apply the owner-defined quote validity and ask-side boundary exactly."""
+    if quote is None:
+        return "unknown"
+    trade_time = trade.timestamp.astimezone(UTC)
+    quote_time = quote.timestamp.astimezone(UTC)
+    valid = (
+        quote.bid > 0
+        and quote.ask > 0
+        and quote.ask >= quote.bid
+        and quote_time <= trade_time
+        and (trade_time - quote_time).total_seconds() <= Decimal("0.5")
+        and quote.contract == trade.contract
+    )
+    if not valid:
+        return "unknown"
+    midpoint = (quote.bid + quote.ask) / Decimal(2)
+    return (
+        "ask"
+        if trade.price >= quote.ask - Decimal("0.01") and trade.price > midpoint
+        else "unknown"
+    )
+
+
+@dataclass(frozen=True)
+class ResistanceLevel:
+    state: str
+    level: Decimal | None
+    distance: Decimal | None
+    source_sessions: tuple[str, ...]
+    adjustment_metadata: str
+    provenance: str
+
+
+class ResistanceCache:
+    def __init__(self) -> None:
+        self._values: dict[tuple[str, str], ResistanceLevel] = {}
+
+    def calculate(
+        self,
+        symbol: str,
+        session: str,
+        current_price: Decimal,
+        completed_session_highs: dict[str, Decimal],
+        adjustment_metadata: str,
+        provenance: str,
+    ) -> ResistanceLevel:
+        key = (symbol, session)
+        if key in self._values:
+            return self._values[key]
+        ordered = sorted(completed_session_highs.items(), reverse=True)
+        levels: list[tuple[int, Decimal, tuple[str, ...]]] = []
+        for count in (5, 20, 252):
+            window = ordered[:count]
+            if len(window) >= count:
+                levels.append(
+                    (count, max(value for _, value in window), tuple(day for day, _ in window))
+                )
+        selected = next((item for item in levels if item[1] > current_price), None)
+        if selected is None:
+            result = ResistanceLevel(
+                "NO_OVERHEAD_RESISTANCE", None, None, (), adjustment_metadata, provenance
+            )
+        else:
+            result = ResistanceLevel(
+                "OVERHEAD_RESISTANCE",
+                selected[1],
+                (selected[1] - current_price) / current_price,
+                selected[2],
+                adjustment_metadata,
+                provenance,
+            )
+        self._values[key] = result
+        return result
 
 
 class IndicatorCalculator:
@@ -172,8 +278,6 @@ def option_evidence(
     reasons: list[str] = []
     if open_interest is None or open_interest <= 0:
         reasons.append("missing_or_zero_open_interest")
-    if distance_to_resistance is None:
-        reasons.append("missing_resistance_distance")
     return OptionEvidence(
         state.cumulative_option_volume,
         open_interest,

@@ -188,6 +188,7 @@ class ThetaDataOptionsProvider:
         payload = {
             "trade_size": size,
             "trade_price": price,
+            "condition_code": data.get("condition_code", data.get("condition")),
             "raw_exchange_condition": data.get("condition"),
             "quote_context": {"bid": data.get("bid"), "ask": data.get("ask")},
             "contract": {

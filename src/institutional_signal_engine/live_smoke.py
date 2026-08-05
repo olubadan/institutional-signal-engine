@@ -99,6 +99,7 @@ async def run(seconds: float) -> dict[str, object]:
         else ["AAPL:insufficient_synchronized_inputs"]
     )
     return {
+        "run_id": str(pipeline.run_id),
         "trading_enabled": False,
         "contracts_subscribed": [
             {
@@ -130,6 +131,7 @@ async def run(seconds: float) -> dict[str, object]:
         "late_events": pipeline.metrics.late_events,
         "out_of_order_events": pipeline.metrics.out_of_order_events,
         "duplicate_events": pipeline.metrics.duplicate_events,
+        "unknown_condition_events": pipeline.metrics.unknown_condition_events,
         "processing_latency_ms": {
             "median": round(median(pipeline.metrics.processing_latency_ms), 3)
             if pipeline.metrics.processing_latency_ms

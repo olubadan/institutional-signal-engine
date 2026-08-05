@@ -27,7 +27,6 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
     )
     options = (
         "missing_or_zero_open_interest" not in missing
-        and "missing_resistance_distance" not in missing
         and item.call_premium is not None
         and item.option_volume is not None
         and item.open_interest is not None
@@ -45,11 +44,13 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
         elapsed = max(Decimal(0), Decimal((item.as_of - item.first_signal_at).total_seconds()))
         freshness_score = max(Decimal(0), Decimal(1) - elapsed / Decimal(t.freshness_seconds))
         freshness = freshness_score >= t.minimum_decay and options and equity
+    room_distance = item.resistance_state == "NO_OVERHEAD_RESISTANCE" or (
+        item.distance_to_resistance is not None and item.distance_to_resistance >= t.minimum_room
+    )
     room = (
-        item.distance_to_resistance is not None
+        room_distance
         and item.volume is not None
         and item.spread is not None
-        and item.distance_to_resistance >= t.minimum_room
         and item.volume >= t.minimum_volume
         and item.spread <= t.maximum_spread
         and item.concurrent_positions < settings.capacity

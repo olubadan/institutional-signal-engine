@@ -25,6 +25,7 @@ class EventKind(StrEnum):
 class CanonicalEvent(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     event_id: UUID
+    run_id: UUID = UUID(int=0)
     kind: EventKind
     symbol: str
     source: str
@@ -50,6 +51,7 @@ class SynchronizedInput(BaseModel):
     call_premium: Decimal | None
     spread: Decimal | None
     distance_to_resistance: Decimal | None
+    resistance_state: str | None = None
     relative_volume: Decimal | None
     equity_delta: Decimal | None
     market_delta: Decimal | None
@@ -94,6 +96,7 @@ class CandidateCounters(BaseModel):
 class Decision(BaseModel):
     model_config = ConfigDict(frozen=True)
     decision_id: UUID
+    run_id: UUID = UUID(int=0)
     decided_at: datetime
     selected_symbol: str | None
     fire: bool

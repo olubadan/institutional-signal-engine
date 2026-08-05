@@ -5,14 +5,23 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from time import monotonic
+from uuid import UUID, uuid4
 
 from .config import Settings
-from .indicators import classify_option_trade, session_key
+from .indicators import (
+    OptionContractIdentity,
+    OptionQuoteContext,
+    OptionTradeContext,
+    classify_ask_side,
+    regular_session,
+    session_key,
+)
 from .persistence import InMemoryRepository
 from .ports import EventRepository
 from .schemas import CanonicalEvent, Decision, EventKind
 from .signals import decide
 from .synchronization import Synchronizer
+from .thetadata_conditions import CONDITION_MAPPING_VERSION, eligible_condition
 
 
 @dataclass
@@ -24,6 +33,7 @@ class PipelineMetrics:
     stale_events: int = 0
     out_of_order_events: int = 0
     duplicate_events: int = 0
+    unknown_condition_events: int = 0
 
 
 class SignalPipeline:
@@ -32,10 +42,12 @@ class SignalPipeline:
         settings: Settings,
         repository: EventRepository | None = None,
         now: Callable[[], datetime] | None = None,
+        run_id: UUID | None = None,
     ) -> None:
         self.settings = settings
         self.repository: EventRepository = repository or InMemoryRepository()
         self.now = now or (lambda: datetime.now(UTC))
+        self.run_id = run_id or uuid4()
         self.synchronizer = Synchronizer()
         self.metrics = PipelineMetrics([], [], [])
         self._seen: set[object] = set()
@@ -64,6 +76,8 @@ class SignalPipeline:
             return None
         self._seen.add(event.event_id)
         event = self._enrich_state(event)
+        if event.run_id == UUID(int=0):
+            event = event.model_copy(update={"run_id": self.run_id})
         if not self.synchronizer.add(event):
             self.metrics.out_of_order_events += 1
             return None
@@ -78,7 +92,7 @@ class SignalPipeline:
         if state_id in self._decided_states:
             return None
         self._decided_states.add(state_id)
-        decision = decide([snapshot], self.settings)
+        decision = decide([snapshot], self.settings).model_copy(update={"run_id": self.run_id})
         self.repository.record_decision(decision)
         self.decisions.append(decision)
         return decision
@@ -98,26 +112,56 @@ class SignalPipeline:
             payload["volume"] = self._equity_volume[key]
         elif event.kind == EventKind.OPTIONS:
             size = int(payload.get("trade_size", payload.get("option_volume", 0)))
+            contract_data = payload.get("contract", {})
+            right = str(contract_data.get("right", "")).upper()
+            condition_code = payload.get("condition_code")
+            # The mapping is intentionally numeric and versioned; no text matching occurs.
+            eligible = (
+                right == "C"
+                and size >= 1
+                and regular_session(event.source_timestamp)
+                and isinstance(condition_code, int)
+                and eligible_condition(condition_code)
+            )
+            payload["condition_mapping_version"] = CONDITION_MAPPING_VERSION
+            payload["eligible_trade"] = eligible
+            if isinstance(condition_code, int) and condition_code not in range(98):
+                self.metrics.unknown_condition_events += 1
+                payload["eligibility_reason"] = "unknown_condition_code"
+            elif not eligible:
+                payload["eligibility_reason"] = "excluded_or_non_call_or_session_or_size"
+            if not eligible:
+                return event.model_copy(update={"payload": payload})
             self._option_volume[key] += size
             payload["option_volume"] = self._option_volume[key]
             price = payload.get("trade_price")
             quote = payload.get("quote_context", {})
             if price is not None:
                 price_decimal = Decimal(str(price))
-                bid = quote.get("bid")
-                ask = quote.get("ask")
-                classification = classify_option_trade(
-                    price_decimal,
-                    Decimal(str(bid)) if bid is not None else None,
-                    Decimal(str(ask)) if ask is not None else None,
+                identity = OptionContractIdentity(
+                    str(contract_data.get("root", "")).upper(),
+                    int(contract_data.get("expiration", 0)),
+                    int(contract_data.get("strike", 0)),
+                    right,
+                )
+                trade_time = event.source_timestamp
+                quote_time = quote.get("timestamp")
+                quote_context = None
+                if quote.get("bid") is not None and quote.get("ask") is not None and quote_time:
+                    quote_context = OptionQuoteContext(
+                        Decimal(str(quote["bid"])),
+                        Decimal(str(quote["ask"])),
+                        datetime.fromisoformat(str(quote_time)),
+                        identity,
+                    )
+                classification = classify_ask_side(
+                    OptionTradeContext(price_decimal, trade_time, identity), quote_context
                 )
                 payload["trade_classification"] = classification
                 premium = price_decimal * Decimal(size) * Decimal(100)
                 if classification == "ask":
                     self._ask_premium[key] += premium
                     self._net_call_premium[key] += premium
-                elif classification == "bid":
-                    self._net_call_premium[key] -= premium
                 payload["ask_premium"] = self._ask_premium[key]
                 payload["call_premium"] = self._net_call_premium[key]
         return event.model_copy(update={"payload": payload})
