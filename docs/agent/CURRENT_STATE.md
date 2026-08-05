@@ -84,6 +84,29 @@
 - **Next action:** Obtain independent review of PR #3. Keep it draft and
   unmerged; dynamic ThetaData discovery remains the only provider blocker.
 
+## Throughput correction — 20260805
+
+- Session-0011 implements O(1) latest-value quote slots, bounded event-time
+  classification windows, immutable individual trade persistence, material-
+  change-only evaluation, timer-driven freshness checks, asynchronous batched
+  audit writes, explicit soft/hard backpressure, and deterministic consumed-
+  quote replay.
+- Final 60-second run ID `b9e0f47a-a16d-422f-b389-0386d66634ef`: 10,483 total
+  events (`10,376` quotes and `115` trades); quotes received/superseded/
+  consumed `10,376/10,374/91`; trades received/processed `115/115`;
+  evaluations triggered/skipped `5/101`; stale/late/duplicate/out-of-order
+  `0/0/0/0`; unknown conditions `5`; candidate counters `1/0/0/0`.
+- Internal targets passed. Internal queue-wait p50/p95 was below 0.1/0.2 ms
+  for Alpaca quotes and trades; processing p95 was below 0.1 ms for quotes and
+  0.98 ms for trades. Total age remains reported separately by provider and
+  event kind. Queue depth p50/p95/max was `1/4/11`; database-write latency
+  p50/p95/max was `20.355/25.078/36.394 ms`; no soft or hard limit activity.
+- PostgreSQL contained 115 trade events, 91 consumed quotes and 5 decisions.
+  Replay consumed those exact inputs and produced 5 decisions with
+  field-by-field equality. Quote roles included `BOTH` and `CURRENT_STATE`.
+- PR #3 remains draft and unmerged. The external ThetaData discovery HTTP 500
+  blocker remains unchanged; no discovery endpoint was retried.
+
 ## Closure-pass publication — 20260805T1615Z
 
 - Closure commit `ddfa96adfe60e7251805cad5880bb0c635e57097` is pushed to the

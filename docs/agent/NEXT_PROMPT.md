@@ -8,12 +8,12 @@ Read `AGENTS.md`, `docs/agent/CURRENT_STATE.md`,
 draft PR #3 diff. Compare them with live GitHub and Vast state before changing
 anything.
 
-SESSION-0010 added stateful Decimal indicator primitives, continuous processing,
-typed PostgreSQL event replay, correlated ThetaData acknowledgements, dynamic
-universe selection ports, separate candidate counters, provider/event-kind
-timing distributions, and hermetic CI. Keep the corrected run-scoped replay
-proof qualified to its recorded versions. Treat ThetaData discovery as fixture-
-verified but not live-verified while HTTP 500 remains awaiting support. Verify
+SESSION-0011 added quote conflation, bounded classification windows,
+material-change evaluation, asynchronous persistence with backpressure, and
+consumed-quote replay. Verify the pushed head, keep the throughput run-scoped
+replay proof qualified to recorded versions, and preserve the provider/event-
+kind latency evidence. Treat ThetaData discovery as fixture-verified but not
+live-verified while HTTP 500 remains awaiting support. Verify
 the pushed head on the VM and in GitHub Actions, then run a bounded smoke only
 if the regular session is open.
 Do not infer or purchase a subscription. Keep `TRADING_ENABLED=false`; do not
