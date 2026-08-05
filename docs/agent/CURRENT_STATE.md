@@ -313,4 +313,6 @@
   support; the expiration-plus-strike workflow is fixture-tested.
 - Local Phase 4 preparation checks pass: Ruff format/lint, strict mypy on `src`,
   and 77 hermetic tests. Trading remains disabled; no orders were constructed
-  or submitted. Next-session command is documented in `docs/phase4/README.md`.
+  or submitted. Preparation commit `df034e485edf48c4b082a22e40a62ce67cfbebb4`
+  is published in draft PR #4. GitHub Actions run `31044392765` passed on that
+  head. Next-session command is documented in `docs/phase4/README.md`.
