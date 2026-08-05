@@ -1,15 +1,24 @@
 # Institutional Signal Engine
 
-Documentation baseline for a deterministic, event-driven system that will
-synchronize equity and options market data, evaluate institutional signal gates,
-rank candidates, and support Alpaca paper execution.
+Deterministic, signal-only event-driven system that synchronizes equity and
+options market data, evaluates institutional signal gates, and records decisions.
 
 > [!IMPORTANT]
-> Phase 1 produced the documentation baseline. Phase 2 adds only the verified Vast
-> development/runtime environment; no market-data, signal, execution, or live-
-> trading implementation is present. Live trading is outside the authorized scope.
+> Phase 3 is signal observation only. Trading remains disabled and this release
+> contains no order-construction or order-submission route.
 
-## Phase 2 environment
+## Phase 3 signal-only slice
+
+The Python 3.12/uv package provides typed canonical events, replaceable Alpaca
+and ThetaData adapters, deterministic synchronization, S/F/R/E gates, ranking,
+PostgreSQL audit storage, replay, structured logging, and a loopback status
+endpoint. Provider credentials are supplied only through the protected Vast
+runtime file.
+
+Run the local fixture suite with `make lint-python`, `make typecheck-python`, and
+`make test-python`.
+
+## Vast environment
 
 The reproducible Vast bootstrap and verification entrypoints are documented in
 [`docs/environment/VAST_SETUP.md`](docs/environment/VAST_SETUP.md). On the approved

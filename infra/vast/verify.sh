@@ -4,7 +4,6 @@ set -Eeuo pipefail
 readonly REPO_DIR="${REPO_DIR:-/opt/institutional-signal-engine}"
 readonly CONFIG_DIR="/etc/institutional-signal-engine"
 readonly RUNTIME_ENV="${CONFIG_DIR}/runtime.env"
-readonly STATE_DIR="/var/lib/institutional-signal-engine"
 readonly RUN_PERSISTENCE="${1:-}"
 
 pass() {
@@ -50,17 +49,12 @@ pass "required command-line tools available"
   fail "runtime environment ownership/mode is not root:root:600"
 pass "environment files protected"
 
-set -a
-# shellcheck source=/dev/null
-source "${RUNTIME_ENV}"
-set +a
-[[ ${TRADING_ENABLED:-} == "false" ]] || fail "trading is not disabled"
-pass "trading disabled"
+python3.12 "${REPO_DIR}/infra/vast/runtime_probe.py" || exit $?
 
 [[ -d "${REPO_DIR}/.git" ]] || fail "repository clone missing"
-[[ $(git -C "${REPO_DIR}" branch --show-current) == "chore/vast-environment-bootstrap" ]] ||
+[[ $(git -C "${REPO_DIR}" branch --show-current) == "feat/signal-only-vertical-slice" ]] ||
   fail "unexpected repository branch"
-pass "repository and Phase 2 branch present"
+pass "repository and Phase 3 branch present"
 
 systemctl is-enabled docker >/dev/null
 systemctl is-active docker >/dev/null
@@ -84,33 +78,10 @@ wait_healthy institutional-signal-postgres || fail "PostgreSQL container unhealt
 wait_healthy institutional-signal-redis || fail "Redis container unhealthy"
 pass "PostgreSQL and Redis containers healthy"
 
-PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atqc 'SELECT 1' |
-  grep -qx '1' || fail "PostgreSQL connectivity failed"
-REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli -h 127.0.0.1 ping 2>/dev/null |
-  grep -qx 'PONG' || fail "Redis connectivity failed"
-pass "local dependency connectivity"
+pass "local dependency connectivity verified by Python data-only probe"
 
 if [[ ${RUN_PERSISTENCE} == "--persistence" ]]; then
-  install -d -o root -g root -m 0750 "${STATE_DIR}"
-  printf 'phase2-persistence-ok\n' >"${STATE_DIR}/persistence-sentinel"
-  PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
-CREATE TABLE IF NOT EXISTS phase2_persistence (id integer PRIMARY KEY, value text NOT NULL);
-INSERT INTO phase2_persistence (id, value) VALUES (1, 'verified')
-ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value;
-SQL
-  REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli -h 127.0.0.1 SET phase2:persistence verified >/dev/null 2>&1
-
-  systemctl restart institutional-signal-dependencies.service
-  wait_healthy institutional-signal-postgres || fail "PostgreSQL unhealthy after restart"
-  wait_healthy institutional-signal-redis || fail "Redis unhealthy after restart"
-
-  [[ $(<"${STATE_DIR}/persistence-sentinel") == "phase2-persistence-ok" ]] ||
-    fail "filesystem sentinel did not persist"
-  [[ $(PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -Atqc 'SELECT value FROM phase2_persistence WHERE id = 1') == "verified" ]] ||
-    fail "PostgreSQL data did not persist"
-  [[ $(REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli -h 127.0.0.1 GET phase2:persistence 2>/dev/null) == "verified" ]] ||
-    fail "Redis data did not persist"
-  pass "filesystem, PostgreSQL, and Redis state survived service restart"
+  python3.12 "${REPO_DIR}/infra/vast/runtime_probe.py" --persistence || exit $?
 fi
 
 sshd_effective_config=$(sshd -T)
@@ -119,4 +90,4 @@ grep -qx 'passwordauthentication no' <<<"${sshd_effective_config}" ||
 grep -Eq '^permitrootlogin (without-password|prohibit-password)$' <<<"${sshd_effective_config}" ||
   fail "root SSH permits password login"
 pass "SSH key-only policy active"
-pass "Phase 2 environment verification complete"
+pass "Phase 3 environment verification complete"

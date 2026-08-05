@@ -1,11 +1,28 @@
 # Proposed Next Codex Prompt
 
 ```text
-Review Phase 2 draft pull request #2 for olubadan/institutional-signal-engine as SESSION-0009.
+Continue the Phase 3 owner-review handoff for `olubadan/institutional-signal-engine`.
 
-Before taking any action, read AGENTS.md, docs/agent/CURRENT_STATE.md, docs/agent/JOURNAL_INDEX.md, the most recent session record at docs/agent/sessions/20260803T190342Z-SESSION-0008.md, docs/environment/VAST_SETUP.md, docs/infrastructure/VAST_INSTANCE.md, docs/adr/0001-vast-ubuntu-22-exception.md, docs/07_Requirements_Traceability_Matrix.md, and all applicable repository instructions. Compare documented state with live GitHub and report discrepancies before changing anything.
+Read `AGENTS.md`, `docs/agent/CURRENT_STATE.md`,
+`docs/agent/JOURNAL_INDEX.md`, the completed SESSION-0009 record, and the full
+draft PR #3 diff. Compare them with live GitHub and Vast state before changing
+anything.
 
-Review the complete PR #2 diff and Phase 2 acceptance evidence. Verify read-only that instance 46725769 remains SSH-accessible, trading remains disabled, the repository checkout is on chore/vast-environment-bootstrap, Docker and institutional-signal-dependencies.service are enabled/active, PostgreSQL and Redis are healthy, protected environment files retain root:root mode 0600, and the documented make lint/typecheck/build/test commands pass. Never display credentials or the public SSH connection string.
-
-Do not modify or merge PR #2. Do not request provider credentials, provision another instance, implement application/trading code, or enable trading. Report whether Phase 2 is ready to merge, the Ubuntu 22.04/finite-duration exceptions, remaining blockers, and the exact owner decision required. Create a journal record only if repository mutation becomes necessary; otherwise provide a read-only review.
+SESSION-0011 added quote conflation, bounded classification windows,
+material-change evaluation, asynchronous persistence with backpressure,
+consumed-quote replay, historical indicator bootstrap/wiring, idempotent
+session-boundary handling, and the owner-authorized fixed-window sweep
+cluster/session gate with correction and freshness handling. Verify the
+pushed head on the VM and in GitHub Actions, then run a bounded smoke only if
+the regular session is open; do not claim a live qualifying sweep unless the
+feed naturally produces one. Treat ThetaData discovery as
+fixture-verified but not live-verified while HTTP 500 remains awaiting
+support.
+The final two sweep-review corrections are implemented and verified locally:
+production exchange participation uses only numeric ThetaData identifiers and
+freshness expiry is covered immediately before, at, and after the exact
+30-minute boundary with timer persistence and replay equality. Confirm the
+pushed head and CI, then await owner review. Do not infer or purchase a
+subscription. Keep `TRADING_ENABLED=false`; do not construct or submit orders,
+expose ports, reveal credentials, merge PR #3, or begin execution work.
 ```

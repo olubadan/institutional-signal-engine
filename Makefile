@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 RUNTIME_ENV_FILE ?= /etc/institutional-signal-engine/runtime.env
 COMPOSE_FILE := infra/vast/compose.yaml
 
-.PHONY: setup lint typecheck test build
+.PHONY: setup lint typecheck test build lint-python typecheck-python test-python install-thetadata
 
 setup:
 	sudo bash infra/vast/bootstrap.sh
@@ -21,3 +21,16 @@ test:
 
 build:
 	docker compose --env-file $(RUNTIME_ENV_FILE) -f $(COMPOSE_FILE) pull
+
+lint-python:
+	uv run ruff format --check src tests
+	uv run ruff check src tests
+
+typecheck-python:
+	uv run mypy src
+
+test-python:
+	uv run pytest -q
+
+install-thetadata:
+	sudo bash infra/vast/install-thetadata.sh

@@ -89,6 +89,21 @@ AOF-backed key survive. A full VM reboot is not
 required for this check; enablement plus service restart verifies restart recovery
 without risking the active SSH path.
 
+### ThetaData Terminal
+
+Phase 3 installs the official ThetaData v3 bootstrap JAR with a containerized
+Java 21 runtime:
+
+```bash
+make install-thetadata
+```
+
+The systemd-managed Terminal receives `THETADATA_API_KEY` only through its process
+environment. Its REST and event ports are published only on `127.0.0.1`; no
+ThetaData port may be exposed publicly. See the official
+[installation](https://docs.thetadata.us/Articles/Getting-Started/Getting-Started.html)
+and [streaming](https://docs.thetadata.us/Streaming/Getting-Started.html) contracts.
+
 ## Reconnection and recovery
 
 After an SSH disconnect, reconnect using the owner-managed SSH configuration,
