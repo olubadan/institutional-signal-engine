@@ -32,63 +32,70 @@ class InMemoryRepository:
 class PostgresRepository:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
+        self._connection: Any | None = None
 
     def _connect(self) -> Any:
         import psycopg
 
-        return psycopg.connect(self.database_url)
+        return psycopg.connect(self.database_url, autocommit=True)
+
+    def _session(self) -> Any:
+        if self._connection is None or self._connection.closed:
+            self._connection = self._connect()
+        return self._connection
 
     def initialize(self) -> None:
-        with self._connect() as connection:
-            connection.execute(SCHEMA)
-            connection.execute(
-                "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS counters jsonb NOT NULL DEFAULT '{}'::jsonb"
-            )
+        connection = self._session()
+        connection.execute(SCHEMA)
+        connection.execute(
+            "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS counters jsonb NOT NULL DEFAULT '{}'::jsonb"
+        )
 
     def record_event(self, event: CanonicalEvent) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "INSERT INTO canonical_events VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                (
-                    event.event_id,
-                    event.kind.value,
-                    event.symbol,
-                    event.source,
-                    event.source_timestamp,
-                    event.received_timestamp,
-                    event.normalized_timestamp,
-                    event.sequence,
-                    json.dumps(event.payload, default=str),
-                ),
-            )
+        self._session().execute(
+            "INSERT INTO canonical_events VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            (
+                event.event_id,
+                event.kind.value,
+                event.symbol,
+                event.source,
+                event.source_timestamp,
+                event.received_timestamp,
+                event.normalized_timestamp,
+                event.sequence,
+                json.dumps(event.payload, default=str),
+            ),
+        )
 
     def record_decision(self, decision: Decision) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "INSERT INTO decisions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                (
-                    decision.decision_id,
-                    decision.decided_at,
-                    decision.selected_symbol,
-                    decision.fire,
-                    json.dumps(
-                        [candidate.model_dump(mode="json") for candidate in decision.candidates]
-                    ),
-                    json.dumps(decision.rejection_reasons),
-                    json.dumps([str(value) for value in decision.input_event_ids]),
-                    decision.config_version,
-                    decision.engine_version,
-                    json.dumps(decision.counters.model_dump()),
+        self._session().execute(
+            "INSERT INTO decisions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            (
+                decision.decision_id,
+                decision.decided_at,
+                decision.selected_symbol,
+                decision.fire,
+                json.dumps(
+                    [candidate.model_dump(mode="json") for candidate in decision.candidates]
                 ),
-            )
+                json.dumps(decision.rejection_reasons),
+                json.dumps([str(value) for value in decision.input_event_ids]),
+                decision.config_version,
+                decision.engine_version,
+                json.dumps(decision.counters.model_dump()),
+            ),
+        )
 
     def replay_events(self) -> Iterable[CanonicalEvent]:
-        with self._connect() as connection:
-            rows = connection.execute(
+        rows = (
+            self._session()
+            .execute(
                 "SELECT event_id,kind,symbol,source,source_timestamp,received_timestamp,"
                 "normalized_timestamp,sequence,payload FROM canonical_events ORDER BY "
                 "normalized_timestamp,event_id"
-            ).fetchall()
+            )
+            .fetchall()
+        )
         from .schemas import EventKind
 
         return tuple(
@@ -107,21 +114,22 @@ class PostgresRepository:
         )
 
     def decision_count(self) -> int:
-        with self._connect() as connection:
-            return int(connection.execute("SELECT count(*) FROM decisions").fetchone()[0])
+        return int(self._session().execute("SELECT count(*) FROM decisions").fetchone()[0])
 
     def event_count(self) -> int:
-        with self._connect() as connection:
-            return int(connection.execute("SELECT count(*) FROM canonical_events").fetchone()[0])
+        return int(self._session().execute("SELECT count(*) FROM canonical_events").fetchone()[0])
 
     def replay_decisions(self) -> tuple[Decision, ...]:
         """Read decisions as typed models for field-by-field replay comparison."""
-        with self._connect() as connection:
-            rows = connection.execute(
+        rows = (
+            self._session()
+            .execute(
                 "SELECT decision_id,decided_at,selected_symbol,fire,candidates,"
                 "rejection_reasons,input_event_ids,config_version,engine_version,counters "
                 "FROM decisions ORDER BY decided_at,decision_id"
-            ).fetchall()
+            )
+            .fetchall()
+        )
         return tuple(
             Decision(
                 decision_id=row[0],
