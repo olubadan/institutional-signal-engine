@@ -18,7 +18,7 @@
 - **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
   [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
   draft, cleanly mergeable, and unmerged at
-  `bcdd889a2d95e2c652106cb854d1fe760e7cb02a`.
+  `2043ac17eeb3a8e23d955ae7c8042568c08d48bc`.
 - **Current architecture:** Phase 3 provides typed configuration, canonical
   events, provider adapters, synchronization, signal gates/ranking, persistence,
   replay, and loopback observability. Execution remains absent.
@@ -49,7 +49,7 @@
   files, trading-disabled state, branch, systemd/Docker enablement, container
   health, local connectivity, filesystem/PostgreSQL/Redis restart persistence,
   SSH key-only policy, reconnection, outbound HTTPS, and clean checkout. Phase 3
-  checks pass: `uv sync`, Ruff, mypy, 16 pytest tests split across provider,
+  checks pass: `uv sync`, Ruff, mypy, 18 pytest tests split across provider,
   reconnection, signal, persistence, and replay groups. ThetaData service/runtime
   startup and loopback binding passed. The six internal runtime variables were
   restored under explicit authority; dependency connectivity and filesystem,
@@ -68,6 +68,5 @@
   supplied contract is used for validation; the next regular-session smoke is
   pending. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
-- **Next action:** Owner confirms Options Pro access or authorizes an
-  exact-contract Options Standard follow-up after the contract-list endpoint is
-  healthy. Keep PR #3 draft and unmerged.
+- **Next action:** Run the supplied AAPL exact-contract Standard smoke after
+  09:30 ET when the market is open, then keep PR #3 draft and unmerged.
