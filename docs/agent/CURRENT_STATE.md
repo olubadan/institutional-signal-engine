@@ -42,7 +42,8 @@
   regression-tested. The official Theta Terminal runtime is active with both
   ports loopback-only. Options Standard exact-contract trade streaming is now
   implemented for the supplied AAPL contract; the subscription acknowledgement
-  was verified with request ID 1. Discovery helpers remain HTTP 500.
+  was verified with request ID 1. The 2026-08-05 regular-session smoke received
+  80 option trades and 45,184 Alpaca events, with one synchronized input.
 - **Test state:** Phase 1 structural checks remain passed. Phase 2 `make setup`
   passed twice; `make lint`, `make typecheck`, `make build`, and `make test` passed
   on Vast. Verification covered resources, tool versions, root-only environment
@@ -53,7 +54,8 @@
   reconnection, signal, persistence, and replay groups. ThetaData service/runtime
   startup and loopback binding passed. The six internal runtime variables were
   restored under explicit authority; dependency connectivity and filesystem,
-  PostgreSQL, and Redis persistence survived restart.
+  PostgreSQL, and Redis persistence survived restart. Regular-session live smoke
+  passed with zero orders constructed or submitted.
 - **Approved decisions:** Phase 1 is canonical documentation only; use branch
   `chore/engineering-baseline-bootstrap`; the 14-part owner model is authoritative;
   maintain the append-only Codex journal; GitHub remains authoritative; paper
@@ -68,5 +70,5 @@
   supplied contract is used for validation; the next regular-session smoke is
   pending. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
-- **Next action:** Run the supplied AAPL exact-contract Standard smoke after
-  09:30 ET when the market is open, then keep PR #3 draft and unmerged.
+- **Next action:** Owner reviews the regular-session live evidence. Keep PR #3
+  draft and unmerged; do not begin Phase 4.
