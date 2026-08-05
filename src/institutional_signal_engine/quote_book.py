@@ -1,7 +1,7 @@
 """Bounded quote conflation and event-time classification windows."""
 
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -39,7 +39,8 @@ class QuoteBook:
         self.window = window
         self._latest: dict[QuoteKey, CanonicalEvent] = {}
         self._windows: dict[QuoteKey, deque[CanonicalEvent]] = {}
-        self._consumed: dict[object, QuoteConsumption] = {}
+        self._consumed_ids: set[object] = set()
+        self._last_consumption: dict[object, QuoteConsumption] = {}
         self._consumption_order = 0
         self.metrics = QuoteBookMetrics()
         self.consumptions: list[QuoteConsumption] = []
@@ -95,18 +96,10 @@ class QuoteBook:
     def consume(
         self, quote: CanonicalEvent, trade: CanonicalEvent | None = None
     ) -> QuoteConsumption:
-        existing = self._consumed.get(quote.event_id)
-        if existing is not None:
-            if trade is not None and existing.trade_event_id is None:
-                updated = replace(existing, trade_event_id=trade.event_id, quote_role="BOTH")
-                self._consumed[quote.event_id] = updated
-                self.consumptions[existing.consumption_order - 1] = updated
-                return updated
-            if trade is None and existing.trade_event_id is not None:
-                updated = replace(existing, quote_role="BOTH")
-                self._consumed[quote.event_id] = updated
-                self.consumptions[existing.consumption_order - 1] = updated
-                return updated
+        existing = self._last_consumption.get(quote.event_id)
+        if existing is not None and trade is None:
+            return existing
+        if existing is not None and trade is not None and existing.trade_event_id == trade.event_id:
             return existing
         self._consumption_order += 1
         role = "BOTH" if trade is not None else "CURRENT_STATE"
@@ -118,8 +111,10 @@ class QuoteBook:
             quote,
         )
         self.consumptions.append(consumption)
-        self._consumed[quote.event_id] = consumption
-        self.metrics.quotes_consumed += 1
+        self._last_consumption[quote.event_id] = consumption
+        if quote.event_id not in self._consumed_ids:
+            self._consumed_ids.add(quote.event_id)
+            self.metrics.quotes_consumed += 1
         return consumption
 
     def consume_for_trade(self, trade: CanonicalEvent) -> QuoteConsumption | None:
@@ -129,7 +124,7 @@ class QuoteBook:
     def consume_current_state(self) -> tuple[QuoteConsumption, ...]:
         consumed: list[QuoteConsumption] = []
         for quote in self._latest.values():
-            before = self._consumed.get(quote.event_id)
+            before = self._last_consumption.get(quote.event_id)
             record = self.consume(quote)
             if before is None or before.quote_role != record.quote_role:
                 consumed.append(record)
@@ -140,5 +135,4 @@ class QuoteBook:
 
     @property
     def quotes_pending_at_shutdown(self) -> int:
-        consumed_ids = set(self._consumed)
-        return sum(quote.event_id not in consumed_ids for quote in self._latest.values())
+        return sum(quote.event_id not in self._consumed_ids for quote in self._latest.values())

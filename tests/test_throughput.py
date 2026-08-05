@@ -122,6 +122,33 @@ def test_trade_uses_newest_quote_at_or_before_and_expires_old_quotes():
     assert book.consume_for_trade(expired_trade) is None
 
 
+def test_one_quote_can_be_audited_for_multiple_trade_classifications():
+    book = QuoteBook(window=timedelta(seconds=1))
+    quote = event(
+        EventKind.OPTIONS,
+        "AAPL",
+        NOW,
+        contract={"root": "AAPL", "expiration": 20260807, "strike": 310000, "right": "C"},
+    )
+    book.receive(quote)
+    trade_one = event(
+        EventKind.OPTIONS,
+        "AAPL",
+        NOW,
+        provider_kind="trade",
+        contract={"root": "AAPL", "expiration": 20260807, "strike": 310000, "right": "C"},
+    )
+    trade_two = trade_one.model_copy(update={"event_id": uuid4(), "sequence": 2})
+    first = book.consume_for_trade(trade_one)
+    second = book.consume_for_trade(trade_two)
+    assert first is not None and second is not None
+    assert first.trade_event_id == trade_one.event_id
+    assert second.trade_event_id == trade_two.event_id
+    assert first.consumption_order != second.consumption_order
+    assert book.metrics.quotes_consumed == 1
+    assert len(book.consumptions) == 2
+
+
 def test_async_writer_batches_and_drains():
     async def run() -> None:
         repository = InMemoryRepository()
