@@ -60,22 +60,31 @@ class PostgresRepository:
     def flush(self) -> None:
         if not self._pending_events:
             return
-        self._session().cursor().executemany(
-            "INSERT INTO canonical_events VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            [
-                (
-                    event.event_id,
-                    event.kind.value,
-                    event.symbol,
-                    event.source,
-                    event.source_timestamp,
-                    event.received_timestamp,
-                    event.normalized_timestamp,
-                    event.sequence,
-                    json.dumps(event.payload, default=str),
+        connection = self._session()
+        connection.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS canonical_events_stage "
+            "(event_id uuid, kind text, symbol text, source text, "
+            "source_timestamp timestamptz, received_timestamp timestamptz, "
+            "normalized_timestamp timestamptz, sequence bigint, payload jsonb)"
+        )
+        connection.execute("TRUNCATE canonical_events_stage")
+        with connection.cursor().copy("COPY canonical_events_stage FROM STDIN") as copy:
+            for event in self._pending_events:
+                copy.write_row(
+                    (
+                        event.event_id,
+                        event.kind.value,
+                        event.symbol,
+                        event.source,
+                        event.source_timestamp,
+                        event.received_timestamp,
+                        event.normalized_timestamp,
+                        event.sequence,
+                        json.dumps(event.payload, default=str),
+                    )
                 )
-                for event in self._pending_events
-            ],
+        connection.execute(
+            "INSERT INTO canonical_events SELECT * FROM canonical_events_stage ON CONFLICT DO NOTHING"
         )
         self._pending_events.clear()
 
