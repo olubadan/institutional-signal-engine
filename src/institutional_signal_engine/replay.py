@@ -15,7 +15,14 @@ def replay(
 ) -> tuple[Decision, ...]:
     del symbols
     ordered = sorted(
-        events, key=lambda value: (value.normalized_timestamp, value.source, value.sequence)
+        events,
+        key=lambda value: (
+            value.received_timestamp,
+            value.normalized_timestamp,
+            value.source,
+            value.sequence,
+            str(value.event_id),
+        ),
     )
     clock = [ordered[0].normalized_timestamp] if ordered else [datetime.min.replace(tzinfo=UTC)]
     run_id = (
