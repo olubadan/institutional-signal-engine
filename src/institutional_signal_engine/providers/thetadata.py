@@ -186,6 +186,11 @@ class ThetaDataOptionsProvider:
         size = int(data.get("size", 0))
         price = Decimal(str(data.get("price", 0)))
         payload = {
+            "provider_event_kind": "trade" if message["header"]["type"] == "TRADE" else "quote",
+            "timestamp_conversion": {
+                "precision_converted": True,
+                "timezone_converted": True,
+            },
             "trade_size": size,
             "trade_price": price,
             "condition_code": data.get("condition_code", data.get("condition")),

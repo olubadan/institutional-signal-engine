@@ -34,6 +34,20 @@ class PipelineMetrics:
     out_of_order_events: int = 0
     duplicate_events: int = 0
     unknown_condition_events: int = 0
+    timings: list["EventTiming"] | None = None
+
+
+@dataclass(frozen=True)
+class EventTiming:
+    provider: str
+    event_kind: str
+    source_timestamp: datetime
+    received_timestamp: datetime
+    processing_timestamp: datetime
+    event_age_at_receipt_ms: float
+    processing_duration_ms: float
+    precision_conversion_required: bool
+    timezone_conversion_required: bool
 
 
 class SignalPipeline:
@@ -51,7 +65,7 @@ class SignalPipeline:
         self._ingest_order = 0
         self._decision_order = 0
         self.synchronizer = Synchronizer()
-        self.metrics = PipelineMetrics([], [], [])
+        self.metrics = PipelineMetrics([], [], [], timings=[])
         self._seen: set[object] = set()
         self._decided_states: set[tuple[object, ...]] = set()
         self._sessions: dict[str, str] = {}
@@ -64,17 +78,18 @@ class SignalPipeline:
     def process(self, event: CanonicalEvent) -> Decision | None:
         started = monotonic()
         processing_time = self.now().astimezone(UTC)
-        self.metrics.provider_transport_latency_ms.append(
-            max(0.0, (event.received_timestamp - event.source_timestamp).total_seconds() * 1000)
-        )
-        self.metrics.processing_latency_ms.append((monotonic() - started) * 1000)
-        age_ms = max(0.0, (processing_time - event.source_timestamp).total_seconds() * 1000)
+        age_at_receipt_ms = (
+            event.received_timestamp - event.source_timestamp
+        ).total_seconds() * 1000
+        age_ms = (processing_time - event.source_timestamp).total_seconds() * 1000
         self.metrics.event_age_ms.append(age_ms)
         if age_ms > self.synchronizer.max_staleness.total_seconds() * 1000:
             self.metrics.stale_events += 1
+            self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
         if event.event_id in self._seen:
             self.metrics.duplicate_events += 1
+            self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
         self._seen.add(event.event_id)
         event = self._enrich_state(event)
@@ -89,6 +104,7 @@ class SignalPipeline:
         )
         if not self.synchronizer.add(event):
             self.metrics.out_of_order_events += 1
+            self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
         self.repository.record_event(event)
         if event.kind == EventKind.EQUITY and event.symbol != "AAPL":
@@ -96,9 +112,11 @@ class SignalPipeline:
             self.synchronizer.add(event.model_copy(update={"kind": kind, "symbol": "AAPL"}))
         snapshot = self.synchronizer.snapshot("AAPL", event.normalized_timestamp)
         if snapshot is None:
+            self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
         state_id = tuple(sorted(snapshot.event_ids))
         if state_id in self._decided_states:
+            self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
         self._decided_states.add(state_id)
         decision = decide([snapshot], self.settings).model_copy(update={"run_id": self.run_id})
@@ -106,7 +124,37 @@ class SignalPipeline:
         decision = decision.model_copy(update={"decision_order": self._decision_order})
         self.repository.record_decision(decision)
         self.decisions.append(decision)
+        self._record_timing(event, processing_time, age_at_receipt_ms, started)
         return decision
+
+    def _record_timing(
+        self,
+        event: CanonicalEvent,
+        processing_time: datetime,
+        age_at_receipt_ms: float,
+        started: float,
+    ) -> None:
+        processing_duration_ms = (monotonic() - started) * 1000
+        self.metrics.provider_transport_latency_ms.append(age_at_receipt_ms)
+        self.metrics.processing_latency_ms.append(processing_duration_ms)
+        if self.metrics.timings is None:
+            return
+        timing_payload = event.payload.get("timestamp_conversion", {})
+        self.metrics.timings.append(
+            EventTiming(
+                provider=event.source,
+                event_kind=str(event.payload.get("provider_event_kind", event.kind.value)),
+                source_timestamp=event.source_timestamp,
+                received_timestamp=event.received_timestamp,
+                processing_timestamp=processing_time,
+                event_age_at_receipt_ms=age_at_receipt_ms,
+                processing_duration_ms=processing_duration_ms,
+                precision_conversion_required=bool(
+                    timing_payload.get("precision_converted", False)
+                ),
+                timezone_conversion_required=bool(timing_payload.get("timezone_converted", False)),
+            )
+        )
 
     def _enrich_state(self, event: CanonicalEvent) -> CanonicalEvent:
         payload = dict(event.payload)

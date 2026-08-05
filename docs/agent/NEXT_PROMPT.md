@@ -10,7 +10,10 @@ anything.
 
 SESSION-0010 added stateful Decimal indicator primitives, continuous processing,
 typed PostgreSQL event replay, correlated ThetaData acknowledgements, dynamic
-universe selection ports, separate candidate counters, and hermetic CI. Verify
+universe selection ports, separate candidate counters, provider/event-kind
+timing distributions, and hermetic CI. Keep the corrected run-scoped replay
+proof qualified to its recorded versions. Treat ThetaData discovery as fixture-
+verified but not live-verified while HTTP 500 remains awaiting support. Verify
 the pushed head on the VM and in GitHub Actions, then run a bounded smoke only
 if the regular session is open.
 Do not infer or purchase a subscription. Keep `TRADING_ENABLED=false`; do not

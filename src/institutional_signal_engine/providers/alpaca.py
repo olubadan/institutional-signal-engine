@@ -21,6 +21,7 @@ class AlpacaEquitiesProvider:
     def __init__(self, url: str, key_id: str, secret_key: str, timeout: float = 10.0) -> None:
         self.url, self.key_id, self.secret_key, self.timeout = url, key_id, secret_key, timeout
         self.authenticated = False
+        self.connection_generation = 0
 
     @staticmethod
     def _authentication_result(messages: list[dict[str, Any]]) -> bool:
@@ -36,6 +37,7 @@ class AlpacaEquitiesProvider:
             async with websockets.connect(
                 self.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=10
             ) as ws:
+                self.connection_generation += 1
                 await ws.send(
                     json.dumps({"action": "auth", "key": self.key_id, "secret": self.secret_key})
                 )
@@ -76,6 +78,11 @@ class AlpacaEquitiesProvider:
         ask = message.get("ap")
         bid = message.get("bp")
         payload = {
+            "provider_event_kind": "trade" if kind == "t" else "quote",
+            "timestamp_conversion": {
+                "precision_converted": False,
+                "timezone_converted": not str(message["t"]).endswith("Z"),
+            },
             "price": price,
             "volume": int(message.get("s", 0)) if kind == "t" else 0,
             "spread": max(0, float(ask or price) - float(bid or price)),

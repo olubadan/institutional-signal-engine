@@ -75,8 +75,11 @@
   definitions are now owner-specified and implemented in SESSION-0010. GitHub branch
   protection/rulesets remain unavailable on the current private-repository plan.
   Latest run-scoped replay equality passed; the remaining provider blocker is
-  dynamic discovery HTTP 500.
-  Historical PostgreSQL rows span old and new decision identities, so full
-  field-by-field replay equality is not claimed yet.
+  dynamic discovery HTTP 500. Run-scoped deterministic replay succeeded for
+  run eba46d34-4335-486d-9929-33863f44b331. PostgreSQL contained 15,381
+  accepted events and 15,131 decisions. Replay produced 15,131 decisions
+  with field-by-field equality. This proof applies to this corrected run under
+  its recorded engine, configuration and condition-mapping versions; it does
+  not claim that every historical run is replayable.
 - **Next action:** Run VM/database/CI verification on the pushed SESSION-0010
   head, update PR #3 with sanitized evidence, and keep it draft and unmerged.

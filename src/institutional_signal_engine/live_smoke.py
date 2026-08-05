@@ -5,14 +5,13 @@ import asyncio
 import json
 import os
 from collections import Counter
-from collections.abc import Callable
-from statistics import median
+from collections.abc import Callable, Iterable
 
 from pydantic import SecretStr
 
 from .config import Settings
 from .persistence import InMemoryRepository, PostgresRepository
-from .pipeline import SignalPipeline
+from .pipeline import EventTiming, SignalPipeline
 from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
 from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaDataOptionsProvider
@@ -45,6 +44,42 @@ async def _collect(
 
 def _as_market_input(event: CanonicalEvent, kind: EventKind) -> CanonicalEvent:
     return event.model_copy(update={"kind": kind, "symbol": "AAPL"})
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def _distribution(timings: Iterable[EventTiming]) -> dict[str, object]:
+    values = list(timings)
+    ages = [timing.event_age_at_receipt_ms for timing in values]
+    processing = [timing.processing_duration_ms for timing in values]
+
+    def stats(sample: list[float]) -> dict[str, object]:
+        return {
+            "sample_count": len(sample),
+            "minimum": min(sample) if sample else None,
+            "p50": _percentile(sample, 0.50),
+            "p95": _percentile(sample, 0.95),
+            "p99": _percentile(sample, 0.99),
+            "maximum": max(sample) if sample else None,
+        }
+
+    return {
+        "event_age_at_receipt_ms": stats(ages),
+        "processing_duration_ms": stats(processing),
+        "timestamp_conversions": {
+            "precision_converted": sum(t.precision_conversion_required for t in values),
+            "timezone_converted": sum(t.timezone_conversion_required for t in values),
+        },
+    }
 
 
 async def run(seconds: float) -> dict[str, object]:
@@ -91,7 +126,29 @@ async def run(seconds: float) -> dict[str, object]:
         repository.flush()
     decision = pipeline.decisions[-1] if pipeline.decisions else None
     all_events = equities + options
-    latencies = pipeline.metrics.provider_transport_latency_ms
+    timings = pipeline.metrics.timings or []
+    timing_groups = {
+        "alpaca_trades": [
+            timing
+            for timing in timings
+            if timing.provider == "alpaca" and timing.event_kind == "trade"
+        ],
+        "alpaca_quotes": [
+            timing
+            for timing in timings
+            if timing.provider == "alpaca" and timing.event_kind == "quote"
+        ],
+        "thetadata_option_trades": [
+            timing
+            for timing in timings
+            if timing.provider == "thetadata" and timing.event_kind == "trade"
+        ],
+        "thetadata_option_quotes": [
+            timing
+            for timing in timings
+            if timing.provider == "thetadata" and timing.event_kind == "quote"
+        ],
+    }
     synchronized_input_count = len(pipeline.decisions)
     reasons = (
         list(decision.rejection_reasons)
@@ -123,23 +180,14 @@ async def run(seconds: float) -> dict[str, object]:
         "alpaca_event_count": len(equities),
         "theta_option_event_count": len(options),
         "synchronized_input_count": synchronized_input_count,
-        "latency_ms": {
-            "median": round(median(latencies), 3) if latencies else None,
-            "maximum": round(max(latencies), 3) if latencies else None,
+        "timing_distributions": {
+            name: _distribution(group) for name, group in timing_groups.items()
         },
         "stale_events": pipeline.metrics.stale_events,
         "late_events": pipeline.metrics.late_events,
         "out_of_order_events": pipeline.metrics.out_of_order_events,
         "duplicate_events": pipeline.metrics.duplicate_events,
         "unknown_condition_events": pipeline.metrics.unknown_condition_events,
-        "processing_latency_ms": {
-            "median": round(median(pipeline.metrics.processing_latency_ms), 3)
-            if pipeline.metrics.processing_latency_ms
-            else None,
-            "maximum": round(max(pipeline.metrics.processing_latency_ms), 3)
-            if pipeline.metrics.processing_latency_ms
-            else None,
-        },
         "rejection_reasons": reasons,
         "candidates_evaluated": decision.counters.candidates_evaluated if decision else 0,
         "candidates_passing_S": decision.counters.candidates_passing_S if decision else 0,
