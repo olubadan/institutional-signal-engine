@@ -113,6 +113,5 @@ class Decision(BaseModel):
 
     @classmethod
     def deterministic_id(cls, event_ids: tuple[UUID, ...], timestamp: datetime) -> UUID:
-        return uuid5(
-            NAMESPACE_URL, f"decision:{timestamp.isoformat()}:{','.join(map(str, event_ids))}"
-        )
+        del timestamp
+        return uuid5(NAMESPACE_URL, f"decision:{','.join(map(str, event_ids))}")

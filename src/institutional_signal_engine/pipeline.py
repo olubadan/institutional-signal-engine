@@ -71,7 +71,7 @@ class SignalPipeline:
         if event.kind == EventKind.EQUITY and event.symbol != "AAPL":
             kind = EventKind.MARKET_INDEX if event.symbol == "SPY" else EventKind.SECTOR_INDEX
             self.synchronizer.add(event.model_copy(update={"kind": kind, "symbol": "AAPL"}))
-        snapshot = self.synchronizer.snapshot("AAPL", processing_time)
+        snapshot = self.synchronizer.snapshot("AAPL", event.normalized_timestamp)
         if snapshot is None:
             return None
         state_id = tuple(sorted(snapshot.event_ids))
