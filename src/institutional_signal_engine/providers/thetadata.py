@@ -9,6 +9,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
+import httpx
 import websockets
 
 from ..schemas import CanonicalEvent, EventKind
@@ -47,6 +48,70 @@ class ThetaContract:
                 "right": self.right,
             },
         }
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    endpoint: str
+    status_code: int | None
+    response_shape: str
+    values: tuple[int, ...]
+    diagnostic: str | None
+
+
+class ThetaDataDiscoveryClient:
+    """One-shot, sanitized v3 expiration/strike discovery client.
+
+    The client deliberately performs no retries. Callers persist the result
+    and stop closed when a required discovery response is not successful.
+    """
+
+    def __init__(self, base_url: str, timeout: float = 10.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    def _get(self, endpoint: str, params: dict[str, str | int]) -> DiscoveryResult:
+        url = f"{self.base_url}{endpoint}"
+        try:
+            response = httpx.get(url, params=params, timeout=self.timeout)
+            try:
+                body: object = response.json()
+            except ValueError:
+                body = None
+            values = self._extract_ints(body)
+            shape = type(body).__name__
+            diagnostic = None if response.is_success else f"http_{response.status_code}"
+            return DiscoveryResult(endpoint, response.status_code, shape, values, diagnostic)
+        except httpx.HTTPError as exc:
+            return DiscoveryResult(endpoint, None, "transport_error", (), type(exc).__name__)
+
+    @staticmethod
+    def _extract_ints(body: object) -> tuple[int, ...]:
+        if isinstance(body, list):
+            values = [
+                int(item) for item in body if isinstance(item, (int, str)) and str(item).isdigit()
+            ]
+            return tuple(sorted(set(values)))
+        if isinstance(body, dict):
+            for key in ("response", "data", "expirations", "strikes"):
+                if key in body:
+                    return ThetaDataDiscoveryClient._extract_ints(body[key])
+        return ()
+
+    def expirations(self, symbol: str) -> DiscoveryResult:
+        return self._get("/v3/option/list/expirations", {"symbol": symbol.upper()})
+
+    def strikes(self, symbol: str, expiration: int) -> DiscoveryResult:
+        return self._get(
+            "/v3/option/list/strikes",
+            {"symbol": symbol.upper(), "expiration": expiration},
+        )
+
+    def contract_list(self, symbol: str, date: int) -> DiscoveryResult:
+        return self._get(
+            "/v3/option/list/contracts/trade",
+            {"symbol": symbol.upper(), "date": date, "format": "json"},
+        )
 
 
 SMOKE_AAPL_CONTRACT = ThetaContract("AAPL", 20260807, 310000, "C")

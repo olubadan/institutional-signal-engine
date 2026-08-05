@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid 
 CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
 CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS sweep_transitions (run_id uuid NOT NULL, cluster_id uuid NOT NULL, transition_order bigint NOT NULL, transition text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id, transition_order));
+CREATE TABLE IF NOT EXISTS universe_audits (run_id uuid NOT NULL, audit_order bigint GENERATED ALWAYS AS IDENTITY, symbol text NOT NULL, included boolean NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, audit_order));
 """
 
 
@@ -24,6 +25,7 @@ class InMemoryRepository:
         self.quote_consumptions: list[QuoteConsumption] = []
         self.sweeps: list[dict[str, object]] = []
         self.sweep_transitions: list[dict[str, object]] = []
+        self.universe_audits: list[dict[str, object]] = []
 
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
@@ -50,6 +52,15 @@ class InMemoryRepository:
             values = [value for value in values if value.get("run_id") == str(run_id)]
         return tuple(sorted(values, key=lambda value: int(str(value["transition_order"]))))
 
+    def record_universe(self, audit: dict[str, object]) -> None:
+        self.universe_audits.append(audit)
+
+    def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.universe_audits
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(values)
+
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         if run_id is None:
             return tuple(self.quote_consumptions)
@@ -64,6 +75,7 @@ class PostgresRepository:
         self._pending_decisions: list[Decision] = []
         self._pending_quote_consumptions: list[QuoteConsumption] = []
         self._pending_sweeps: list[dict[str, object]] = []
+        self._pending_universe: list[dict[str, object]] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -191,6 +203,17 @@ class PostgresRepository:
                     ),
                 )
         self._pending_sweeps.clear()
+        for audit in self._pending_universe:
+            connection.execute(
+                "INSERT INTO universe_audits (run_id,symbol,included,payload) VALUES (%s,%s,%s,%s)",
+                (
+                    audit["run_id"],
+                    audit["symbol"],
+                    audit["included"],
+                    json.dumps(audit, default=str),
+                ),
+            )
+        self._pending_universe.clear()
 
     @staticmethod
     def _decision_parameters(decision: Decision) -> tuple[object, ...]:
@@ -228,6 +251,21 @@ class PostgresRepository:
         self._pending_sweeps.append(sweep)
         if len(self._pending_sweeps) >= 100:
             self.flush()
+
+    def record_universe(self, audit: dict[str, object]) -> None:
+        self._pending_universe.append(audit)
+        if len(self._pending_universe) >= 100:
+            self.flush()
+
+    def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM universe_audits"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY audit_order"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
 
     def replay_sweep_transitions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         self.flush()

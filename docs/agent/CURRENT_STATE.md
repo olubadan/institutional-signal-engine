@@ -294,3 +294,23 @@
   `src`, and 70 hermetic tests. GitHub Actions push run `31040159885` and PR
   run `31040159733` passed on that exact head. PR #3 remains draft and
   unmerged; trading remains disabled.
+
+## Phase 3 closure and Phase 4 initialization — 20260805
+
+- PR #3 was marked ready and merge-committed using the established merge
+  method. Resulting `main` commit: `bbe969bf1d0df3b1dcdae6a2b4bd4ebb48899aeb`.
+  The Phase 3 branch history and journals were retained.
+- Phase 4 branch `feat/phase-4-live-universe` is based on synchronized `main`.
+  Draft PR #4 is the live multi-symbol universe validation workstream.
+- Added bounded pilot eligibility, deterministic v3 expiration/strike discovery,
+  liquidity/moneyness selection, deduplication, Standard individual-subscription
+  planning, 15,000-contract enforcement, reconciliation, and replayable universe
+  audit persistence. No live-market validation was run.
+- One sanitized off-hours diagnostic at `2026-08-05T20:28:59Z` found MDDS
+  `CONNECTED` (HTTP 200), while contract-list, expiration, and strike helpers
+  returned HTTP 500 HTML responses. Theta Terminal startup version was
+  `20260803:9017549`. Dynamic live discovery remains blocked pending provider
+  support; the expiration-plus-strike workflow is fixture-tested.
+- Local Phase 4 preparation checks pass: Ruff format/lint, strict mypy on `src`,
+  and 77 hermetic tests. Trading remains disabled; no orders were constructed
+  or submitted. Next-session command is documented in `docs/phase4/README.md`.
