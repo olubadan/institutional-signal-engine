@@ -17,6 +17,7 @@ def replay(
     ordered = sorted(
         events,
         key=lambda value: (
+            value.ingest_order,
             value.received_timestamp,
             value.normalized_timestamp,
             value.source,

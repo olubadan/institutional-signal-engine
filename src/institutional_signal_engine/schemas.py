@@ -26,6 +26,7 @@ class CanonicalEvent(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     event_id: UUID
     run_id: UUID = UUID(int=0)
+    ingest_order: int = Field(default=0, ge=0)
     kind: EventKind
     symbol: str
     source: str

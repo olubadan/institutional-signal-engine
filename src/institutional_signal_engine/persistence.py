@@ -8,7 +8,7 @@ from uuid import UUID
 from .schemas import CanonicalEvent, Decision
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, counters jsonb NOT NULL);
 """
 
@@ -56,6 +56,9 @@ class PostgresRepository:
             "ALTER TABLE canonical_events ADD COLUMN IF NOT EXISTS run_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'"
         )
         connection.execute(
+            "ALTER TABLE canonical_events ADD COLUMN IF NOT EXISTS ingest_order bigint NOT NULL DEFAULT 0"
+        )
+        connection.execute(
             "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS run_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'"
         )
 
@@ -70,7 +73,7 @@ class PostgresRepository:
         connection = self._session()
         connection.execute(
             "CREATE TEMP TABLE IF NOT EXISTS canonical_events_stage "
-            "(event_id uuid, run_id uuid, kind text, symbol text, source text, "
+            "(event_id uuid, run_id uuid, ingest_order bigint, kind text, symbol text, source text, "
             "source_timestamp timestamptz, received_timestamp timestamptz, "
             "normalized_timestamp timestamptz, sequence bigint, payload jsonb)"
         )
@@ -81,6 +84,7 @@ class PostgresRepository:
                     (
                         event.event_id,
                         event.run_id,
+                        event.ingest_order,
                         event.kind.value,
                         event.symbol,
                         event.source,
@@ -93,9 +97,9 @@ class PostgresRepository:
                 )
         connection.execute(
             "INSERT INTO canonical_events "
-            "(event_id,run_id,kind,symbol,source,source_timestamp,received_timestamp,"
+            "(event_id,run_id,ingest_order,kind,symbol,source,source_timestamp,received_timestamp,"
             "normalized_timestamp,sequence,payload) "
-            "SELECT event_id,run_id,kind,symbol,source,source_timestamp,received_timestamp,"
+            "SELECT event_id,run_id,ingest_order,kind,symbol,source,source_timestamp,received_timestamp,"
             "normalized_timestamp,sequence,payload FROM canonical_events_stage "
             "ON CONFLICT DO NOTHING"
         )
@@ -123,7 +127,7 @@ class PostgresRepository:
 
     def replay_events(self, run_id: UUID | None = None) -> Iterable[CanonicalEvent]:
         self.flush()
-        query = "SELECT event_id,run_id,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,payload FROM canonical_events"
+        query = "SELECT event_id,run_id,ingest_order,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,payload FROM canonical_events"
         params: tuple[UUID, ...] = ()
         if run_id is not None:
             query += " WHERE run_id = %s"
@@ -136,14 +140,15 @@ class PostgresRepository:
             CanonicalEvent(
                 event_id=row[0],
                 run_id=row[1],
-                kind=EventKind(row[2]),
-                symbol=row[3],
-                source=row[4],
-                source_timestamp=row[5],
-                received_timestamp=row[6],
-                normalized_timestamp=row[7],
-                sequence=row[8],
-                payload=row[9],
+                ingest_order=row[2],
+                kind=EventKind(row[3]),
+                symbol=row[4],
+                source=row[5],
+                source_timestamp=row[6],
+                received_timestamp=row[7],
+                normalized_timestamp=row[8],
+                sequence=row[9],
+                payload=row[10],
             )
             for row in rows
         )

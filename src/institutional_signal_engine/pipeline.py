@@ -48,6 +48,7 @@ class SignalPipeline:
         self.repository: EventRepository = repository or InMemoryRepository()
         self.now = now or (lambda: datetime.now(UTC))
         self.run_id = run_id or uuid4()
+        self._ingest_order = 0
         self.synchronizer = Synchronizer()
         self.metrics = PipelineMetrics([], [], [])
         self._seen: set[object] = set()
@@ -76,8 +77,15 @@ class SignalPipeline:
             return None
         self._seen.add(event.event_id)
         event = self._enrich_state(event)
-        if event.run_id == UUID(int=0):
-            event = event.model_copy(update={"run_id": self.run_id})
+        self._ingest_order += 1
+        event = event.model_copy(
+            update={
+                "run_id": self.run_id if event.run_id == UUID(int=0) else event.run_id,
+                "ingest_order": self._ingest_order
+                if event.ingest_order == 0
+                else event.ingest_order,
+            }
+        )
         if not self.synchronizer.add(event):
             self.metrics.out_of_order_events += 1
             return None
