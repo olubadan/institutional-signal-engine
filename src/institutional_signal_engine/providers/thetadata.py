@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import AsyncIterator, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -14,6 +15,43 @@ from ..schemas import CanonicalEvent, EventKind
 from .common import ProviderError, reconnecting_stream
 
 
+@dataclass(frozen=True)
+class ThetaContract:
+    root: str
+    expiration: int
+    strike: int
+    right: str
+
+    @classmethod
+    def from_dollars(
+        cls, root: str, expiration: int, strike: Decimal, right: str
+    ) -> "ThetaContract":
+        scaled = strike * Decimal(1000)
+        if scaled != scaled.to_integral_value():
+            raise ValueError("strike must convert exactly to tenths of a cent")
+        return cls(root, expiration, int(scaled), right)
+
+    def payload(self, request_id: int, add: bool = True) -> dict[str, object]:
+        if self.right not in {"C", "P"} or self.strike <= 0:
+            raise ValueError("invalid Theta contract")
+        return {
+            "msg_type": "STREAM",
+            "sec_type": "OPTION",
+            "req_type": "TRADE",
+            "add": add,
+            "id": request_id,
+            "contract": {
+                "root": self.root.upper(),
+                "expiration": self.expiration,
+                "strike": self.strike,
+                "right": self.right,
+            },
+        }
+
+
+DEFAULT_AAPL_CONTRACT = ThetaContract("AAPL", 20260807, 310000, "C")
+
+
 class ThetaDataOptionsProvider:
     """Connects to one local Theta Terminal v3 ``/v1/events`` socket.
 
@@ -22,8 +60,18 @@ class ThetaDataOptionsProvider:
     messages. The key is intentionally not included in socket payloads.
     """
 
-    def __init__(self, events_url: str, api_key: str, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        events_url: str,
+        api_key: str,
+        timeout: float = 10.0,
+        contracts: Iterable[ThetaContract] = (DEFAULT_AAPL_CONTRACT,),
+    ) -> None:
         self.events_url, self.api_key, self.timeout = events_url, api_key, timeout
+        self.contracts = tuple(contracts)
+        self._next_request_id = 1
+        self.subscription_ids: list[int] = []
+        self.acknowledged_ids: set[int] = set()
         self.connected = False
         self.subscription_acknowledged = False
         self.stream_status = "not_connected"
@@ -37,17 +85,8 @@ class ThetaDataOptionsProvider:
                 self.subscription_acknowledged = False
                 self.stream_status = "connected"
                 roots = {symbol.upper() for symbol in symbols}
-                await ws.send(
-                    json.dumps(
-                        {
-                            "msg_type": "STREAM_BULK",
-                            "sec_type": "OPTION",
-                            "req_type": "TRADE",
-                            "add": True,
-                            "id": 0,
-                        }
-                    )
-                )
+                for request in self.subscription_payloads():
+                    await ws.send(json.dumps(request))
                 async for raw in ws:
                     message = json.loads(raw)
                     header = message.get("header", {})
@@ -70,6 +109,16 @@ class ThetaDataOptionsProvider:
         header = message.get("header", {})
         message_type = header.get("type")
         status = str(header.get("status", "unknown")).lower()
+        message_id = message.get("id")
+        if (
+            status == "connected"
+            and isinstance(message_id, int)
+            and message_id in self.subscription_ids
+        ):
+            self.acknowledged_ids.add(message_id)
+            self.subscription_acknowledged = True
+            self.stream_status = status
+            return True
         if message_type == "REQ_RESPONSE":
             self.subscription_acknowledged = status == "connected"
             self.stream_status = status
@@ -78,6 +127,21 @@ class ThetaDataOptionsProvider:
             self.stream_status = status
             return True
         return False
+
+    def unsubscribe_payload(self, contract: ThetaContract) -> dict[str, object]:
+        request_id = self._next_request_id
+        self._next_request_id += 1
+        return contract.payload(request_id, add=False)
+
+    def subscription_payloads(self) -> tuple[dict[str, object], ...]:
+        """Build Standard-compatible subscriptions on every connection/reconnect."""
+        requests = []
+        for contract in self.contracts:
+            request_id = self._next_request_id
+            self._next_request_id += 1
+            self.subscription_ids.append(request_id)
+            requests.append(contract.payload(request_id))
+        return tuple(requests)
 
     def _normalize(self, message: dict[str, Any]) -> CanonicalEvent | None:
         if message.get("header", {}).get("type") not in {"TRADE", "QUOTE"}:

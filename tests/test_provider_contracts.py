@@ -1,11 +1,12 @@
 from datetime import UTC
+from decimal import Decimal
 
 import pytest
 
 from institutional_signal_engine.config import Settings
 from institutional_signal_engine.providers.alpaca import AlpacaEquitiesProvider
 from institutional_signal_engine.providers.common import ProviderError
-from institutional_signal_engine.providers.thetadata import ThetaDataOptionsProvider
+from institutional_signal_engine.providers.thetadata import ThetaContract, ThetaDataOptionsProvider
 
 
 def test_runtime_file_loader_treats_shell_sensitive_values_as_data(tmp_path):
@@ -89,3 +90,35 @@ def test_thetadata_records_subscription_acknowledgement_without_payload():
     assert provider._observe_control({"header": {"type": "REQ_RESPONSE", "status": "CONNECTED"}})
     assert provider.subscription_acknowledged
     assert provider.stream_status == "connected"
+
+
+def test_thetadata_standard_exact_contract_payload_and_strike_conversion():
+    contract = ThetaContract.from_dollars("AAPL", 20260807, Decimal("310.00"), "C")
+    provider = ThetaDataOptionsProvider(
+        "ws://127.0.0.1:25520/v1/events", "secret", contracts=(contract,)
+    )
+    request = provider.subscription_payloads()[0]
+    assert request["msg_type"] == "STREAM"
+    assert request["sec_type"] == "OPTION"
+    assert request["req_type"] == "TRADE"
+    assert request["add"] is True and request["id"] == 1
+    assert request["contract"] == {
+        "root": "AAPL",
+        "expiration": 20260807,
+        "strike": 310000,
+        "right": "C",
+    }
+    assert "STREAM_BULK" not in str(request)
+
+
+def test_thetadata_ids_increment_restore_after_reconnect_and_unsubscribe():
+    contract = ThetaContract("AAPL", 20260807, 310000, "C")
+    provider = ThetaDataOptionsProvider(
+        "ws://127.0.0.1:25520/v1/events", "secret", contracts=(contract,)
+    )
+    first = provider.subscription_payloads()
+    restored = provider.subscription_payloads()
+    unsubscribed = provider.unsubscribe_payload(contract)
+    assert [request["id"] for request in (*first, *restored, unsubscribed)] == [1, 2, 3]
+    assert restored[0]["contract"] == first[0]["contract"]
+    assert unsubscribed["add"] is False

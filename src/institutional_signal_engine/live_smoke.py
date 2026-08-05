@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from .config import Settings
 from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
-from .providers.thetadata import ThetaDataOptionsProvider
+from .providers.thetadata import DEFAULT_AAPL_CONTRACT, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent, EventKind
 from .signals import decide
 from .synchronization import Synchronizer
@@ -66,6 +66,7 @@ async def run(seconds: float) -> dict[str, object]:
     theta = ThetaDataOptionsProvider(
         settings.theta_events_url,
         _secret(settings.theta_api_key),
+        contracts=(DEFAULT_AAPL_CONTRACT,),
     )
     (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
         _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds),
