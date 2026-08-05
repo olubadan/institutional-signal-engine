@@ -89,7 +89,6 @@ class PostgresRepository:
         self._pending_events.clear()
 
     def record_decision(self, decision: Decision) -> None:
-        self.flush()
         self._session().execute(
             "INSERT INTO decisions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
             (
