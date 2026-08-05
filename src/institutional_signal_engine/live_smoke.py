@@ -92,6 +92,7 @@ async def run(seconds: float) -> dict[str, object]:
         synchronizer.add(event)
     snapshot = synchronizer.snapshot("AAPL", now)
     decision = decide([snapshot], settings) if snapshot is not None else None
+    synchronized_input_count = int(snapshot is not None)
     reasons = (
         list(decision.rejection_reasons)
         if decision is not None
@@ -99,6 +100,15 @@ async def run(seconds: float) -> dict[str, object]:
     )
     return {
         "trading_enabled": False,
+        "contracts_subscribed": [
+            {
+                "root": contract.root,
+                "expiration": contract.expiration,
+                "strike": contract.strike,
+                "right": contract.right,
+            }
+            for contract in theta.contracts
+        ],
         "provider_authentication": {
             "alpaca": "success" if alpaca.authenticated else "failed",
             "thetadata": "success" if theta.connected else "failed",
@@ -109,6 +119,9 @@ async def run(seconds: float) -> dict[str, object]:
         "provider_stream_status": {"thetadata": theta.stream_status},
         "feed_health": {"alpaca": alpaca_health, "thetadata": theta_health},
         "received_event_counts": dict(Counter(event.source for event in all_events)),
+        "alpaca_event_count": len(equities),
+        "theta_option_event_count": len(options),
+        "synchronized_input_count": synchronized_input_count,
         "latency_ms": {
             "median": round(median(latencies), 3) if latencies else None,
             "maximum": round(max(latencies), 3) if latencies else None,
