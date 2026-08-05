@@ -75,7 +75,7 @@ def test_ask_side_boundaries_and_quote_validity():
     assert classify_ask_side(trade, quote("1.00", "1.01", mismatch=True)) == "unknown"
 
 
-def test_resistance_ladder_freezes_and_supports_blue_sky():
+def test_resistance_ladder_freezes_reference_levels_and_recomputes_distance():
     cache = ResistanceCache()
     highs = {f"2026-07-{day:02d}": Decimal(100) for day in range(1, 22)}
     highs.update({f"2026-06-{day:02d}": Decimal(120) for day in range(1, 252 - 20 + 1)})
@@ -83,10 +83,12 @@ def test_resistance_ladder_freezes_and_supports_blue_sky():
     assert overhead.state == "OVERHEAD_RESISTANCE"
     assert overhead.level == Decimal(120)
     assert overhead.distance == Decimal(19) / Decimal(101)
-    frozen = cache.calculate(
+    repriced = cache.calculate(
         "AAPL", "2026-08-05", Decimal(1), {"2026-08-04": Decimal(2)}, "changed", "changed"
     )
-    assert frozen == overhead
+    assert repriced.level == Decimal(100)
+    assert repriced.distance == Decimal(99)
+    assert repriced.provenance == "fixture"
     blue_sky = ResistanceCache().calculate(
         "AAPL", "2026-08-05", Decimal(200), highs, "split:v1", "fixture"
     )

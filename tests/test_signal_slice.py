@@ -24,6 +24,8 @@ def item(symbol="AAPL", **overrides):
         "equity_delta": Decimal(1),
         "market_delta": Decimal(1),
         "sector_delta": Decimal(1),
+        "relative_strength_vs_spy": Decimal(1),
+        "relative_strength_vs_sector": Decimal(1),
         "first_signal_at": NOW,
         "concurrent_positions": 0,
         "event_ids": (uuid4(),),

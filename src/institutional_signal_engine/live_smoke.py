@@ -6,10 +6,13 @@ import json
 import os
 from collections import Counter
 from collections.abc import Callable, Iterable
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 
 from .config import Settings
+from .indicators import IndicatorCalculator
 from .persistence import InMemoryRepository, PostgresRepository
 from .persistence_async import AsyncAuditWriter
 from .pipeline import EventTiming, SignalPipeline
@@ -104,6 +107,9 @@ async def run(seconds: float) -> dict[str, object]:
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
     )
+    historical = await alpaca.historical_bootstrap(
+        ["AAPL", "SPY", "XLK"], datetime.now(ZoneInfo("America/New_York")).date()
+    )
     theta = ThetaDataOptionsProvider(
         settings.theta_events_url,
         _secret(settings.theta_api_key),
@@ -122,7 +128,12 @@ async def run(seconds: float) -> dict[str, object]:
         flush_interval=float(settings.persistence_flush_interval),
     )
     writer.start()
-    pipeline = SignalPipeline(settings, repository=repository, writer=writer)
+    pipeline = SignalPipeline(
+        settings,
+        repository=repository,
+        writer=writer,
+        indicator_calculator=IndicatorCalculator(historical),
+    )
 
     def process(event: CanonicalEvent) -> None:
         if event.symbol == "SPY":
@@ -133,10 +144,20 @@ async def run(seconds: float) -> dict[str, object]:
         if pipeline.incomplete_run:
             raise RuntimeError("persistence_backpressure_failure")
 
-    (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
-        _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds, process),
-        _collect(theta, ["AAPL"], seconds, process),
-    )
+    async def timer() -> None:
+        while True:
+            await asyncio.sleep(0.25)
+            pipeline.tick()
+
+    timer_task = asyncio.create_task(timer())
+    try:
+        (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
+            _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds, process),
+            _collect(theta, ["AAPL"], seconds, process),
+        )
+    finally:
+        timer_task.cancel()
+        await asyncio.gather(timer_task, return_exceptions=True)
     await writer.close()
     decision = pipeline.decisions[-1] if pipeline.decisions else None
     all_events = equities + options
@@ -189,6 +210,12 @@ async def run(seconds: float) -> dict[str, object]:
             "thetadata": "success" if theta.subscription_acknowledged else "not_observed"
         },
         "provider_stream_status": {"thetadata": theta.stream_status},
+        "historical_bootstrap": {
+            "status": "success",
+            "symbols": ["AAPL", "SPY", "XLK"],
+            "adjustment": historical.adjustment,
+            "provenance": historical.source_provenance,
+        },
         "feed_health": {"alpaca": alpaca_health, "thetadata": theta_health},
         "received_event_counts": dict(Counter(event.source for event in all_events)),
         "received_event_counts_by_kind": dict(
@@ -207,6 +234,13 @@ async def run(seconds: float) -> dict[str, object]:
         "quotes_pending_at_shutdown": pipeline.quote_book.quotes_pending_at_shutdown,
         "evaluations_triggered": pipeline.metrics.evaluations_triggered,
         "evaluations_skipped": pipeline.metrics.evaluations_skipped,
+        "trigger_reason_counts": dict(
+            Counter(
+                reason
+                for decision_item in pipeline.decisions
+                for reason in decision_item.triggering_change_reasons
+            )
+        ),
         "evaluation_skip_reasons": pipeline.metrics.skip_reasons or {},
         "synchronized_input_count": synchronized_input_count,
         "timing_distributions": {

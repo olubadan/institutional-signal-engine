@@ -16,6 +16,11 @@ class Synchronizer:
         self._events: dict[tuple[str, EventKind], CanonicalEvent] = {}
         self._last_sequence: dict[tuple[str, str, EventKind], int] = {}
 
+    def reset_session(self) -> None:
+        """Drop prior-session synchronized state exactly once at session open."""
+        self._events.clear()
+        self._last_sequence.clear()
+
     def add(self, event: CanonicalEvent) -> bool:
         sequence_key = (event.source, event.symbol, event.kind)
         previous = self._last_sequence.get(sequence_key, -1)
@@ -55,17 +60,28 @@ class Synchronizer:
             option_volume=options.get("option_volume"),
             open_interest=options.get("open_interest"),
             call_premium=options.get("call_premium"),
-            distance_to_resistance=options.get("distance_to_resistance"),
-            resistance_state=options.get("resistance_state"),
+            distance_to_resistance=equity.get("distance_to_resistance"),
+            resistance_state=equity.get("resistance_state"),
             relative_volume=equity.get("relative_volume"),
             equity_delta=equity.get("delta"),
             market_delta=market.get("delta"),
             sector_delta=sector.get("delta"),
+            relative_strength_vs_spy=equity.get("relative_strength_vs_spy"),
+            relative_strength_vs_sector=equity.get("relative_strength_vs_sector"),
             first_signal_at=equity.get("first_signal_at"),
             concurrent_positions=positions,
             event_ids=tuple(event.event_id for event in events),
             ask_side_percentage=options.get("ask_side_percentage"),
             quote_validity=options.get("quote_validity"),
+            provenance={
+                f"{name}:{key}": value
+                for name, payload in (
+                    ("equity", equity),
+                    ("market", market),
+                    ("sector", sector),
+                )
+                for key, value in payload.get("indicator_provenance", {}).items()
+            },
             indicator_reasons=tuple(
                 sorted(
                     set(

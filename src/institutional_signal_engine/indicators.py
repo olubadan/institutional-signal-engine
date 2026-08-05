@@ -6,7 +6,7 @@ as reason codes; zero is never used as a valid substitute.
 """
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from decimal import Decimal
@@ -42,6 +42,19 @@ class HistoricalMarketDataPort:
 
     def cumulative_volume_baseline(self, symbol: str, minute: int) -> tuple[Decimal, ...]:
         raise NotImplementedError
+
+    def completed_session_highs(self, symbol: str, session: str) -> Mapping[str, Decimal]:
+        """Return split-adjusted highs from completed sessions before ``session``."""
+        del symbol, session
+        return {}
+
+    def adjustment_metadata(self, symbol: str, session: str) -> str:
+        del symbol, session
+        return "missing"
+
+    def provenance(self, symbol: str, session: str) -> str:
+        del symbol, session
+        return "missing"
 
 
 @dataclass
@@ -114,6 +127,18 @@ def regular_session(timestamp: datetime) -> bool:
     return REGULAR_OPEN <= local.time() <= REGULAR_CLOSE
 
 
+def session_phase(timestamp: datetime) -> str:
+    """Return the deterministic ET phase used by boundary handling."""
+    local = timestamp.astimezone(ET)
+    if local.weekday() >= 5:
+        return "AFTER_HOURS"
+    if local.time() < REGULAR_OPEN:
+        return "PREMARKET"
+    if local.time() < REGULAR_CLOSE:
+        return "REGULAR"
+    return "AFTER_HOURS"
+
+
 def classify_ask_side(trade: OptionTradeContext, quote: OptionQuoteContext | None) -> str:
     """Apply the owner-defined quote validity and ask-side boundary exactly."""
     if quote is None:
@@ -150,6 +175,8 @@ class ResistanceLevel:
 
 class ResistanceCache:
     def __init__(self) -> None:
+        self._levels: dict[tuple[str, str], list[tuple[int, Decimal, tuple[str, ...]]]] = {}
+        self._metadata: dict[tuple[str, str], tuple[str, str]] = {}
         self._values: dict[tuple[str, str], ResistanceLevel] = {}
 
     def calculate(
@@ -162,20 +189,23 @@ class ResistanceCache:
         provenance: str,
     ) -> ResistanceLevel:
         key = (symbol, session)
-        if key in self._values:
-            return self._values[key]
-        ordered = sorted(completed_session_highs.items(), reverse=True)
-        levels: list[tuple[int, Decimal, tuple[str, ...]]] = []
-        for count in (5, 20, 252):
-            window = ordered[:count]
-            if len(window) >= count:
-                levels.append(
-                    (count, max(value for _, value in window), tuple(day for day, _ in window))
-                )
+        levels = self._levels.get(key)
+        if levels is None:
+            ordered = sorted(completed_session_highs.items(), reverse=True)
+            levels = []
+            for count in (5, 20, 252):
+                window = ordered[:count]
+                if len(window) >= count:
+                    levels.append(
+                        (count, max(value for _, value in window), tuple(day for day, _ in window))
+                    )
+            self._levels[key] = levels
+            self._metadata[key] = (adjustment_metadata, provenance)
+        cached_adjustment, cached_provenance = self._metadata[key]
         selected = next((item for item in levels if item[1] > current_price), None)
         if selected is None:
             result = ResistanceLevel(
-                "NO_OVERHEAD_RESISTANCE", None, None, (), adjustment_metadata, provenance
+                "NO_OVERHEAD_RESISTANCE", None, None, (), cached_adjustment, cached_provenance
             )
         else:
             result = ResistanceLevel(
@@ -183,8 +213,8 @@ class ResistanceCache:
                 selected[1],
                 (selected[1] - current_price) / current_price,
                 selected[2],
-                adjustment_metadata,
-                provenance,
+                cached_adjustment,
+                cached_provenance,
             )
         self._values[key] = result
         return result
@@ -194,6 +224,7 @@ class IndicatorCalculator:
     def __init__(self, historical: HistoricalMarketDataPort | None = None) -> None:
         self.historical = historical
         self.states: dict[str, IndicatorState] = defaultdict(IndicatorState)
+        self.resistance = ResistanceCache()
 
     def equity(
         self,
@@ -206,20 +237,26 @@ class IndicatorCalculator:
         state = self.states[symbol]
         session = session_key(timestamp)
         state.reset(session)
-        eligible = eligible_equity_trade(conditions) if conditions else True
+        local = timestamp.astimezone(ET)
+        minute = (local.hour * 60 + local.minute) - 570
+        eligible = (eligible_equity_trade(conditions) if conditions else True) and regular_session(
+            timestamp
+        )
         if eligible:
             state.cumulative_volume += volume
             state.cumulative_notional += price * Decimal(volume)
-            minute = (timestamp.astimezone(ET).hour * 60 + timestamp.astimezone(ET).minute) - 570
             state.minute_volume[minute] += volume
-        baseline = (
-            ()
-            if self.historical is None
-            else self.historical.cumulative_volume_baseline(symbol, minute)
-        )
-        previous = (
-            None if self.historical is None else self.historical.previous_close(symbol, session)
-        )
+        baseline: tuple[Decimal, ...] = ()
+        previous: PreviousClose | None = None
+        completed_highs: Mapping[str, Decimal] = {}
+        adjustment_metadata = "missing"
+        history_provenance = "missing"
+        if self.historical is not None:
+            baseline = self.historical.cumulative_volume_baseline(symbol, minute)
+            previous = self.historical.previous_close(symbol, session)
+            completed_highs = self.historical.completed_session_highs(symbol, session)
+            adjustment_metadata = self.historical.adjustment_metadata(symbol, session)
+            history_provenance = self.historical.provenance(symbol, session)
         state.previous_close = previous
         reasons: list[str] = []
         if previous is None or previous.close == 0:
@@ -241,14 +278,35 @@ class IndicatorCalculator:
         )
         if vwap is None:
             reasons.append("missing_session_volume")
+        resistance: ResistanceLevel | None = None
+        if completed_highs:
+            resistance = self.resistance.calculate(
+                symbol,
+                session,
+                price,
+                dict(completed_highs),
+                adjustment_metadata,
+                history_provenance,
+            )
+        else:
+            reasons.append("missing_resistance_baseline")
         return {
             "price": price,
             "volume": state.cumulative_volume,
             "session_vwap": vwap,
             "relative_volume": rvol,
             "previous_close_return": previous_return,
+            "delta": previous_return,
+            "resistance_state": resistance.state if resistance else None,
+            "distance_to_resistance": resistance.distance if resistance else None,
+            "resistance_level": resistance.level if resistance else None,
+            "resistance_provenance": resistance.provenance if resistance else None,
+            "resistance_source_sessions": resistance.source_sessions if resistance else (),
             "reasons": tuple(reasons),
-            "provenance": previous.provenance if previous else "missing",
+            "provenance": previous.provenance if previous else history_provenance,
+            "adjustment_metadata": adjustment_metadata,
+            "session": session,
+            "measurement_minute": minute,
         }
 
     @staticmethod

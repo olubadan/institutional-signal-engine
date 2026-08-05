@@ -10,7 +10,7 @@ from .schemas import CanonicalEvent, Decision
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
-CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL, indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb);
 CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
 """
 
@@ -86,6 +86,9 @@ class PostgresRepository:
         connection.execute(
             "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS synchronized_state_identity text NOT NULL DEFAULT ''"
         )
+        connection.execute(
+            "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb"
+        )
         for statement in (
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'options'",
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS symbol text NOT NULL DEFAULT ''",
@@ -144,7 +147,7 @@ class PostgresRepository:
         if self._pending_decisions:
             with connection.cursor() as cursor:
                 cursor.executemany(
-                    "INSERT INTO decisions (decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    "INSERT INTO decisions (decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters,indicator_provenance) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                     [self._decision_parameters(decision) for decision in self._pending_decisions],
                 )
             self._pending_decisions.clear()
@@ -170,6 +173,7 @@ class PostgresRepository:
             json.dumps(decision.triggering_change_reasons),
             decision.synchronized_state_identity,
             json.dumps(decision.counters.model_dump()),
+            json.dumps(decision.indicator_provenance),
         )
 
     def record_decision(self, decision: Decision) -> None:
@@ -288,7 +292,7 @@ class PostgresRepository:
     def replay_decisions(self, run_id: UUID | None = None) -> tuple[Decision, ...]:
         """Read decisions as typed models for field-by-field replay comparison."""
         self.flush()
-        query = "SELECT decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters FROM decisions"
+        query = "SELECT decision_id,run_id,decision_order,decided_at,selected_symbol,fire,candidates,rejection_reasons,input_event_ids,config_version,engine_version,condition_mapping_version,triggering_change_reasons,synchronized_state_identity,counters,indicator_provenance FROM decisions"
         params: tuple[UUID, ...] = ()
         if run_id is not None:
             query += " WHERE run_id = %s"
@@ -312,6 +316,7 @@ class PostgresRepository:
                 triggering_change_reasons=tuple(row[12]),
                 synchronized_state_identity=row[13],
                 counters=row[14],
+                indicator_provenance=row[15],
             )
             for row in rows
         )

@@ -7,19 +7,31 @@ the key pair is sent in an auth message within ten seconds of connection.
 import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+import httpx
 import websockets
 
+from ..historical import HistoricalBootstrap
+from ..indicators import ET, PreviousClose
 from ..schemas import CanonicalEvent, EventKind
 from .common import ProviderError, reconnecting_stream
 
 
 class AlpacaEquitiesProvider:
-    def __init__(self, url: str, key_id: str, secret_key: str, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        key_id: str,
+        secret_key: str,
+        timeout: float = 10.0,
+        historical_url: str = "https://data.alpaca.markets",
+    ) -> None:
         self.url, self.key_id, self.secret_key, self.timeout = url, key_id, secret_key, timeout
+        self.historical_url = historical_url.rstrip("/")
         self.authenticated = False
         self.connection_generation = 0
 
@@ -118,6 +130,104 @@ class AlpacaEquitiesProvider:
     async def events(self, symbols: Iterable[str]) -> AsyncIterator[CanonicalEvent]:
         async for event in reconnecting_stream("alpaca", lambda: self._connection(symbols)):
             yield event
+
+    async def historical_bootstrap(
+        self, symbols: Iterable[str], session: date
+    ) -> HistoricalBootstrap:
+        """Load split-adjusted completed-session baselines from Alpaca bars."""
+        requested = tuple(sorted({symbol.upper() for symbol in symbols}))
+        start = session - timedelta(days=400)
+        end = session - timedelta(days=1)
+        headers = {
+            "APCA-API-KEY-ID": self.key_id,
+            "APCA-API-SECRET-KEY": self.secret_key,
+        }
+
+        async def fetch(timeframe: str) -> dict[str, list[dict[str, Any]]]:
+            params: dict[str, str | int] = {
+                "symbols": ",".join(requested),
+                "timeframe": timeframe,
+                "start": f"{start.isoformat()}T00:00:00Z",
+                "end": f"{end.isoformat()}T23:59:59Z",
+                "adjustment": "split",
+                "feed": self.url.rsplit("/", 1)[-1],
+                "limit": 10000,
+            }
+            result: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in requested}
+            token: str | None = None
+            async with httpx.AsyncClient(
+                base_url=self.historical_url, timeout=self.timeout
+            ) as client:
+                while True:
+                    if token is not None:
+                        params["page_token"] = token
+                    response = await client.get("/v2/stocks/bars", headers=headers, params=params)
+                    if response.status_code != 200:
+                        raise ProviderError(
+                            "alpaca", f"historical_http_{response.status_code}", False
+                        )
+                    body = response.json()
+                    for symbol, bars in body.get("bars", {}).items():
+                        if symbol in result and isinstance(bars, list):
+                            result[symbol].extend(bars)
+                    token = body.get("next_page_token")
+                    if not token:
+                        return result
+
+        daily = await fetch("1Day")
+        minute = await fetch("1Min")
+        previous: dict[str, PreviousClose] = {}
+        highs: dict[str, dict[str, Decimal]] = {}
+        profiles: dict[str, dict[int, tuple[Decimal, ...]]] = {}
+        for symbol in requested:
+            daily_rows = sorted(daily[symbol], key=lambda row: str(row.get("t", "")))
+            completed: list[tuple[str, Decimal, Decimal]] = []
+            for row in daily_rows:
+                timestamp = datetime.fromisoformat(str(row["t"]))
+                local_day = timestamp.astimezone(ET).date()
+                if local_day >= session:
+                    continue
+                close = Decimal(str(row["c"]))
+                high = Decimal(str(row.get("h", row["c"])))
+                completed.append((local_day.isoformat(), close, high))
+            if not completed:
+                raise ProviderError("alpaca", "historical_baseline_missing", False)
+            last_day, last_close, _ = completed[-1]
+            previous[symbol] = PreviousClose(
+                symbol,
+                last_close,
+                datetime.fromisoformat(f"{last_day}T00:00:00+00:00"),
+                "alpaca:stocks/bars:adjustment=split",
+            )
+            highs[symbol] = {day: high for day, _, high in completed[-252:]}
+            completed_days = {day for day, _, _ in completed}
+            by_day: dict[str, dict[int, int]] = {}
+            for row in minute[symbol]:
+                timestamp = datetime.fromisoformat(str(row["t"]))
+                local = timestamp.astimezone(ET)
+                if local.date().isoformat() not in completed_days or not (
+                    datetime.min.time().replace(hour=9, minute=30)
+                    <= local.time()
+                    < datetime.min.time().replace(hour=16)
+                ):
+                    continue
+                minute_index = (local.hour * 60 + local.minute) - 570
+                by_day.setdefault(local.date().isoformat(), {})[minute_index] = int(row.get("v", 0))
+            profile: dict[int, tuple[Decimal, ...]] = {}
+            for minute_index in range(390):
+                profile[minute_index] = tuple(
+                    Decimal(sum(volumes.get(index, 0) for index in range(minute_index + 1)))
+                    for volumes in by_day.values()
+                )
+            profiles[symbol] = profile
+        return HistoricalBootstrap(
+            session=session.isoformat(),
+            previous_closes=previous,
+            cumulative_profiles=profiles,
+            completed_highs=highs,
+            adjustment="split",
+            source_provenance="alpaca:stocks/bars:completed-regular-sessions",
+        )
 
     async def health(self) -> dict[str, object]:
         return {

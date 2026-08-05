@@ -33,7 +33,14 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
         and item.call_premium >= t.minimum_call_premium
         and ratio >= t.minimum_option_volume_oi_ratio
     )
-    equity = item.equity_delta is not None and item.equity_delta > 0
+    equity = (
+        item.equity_delta is not None
+        and item.equity_delta > 0
+        and item.relative_strength_vs_spy is not None
+        and item.relative_strength_vs_spy > 0
+        and item.relative_strength_vs_sector is not None
+        and item.relative_strength_vs_sector > 0
+    )
     market = item.market_delta is not None and item.market_delta > 0
     sector = item.sector_delta is not None and item.sector_delta > 0
     signal = liquidity and options and equity and market and sector
@@ -139,4 +146,7 @@ def decide(items: list[SynchronizedInput], settings: Settings) -> Decision:
         config_version=settings.config_version,
         engine_version=settings.engine_version,
         counters=counters,
+        indicator_provenance={
+            key: value for item in items for key, value in item.provenance.items()
+        },
     )

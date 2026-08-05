@@ -5,16 +5,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import monotonic
+from typing import cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .config import Settings
 from .indicators import (
+    ET,
+    IndicatorCalculator,
     OptionContractIdentity,
     OptionQuoteContext,
     OptionTradeContext,
     classify_ask_side,
     regular_session,
     session_key,
+    session_phase,
 )
 from .persistence import InMemoryRepository
 from .persistence_async import AsyncAuditWriter, AuditWrite
@@ -71,6 +75,7 @@ class SignalPipeline:
         run_id: UUID | None = None,
         writer: AsyncAuditWriter | None = None,
         quote_book: QuoteBook | None = None,
+        indicator_calculator: IndicatorCalculator | None = None,
     ) -> None:
         self.settings = settings
         self.repository: EventRepository = repository or InMemoryRepository()
@@ -79,6 +84,7 @@ class SignalPipeline:
             timedelta(milliseconds=500 + settings.allowed_lateness_seconds * 1000)
         )
         self.now = now or (lambda: datetime.now(UTC))
+        self.indicator_calculator = indicator_calculator
         self.run_id = run_id or uuid4()
         self._ingest_order = 0
         self._decision_order = 0
@@ -93,11 +99,18 @@ class SignalPipeline:
         self._net_call_premium: dict[str, Decimal] = {}
         self.decisions: list[Decision] = []
         self._last_evaluated: dict[str, object] = {}
+        self._indicator_results: dict[str, tuple[datetime, dict[str, object]]] = {}
+        self._last_session_phase: str | None = None
+        self._last_session_date: str | None = None
+        self._boundary_tokens_seen: set[tuple[str, str]] = set()
+        self._pending_boundary_reasons: list[str] = []
+        self._session_generation = 0
         self.incomplete_run = False
 
     def process(self, event: CanonicalEvent) -> Decision | None:
         started = monotonic()
         processing_time = self.now().astimezone(UTC)
+        self._handle_session_transition(event.source_timestamp)
         age_at_receipt_ms = (
             event.received_timestamp - event.source_timestamp
         ).total_seconds() * 1000
@@ -138,6 +151,23 @@ class SignalPipeline:
                 "contract": quote_payload.get("contract"),
             }
             event = event.model_copy(update={"payload": payload})
+        event = self._apply_indicators(event)
+        if (
+            event.kind in {EventKind.EQUITY, EventKind.MARKET_INDEX, EventKind.SECTOR_INDEX}
+            and event.source == "alpaca"
+            and event.payload.get("_calculated_indicators") is not True
+        ):
+            payload = dict(event.payload)
+            payload["feature_reasons"] = tuple(
+                dict.fromkeys(
+                    tuple(payload.get("feature_reasons", ()))
+                    + ("missing_live_indicator_calculator",)
+                )
+            )
+            event = event.model_copy(update={"payload": payload})
+            self._enqueue(AuditWrite(event=event))
+            self._record_timing(event, processing_time, age_at_receipt_ms, started)
+            return None
         event = self._enrich_state(event)
         self._ingest_order += 1
         event = event.model_copy(
@@ -193,6 +223,8 @@ class SignalPipeline:
             return None
         self.metrics.evaluations_triggered += 1
         self.decisions.append(decision)
+        if any(reason.startswith("session_boundary_") for reason in reasons):
+            self._pending_boundary_reasons.clear()
         self._record_timing(event, processing_time, age_at_receipt_ms, started)
         return decision
 
@@ -218,11 +250,15 @@ class SignalPipeline:
 
         assert isinstance(snapshot, SynchronizedInput)
         previous = self._last_evaluated.get(snapshot.symbol)
-        self._last_evaluated[snapshot.symbol] = snapshot
         if previous is None:
-            return ["initial_state"]
+            initial_reasons = ["initial_state", *self._pending_boundary_reasons]
+            self._last_evaluated[snapshot.symbol] = snapshot
+            return initial_reasons
         assert isinstance(previous, SynchronizedInput)
+        self._last_evaluated[snapshot.symbol] = snapshot
         reasons: list[str] = []
+        if self._pending_boundary_reasons:
+            reasons.extend(self._pending_boundary_reasons)
         if (
             previous.price is not None
             and snapshot.price is not None
@@ -288,6 +324,32 @@ class SignalPipeline:
     def tick(self) -> Decision | None:
         """Timer-driven freshness check, independent of incoming events."""
         now = self.now().astimezone(UTC)
+        self._handle_session_transition(now)
+        if self._pending_boundary_reasons:
+            current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
+            if current is not None:
+                decision = decide([current], self.settings).model_copy(
+                    update={
+                        "run_id": self.run_id,
+                        "decision_id": uuid5(
+                            NAMESPACE_URL,
+                            f"boundary:{self.run_id}:{','.join(self._pending_boundary_reasons)}:{current.event_ids}",
+                        ),
+                        "triggering_change_reasons": tuple(self._pending_boundary_reasons),
+                        "synchronized_state_identity": ",".join(
+                            map(str, sorted(current.event_ids))
+                        ),
+                    }
+                )
+                self._decision_order += 1
+                decision = decision.model_copy(update={"decision_order": self._decision_order})
+                if not self._enqueue(AuditWrite(decision=decision)):
+                    return None
+                self.metrics.evaluations_triggered += 1
+                self.decisions.append(decision)
+                self._pending_boundary_reasons.clear()
+                self._last_evaluated[current.symbol] = current
+                return decision
         current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
         if current is None:
             self._skip("freshness_window_expiry")
@@ -318,6 +380,123 @@ class SignalPipeline:
         self.decisions.append(decision)
         self._last_evaluated[current.symbol] = current
         return decision
+
+    def _handle_session_transition(self, timestamp: datetime) -> None:
+        local_date = timestamp.astimezone(ET).date().isoformat()
+        phase = session_phase(timestamp)
+        previous = self._last_session_phase
+        if phase == "REGULAR" and previous != "REGULAR":
+            token = (local_date, "open")
+            if token not in self._boundary_tokens_seen:
+                self._boundary_tokens_seen.add(token)
+                self._session_generation += 1
+                self._reset_session_state()
+                self._pending_boundary_reasons.append("session_boundary_open")
+        elif phase == "AFTER_HOURS" and previous == "REGULAR":
+            token = (self._last_session_date or local_date, "close")
+            if token not in self._boundary_tokens_seen:
+                self._boundary_tokens_seen.add(token)
+                self._pending_boundary_reasons.append("session_boundary_close")
+        self._last_session_phase = phase
+        self._last_session_date = local_date
+
+    def _reset_session_state(self) -> None:
+        self._sessions.clear()
+        self._equity_volume.clear()
+        self._option_volume.clear()
+        self._ask_premium.clear()
+        self._net_call_premium.clear()
+        self._last_evaluated.clear()
+        self._indicator_results.clear()
+        self.synchronizer.reset_session()
+        if self.indicator_calculator is not None:
+            self.indicator_calculator.states.clear()
+            self.indicator_calculator.resistance._levels.clear()
+            self.indicator_calculator.resistance._metadata.clear()
+            self.indicator_calculator.resistance._values.clear()
+
+    def _apply_indicators(self, event: CanonicalEvent) -> CanonicalEvent:
+        if self.indicator_calculator is None or event.kind not in {
+            EventKind.EQUITY,
+            EventKind.MARKET_INDEX,
+            EventKind.SECTOR_INDEX,
+        }:
+            return event
+        payload = dict(event.payload)
+        price = payload.get("price")
+        if price is None:
+            return event
+        result = self.indicator_calculator.equity(
+            event.symbol,
+            event.source_timestamp,
+            Decimal(str(price)),
+            int(payload.get("trade_volume", payload.get("volume", 0))),
+            tuple(str(value) for value in payload.get("conditions", ())),
+        )
+        reasons = cast(tuple[str, ...], result["reasons"])
+        delta = cast(Decimal | None, result["delta"])
+        self._indicator_results[event.symbol] = (event.source_timestamp, result)
+        payload.update(
+            {
+                "price": result["price"],
+                "volume": result["volume"],
+                "session_vwap": result["session_vwap"],
+                "relative_volume": result["relative_volume"],
+                "delta": result["delta"],
+                "resistance_state": result["resistance_state"],
+                "distance_to_resistance": result["distance_to_resistance"],
+                "resistance_level": result["resistance_level"],
+                "indicator_provenance": {
+                    "historical": str(result["provenance"]),
+                    "resistance": str(result["resistance_provenance"] or "missing"),
+                    "adjustment": str(result["adjustment_metadata"]),
+                    "session_generation": str(self._session_generation),
+                    "resistance_source_sessions": ",".join(
+                        str(value)
+                        for value in cast(tuple[str, ...], result["resistance_source_sessions"])
+                    ),
+                },
+                "feature_reasons": reasons,
+                "_calculated_indicators": True,
+            }
+        )
+        if event.symbol == "AAPL":
+            market_entry = self._indicator_results.get("SPY")
+            sector_entry = self._indicator_results.get("XLK")
+            market = market_entry[1] if market_entry is not None else None
+            sector = sector_entry[1] if sector_entry is not None else None
+            measurement = result["measurement_minute"]
+            same_market_window = (
+                market is not None
+                and market.get("session") == result["session"]
+                and market.get("measurement_minute") == measurement
+            )
+            same_sector_window = (
+                sector is not None
+                and sector.get("session") == result["session"]
+                and sector.get("measurement_minute") == measurement
+            )
+            payload["relative_strength_vs_spy"] = IndicatorCalculator.relative_strength(
+                delta,
+                cast(Decimal | None, market.get("delta"))
+                if same_market_window and market is not None
+                else None,
+            )
+            payload["relative_strength_vs_sector"] = IndicatorCalculator.relative_strength(
+                delta,
+                cast(Decimal | None, sector.get("delta"))
+                if same_sector_window and sector is not None
+                else None,
+            )
+            if payload["relative_strength_vs_spy"] is None:
+                payload["feature_reasons"] = tuple(payload["feature_reasons"]) + (
+                    "missing_spy_baseline",
+                )
+            if payload["relative_strength_vs_sector"] is None:
+                payload["feature_reasons"] = tuple(payload["feature_reasons"]) + (
+                    "missing_sector_baseline",
+                )
+        return event.model_copy(update={"payload": payload})
 
     def _record_timing(
         self,

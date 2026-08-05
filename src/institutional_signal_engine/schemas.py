@@ -59,6 +59,8 @@ class SynchronizedInput(BaseModel):
     equity_delta: Decimal | None
     market_delta: Decimal | None
     sector_delta: Decimal | None
+    relative_strength_vs_spy: Decimal | None = None
+    relative_strength_vs_sector: Decimal | None = None
     first_signal_at: datetime | None = None
     concurrent_positions: int = Field(ge=0)
     event_ids: tuple[UUID, ...]
@@ -120,6 +122,7 @@ class Decision(BaseModel):
         candidates_passing_S_and_F_and_R=0,
         executable_candidates=0,
     )
+    indicator_provenance: dict[str, str] = Field(default_factory=dict)
 
     _utc_decided = field_validator("decided_at")(utc)
 
