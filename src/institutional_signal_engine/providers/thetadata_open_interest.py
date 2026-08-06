@@ -78,6 +78,7 @@ class ThetaDataOpenInterestProvider:
     def __init__(self, base_url: str = "http://127.0.0.1:25503/v3", timeout: float = 10.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.last_diagnostic: dict[str, object] = {}
 
     async def mdss_status(self) -> dict[str, object]:
         try:
@@ -106,6 +107,19 @@ class ThetaDataOpenInterestProvider:
                 )
         except httpx.HTTPError as exc:
             raise ProviderError("thetadata", "open_interest_transport", True) from exc
+        content_type = getattr(response, "headers", {}).get("content-type", "")
+        try:
+            diagnostic_body: object = response.json()
+        except ValueError:
+            diagnostic_body = None
+        self.last_diagnostic = {
+            "http_status": response.status_code,
+            "content_type": content_type,
+            "response_shape": type(diagnostic_body).__name__
+            if diagnostic_body is not None
+            else "text",
+            "row_count": len(diagnostic_body) if isinstance(diagnostic_body, list) else 0,
+        }
         if response.status_code != 200:
             raise ProviderError("thetadata", f"open_interest_http_{response.status_code}", False)
         try:

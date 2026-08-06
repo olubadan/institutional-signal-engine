@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Self
+from typing import ClassVar, Self
 
 import pytest
 
@@ -151,3 +151,41 @@ async def test_theta_oi_snapshot_identity_mismatch_fails_closed(monkeypatch: pyt
     )
     with pytest.raises(Exception, match="identity_mismatch"):
         await ThetaDataOpenInterestProvider().snapshot(CONTRACT)
+
+
+@pytest.mark.asyncio
+async def test_theta_oi_failure_retains_only_sanitized_response_shape(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class Response:
+        status_code = 500
+        headers: ClassVar[dict[str, str]] = {"content-type": "text/html"}
+        text = "provider failure"
+
+        def json(self) -> object:
+            raise ValueError
+
+    class Client:
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+        async def get(self, *args: object, **kwargs: object) -> Response:
+            del args, kwargs
+            return Response()
+
+    monkeypatch.setattr(
+        "institutional_signal_engine.providers.thetadata_open_interest.httpx.AsyncClient",
+        lambda **kwargs: Client(),
+    )
+    provider = ThetaDataOpenInterestProvider()
+    with pytest.raises(Exception, match="open_interest_http_500"):
+        await provider.snapshot(CONTRACT)
+    assert provider.last_diagnostic == {
+        "http_status": 500,
+        "content_type": "text/html",
+        "response_shape": "text",
+        "row_count": 0,
+    }

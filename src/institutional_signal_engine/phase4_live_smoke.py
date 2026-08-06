@@ -154,7 +154,9 @@ async def run(seconds: float) -> dict[str, object]:
         try:
             first_oi = await oi_provider.snapshot(aapl_contract)
         except ProviderError as exc:
-            oi_diagnostic.update({"status": "failed", "reason": exc.category})
+            oi_diagnostic.update(
+                {"status": "failed", "reason": exc.category, **oi_provider.last_diagnostic}
+            )
             return {
                 "run_id": str(run_id),
                 "trading_enabled": False,
