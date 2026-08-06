@@ -385,3 +385,18 @@
 - Correction: the preceding pre-smoke note saying no live run was performed is
   superseded by this regular-session policy smoke; no stream opened because
   every symbol failed the mandatory evidence filters.
+
+### SESSION-0016 liquidity enrichment — 20260806
+
+- Added coarse shortlist, Alpaca OPRA/indicative snapshot evidence, ThetaData
+  dated OI evidence, exact identity joining, quote freshness/spread/size checks,
+  previous-session effective dates, persisted exclusions/enrichment records,
+  and final selection gating. Local verification passed with 110 hermetic
+  tests, Ruff, and strict mypy.
+- Regular-session run `97071de6-f0bb-456c-b3ac-2bbf45036ff1` produced a coarse
+  shortlist of 500 contracts. The single bounded AAPL OI diagnostic returned
+  HTTP 500 from `/v3/option/snapshot/open_interest`; MDDS was CONNECTED and the
+  active Terminal build was `20260804:bdd51ae`. No further OI requests or
+  streams were made; orders remained 0/0.
+- Status remains blocked pending ThetaData restoration of the documented OI
+  snapshot endpoint. Discovery endpoints were not retried.
