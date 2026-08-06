@@ -209,8 +209,8 @@ class PostgresRepository:
                 "INSERT INTO universe_audits (run_id,symbol,included,payload) VALUES (%s,%s,%s,%s)",
                 (
                     audit["run_id"],
-                    audit["symbol"],
-                    audit["included"],
+                    audit.get("symbol", "__MANIFEST__"),
+                    audit.get("included", bool(audit.get("subscription_plan"))),
                     json.dumps(audit, default=str),
                 ),
             )
