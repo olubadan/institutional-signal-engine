@@ -431,6 +431,40 @@
   and unmerged. ThetaData OI snapshot availability and REST discovery remain
   external provider blockers, but do not block owner-authorized observation.
 
+### SESSION-0018 extended observation — 20260806
+
+- The required-head observation launched at 13:18:23 ET completed normally at
+  approximately 15:49:18 ET. Run ID `ee806be1-c9d3-4917-b0a6-8e38054cf04d`
+  reported `live_observation_complete`; no restart was performed.
+- The deterministic policy selected 14 contracts across BAC, NFLX, and NVDA.
+  TRADE and QUOTE requests were each submitted/acknowledged `14/14`, with no
+  request rejection. Provider authentication succeeded and MDDS remained
+  CONNECTED.
+- Alpaca/ThetaData event counts were `1,896,125/437,969`; accepted trades
+  received/processed were `31,596/31,596`. Quotes received, overwritten,
+  consumed, and pending were `2,302,498/2,302,479/22,960/18`. Stale, late,
+  duplicate, and out-of-order counts were `0/0/0/0`; unknown conditions were
+  `302`. The acknowledged-contract registry separately rejected `459,009`
+  unacknowledged data messages.
+- PostgreSQL contained `31,596` canonical events, `31,568` quote consumptions,
+  `221` sweep clusters, `208` transitions, and `0` decisions. Replay returned
+  `31,596` events and `0` decisions; decision field equality is vacuous because
+  no synchronized decision was created. The required historical head did not
+  persist a universe manifest.
+- No qualifying sweep occurred. The closest clusters passed five of six
+  cluster thresholds but failed cluster premium: NVDA 20260814/250000C at
+  `$450`, and NFLX 20260814/77000C at `$1,804`; other near clusters also failed
+  exchange participation. S/F/R/E evaluations and candidate counters were all
+  zero because synchronized inputs were zero; missing OI remained unavailable
+  and no complete signal is claimed. Orders remained `0/0` and trading stayed
+  disabled.
+- Provider-age p50/p95 (ms): Alpaca quotes `21.08/56.37`, Alpaca trades
+  `21.74/69.17`, Theta quotes `30.45/79.91`, Theta trades `33.46/121.16`.
+  Internal queue-wait p50/p95 (ms): `0.053/0.115`, `0.057/0.114`,
+  `0.138/0.207`, and `0.127/0.189`, respectively. Database-write latency
+  p50/p95/max was `21.86/32.30/554.39 ms`; queue depth p50/p95/max was
+  `1/10/83`; no soft or hard backpressure failures occurred.
+
 ### SESSION-0017 owner-directed observation eligibility — 20260806
 
 - Phase 4 now separates observation-subscription eligibility from complete
