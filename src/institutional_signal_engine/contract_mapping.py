@@ -1,5 +1,6 @@
 """Canonical Alpaca/OCC/ThetaData option-contract mapping."""
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -137,17 +138,23 @@ class MappingResult:
 
 def decode_occ_symbol(symbol: str) -> CanonicalOptionIdentity:
     value = symbol.strip()
-    if len(value) != 21:
+    padded = value
+    if len(value) == 19:
+        root_match = re.fullmatch(r"([A-Z0-9]{1,6})(\d{6})([CP])(\d{8})", value.upper())
+        if root_match is None:
+            raise ValueError("occ_symbol_encoding")
+        padded = f"{root_match.group(1):<6}{root_match.group(2)}{root_match.group(3)}{root_match.group(4)}"
+    if len(padded) != 21:
         raise ValueError("occ_symbol_length")
-    root = value[:6].strip().upper()
+    root = padded[:6].strip().upper()
     if not root:
         raise ValueError("occ_root_missing")
     try:
         expiration = int(
-            datetime.strptime(value[6:12], "%y%m%d").replace(tzinfo=UTC).strftime("%Y%m%d")
+            datetime.strptime(padded[6:12], "%y%m%d").replace(tzinfo=UTC).strftime("%Y%m%d")
         )
-        right = value[12]
-        strike = int(value[13:21])
+        right = padded[12]
+        strike = int(padded[13:21])
     except (TypeError, ValueError) as exc:
         raise ValueError("occ_symbol_encoding") from exc
     if right not in {"C", "P"} or strike <= 0:

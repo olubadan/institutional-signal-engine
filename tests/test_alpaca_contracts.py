@@ -49,6 +49,7 @@ def contract(**overrides: object) -> AlpacaOptionContract:
 def test_occ_decoding_and_exact_decimal_mapping_round_trip():
     decoded = decode_occ_symbol("AAPL  260807C00310000")
     assert decoded == CanonicalOptionIdentity("AAPL", 20260807, 310000, "C")
+    assert decode_occ_symbol("AAPL260807C00310000") == decoded
     result = round_trip_validate(map_alpaca_contract(contract()))
     assert result.accepted
     assert result.theta_contract == ThetaContract("AAPL", 20260807, 310000, "C")
