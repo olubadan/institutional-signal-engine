@@ -264,6 +264,11 @@ async def run(seconds: float) -> dict[str, object]:
     repository.record_universe(manifest.record())
     if isinstance(repository, PostgresRepository):
         repository.flush()
+    enrichment_rejection_counts: Counter[str] = Counter()
+    for record in enrichment.records:
+        reasons = record.get("rejection_reasons")
+        if isinstance(reasons, tuple):
+            enrichment_rejection_counts.update(str(reason) for reason in reasons)
     report: dict[str, object] = {
         "run_id": str(run_id),
         "trading_enabled": False,
@@ -319,7 +324,8 @@ async def run(seconds: float) -> dict[str, object]:
             }
             for selection in selections
         },
-        "coarse_excluded": list(coarse_exclusions),
+        "coarse_excluded_counts": dict(Counter(str(item["reason"]) for item in coarse_exclusions)),
+        "enrichment_rejection_counts": dict(enrichment_rejection_counts),
         "oi_diagnostic": oi_diagnostic,
         "selected_contracts": [
             {
