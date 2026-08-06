@@ -1,6 +1,7 @@
 """ThetaData v3 options adapter using the official Terminal event contract."""
 
 import json
+from collections import Counter
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -145,6 +146,8 @@ class ThetaDataOptionsProvider:
         timeout: float = 10.0,
         contracts: Iterable[ThetaContract] = (),
         request_types: Iterable[str] = ("TRADE",),
+        diagnostic_membership: dict[str, set[ThetaContract]] | None = None,
+        diagnostic_cardinality: int = 1000,
     ) -> None:
         self.events_url, self.api_key, self.timeout = events_url, api_key, timeout
         self.contracts = tuple(
@@ -165,11 +168,67 @@ class ThetaDataOptionsProvider:
         self.outstanding: dict[int, SubscriptionRequest] = {}
         self.request_registry: dict[int, SubscriptionRequest] = {}
         self.diagnostics: list[str] = []
+        self._diagnostic_membership = diagnostic_membership or {}
+        self._diagnostic_cardinality = diagnostic_cardinality
+        self._rejected_event_counts: Counter[tuple[str, str, str, str]] = Counter()
+        self._rejected_event_overflow = 0
         self.rejected_request_types: list[str] = []
         self.connection_generation = 0
         self.connected = False
         self.subscription_acknowledged = False
         self.stream_status = "not_connected"
+
+    @property
+    def rejected_event_diagnostics(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            self._diagnostic_record(message_kind, root, contract, reason, count)
+            for (message_kind, root, contract, reason), count in sorted(
+                self._rejected_event_counts.items()
+            )
+        )
+
+    def _diagnostic_record(
+        self, message_kind: str, root: str, contract: str, reason: str, count: int
+    ) -> dict[str, object]:
+        contract_value: ThetaContract | None = None
+        if contract:
+            parts = contract.split(":")
+            if len(parts) == 4:
+                contract_value = ThetaContract(parts[0], int(parts[1]), int(parts[2]), parts[3])
+        return {
+            "message_kind": message_kind,
+            "root": root or None,
+            "contract": contract or None,
+            "reason": reason,
+            "count": count,
+            "membership": {
+                name: contract_value in contracts
+                for name, contracts in self._diagnostic_membership.items()
+                if contract_value is not None
+            },
+        }
+
+    @property
+    def rejected_event_overflow(self) -> int:
+        return self._rejected_event_overflow
+
+    def _record_rejected_event(
+        self, message_kind: str, contract: ThetaContract | None, reason: str
+    ) -> None:
+        root = contract.root if contract is not None else ""
+        identity = (
+            f"{contract.root}:{contract.expiration}:{contract.strike}:{contract.right}"
+            if contract is not None
+            else ""
+        )
+        key = (message_kind, root, identity, reason)
+        if (
+            key not in self._rejected_event_counts
+            and len(self._rejected_event_counts) >= self._diagnostic_cardinality
+        ):
+            self._rejected_event_overflow += 1
+            return
+        self._rejected_event_counts[key] += 1
 
     async def _connection(self, symbols: Iterable[str]) -> AsyncIterator[CanonicalEvent]:
         try:
@@ -260,16 +319,26 @@ class ThetaDataOptionsProvider:
     def _normalize(self, message: dict[str, Any]) -> CanonicalEvent | None:
         if message.get("header", {}).get("type") not in {"TRADE", "QUOTE"}:
             return None
-        contract = message["contract"]
-        symbol = str(contract["root"]).upper()
-        event_contract = ThetaContract(
-            symbol,
-            int(contract["expiration"]),
-            int(contract["strike"]),
-            str(contract["right"]).upper(),
-        )
+        message_kind = str(message.get("header", {}).get("type", "UNKNOWN"))
+        contract = message.get("contract")
+        try:
+            if not isinstance(contract, dict):
+                raise TypeError("missing_contract")
+            symbol = str(contract["root"]).upper()
+            event_contract = ThetaContract(
+                symbol,
+                int(contract["expiration"]),
+                int(contract["strike"]),
+                str(contract["right"]).upper(),
+            )
+        except (KeyError, TypeError, ValueError):
+            self._record_rejected_event(message_kind, None, "malformed_contract_identity")
+            return None
         if self.connected and event_contract not in self.acknowledged_contracts:
             self.diagnostics.append("unacknowledged_contract_event")
+            self._record_rejected_event(
+                message_kind, event_contract, "unacknowledged_contract_event"
+            )
             return None
         data = message.get("trade") or message.get("quote") or {}
         date = str(data["date"])

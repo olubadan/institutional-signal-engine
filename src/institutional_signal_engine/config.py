@@ -58,7 +58,8 @@ class Settings(BaseModel):
     phase4_max_contracts_per_symbol: int = Field(default=1000, gt=0)
     phase4_trade_subscription_limit: int = Field(default=15000, gt=0)
     phase4_quote_subscription_limit: int = Field(default=15000, gt=0)
-    phase4_pre_enrichment_max_per_symbol: int = Field(default=25, gt=0)
+    phase4_pre_enrichment_max_per_symbol: int = Field(default=100, gt=0)
+    phase4_max_enrichment_candidates: int = Field(default=2000, gt=0)
     phase4_quote_freshness_seconds: int = Field(default=60, gt=0)
     phase4_min_quote_size: int = Field(default=1, gt=0)
     phase4_oi_request_interval_seconds: Decimal = Field(default=Decimal("0.05"), ge=0)
@@ -109,7 +110,10 @@ class Settings(BaseModel):
                 values.get("PHASE4_QUOTE_SUBSCRIPTION_LIMIT", "15000")
             ),
             phase4_pre_enrichment_max_per_symbol=int(
-                values.get("PHASE4_PRE_ENRICHMENT_MAX_PER_SYMBOL", "25")
+                values.get("PHASE4_PRE_ENRICHMENT_MAX_PER_SYMBOL", "100")
+            ),
+            phase4_max_enrichment_candidates=int(
+                values.get("PHASE4_MAX_ENRICHMENT_CANDIDATES", "2000")
             ),
             phase4_quote_freshness_seconds=int(values.get("PHASE4_QUOTE_FRESHNESS_SECONDS", "60")),
             phase4_min_quote_size=int(values.get("PHASE4_MIN_QUOTE_SIZE", "1")),

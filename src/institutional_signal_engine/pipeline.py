@@ -77,6 +77,8 @@ class SignalPipeline:
         writer: AsyncAuditWriter | None = None,
         quote_book: QuoteBook | None = None,
         indicator_calculator: IndicatorCalculator | None = None,
+        symbols: tuple[str, ...] = ("AAPL",),
+        sector_by_symbol: dict[str, str] | None = None,
     ) -> None:
         self.settings = settings
         self.repository: EventRepository = repository or InMemoryRepository()
@@ -89,7 +91,13 @@ class SignalPipeline:
         self.run_id = run_id or uuid4()
         self._ingest_order = 0
         self._decision_order = 0
-        self.synchronizer = Synchronizer()
+        self.symbols = tuple(sorted({symbol.upper() for symbol in symbols})) or ("AAPL",)
+        self.sector_by_symbol = {
+            symbol: value.upper() for symbol, value in (sector_by_symbol or {}).items()
+        }
+        self._synchronizers = {symbol: Synchronizer() for symbol in self.symbols}
+        # Retain the singular attribute for callers and older tests.
+        self.synchronizer = self._synchronizers[self.symbols[0]]
         self.metrics = PipelineMetrics([], [], [], timings=[], skip_reasons={})
         self._seen: set[object] = set()
         self._decided_states: set[tuple[object, ...]] = set()
@@ -110,6 +118,10 @@ class SignalPipeline:
         self._pending_sweep_reasons: list[str] = []
         self._pending_closed_sweep_audits: list[dict[str, object]] = []
         self.incomplete_run = False
+        self.synchronized_input_count = 0
+        self.incomplete_state_reasons: dict[str, list[str]] = {
+            symbol: [] for symbol in self.symbols
+        }
 
     def process(self, event: CanonicalEvent) -> Decision | None:
         started = monotonic()
@@ -217,54 +229,90 @@ class SignalPipeline:
                 return None
         self._pending_closed_sweep_audits.clear()
         self.metrics.trades_processed += 1
-        if not self.synchronizer.add(event):
+        targets: list[str] = []
+        if (
+            event.kind in {EventKind.EQUITY, EventKind.OPTIONS}
+            and event.symbol in self._synchronizers
+        ):
+            targets.append(event.symbol)
+        elif event.kind == EventKind.EQUITY and event.symbol == "SPY":
+            event = event.model_copy(update={"kind": EventKind.MARKET_INDEX})
+            targets.extend(self.symbols)
+        elif event.kind == EventKind.EQUITY and event.symbol == "XLK":
+            event = event.model_copy(update={"kind": EventKind.SECTOR_INDEX})
+            targets.extend(
+                symbol
+                for symbol in self.symbols
+                if self.sector_by_symbol.get(symbol, "XLK") == "XLK"
+            )
+        elif event.kind == EventKind.MARKET_INDEX:
+            targets.extend(self.symbols)
+        elif event.kind == EventKind.SECTOR_INDEX:
+            targets.extend(
+                symbol
+                for symbol in self.symbols
+                if self.sector_by_symbol.get(symbol, event.symbol) == event.symbol
+            )
+        accepted = False
+        for symbol in targets:
+            target_event = event.model_copy(update={"symbol": symbol})
+            if self._synchronizers[symbol].add(target_event):
+                accepted = True
+        if not accepted:
             self.metrics.out_of_order_events += 1
             self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
-        if event.kind == EventKind.EQUITY and event.symbol != "AAPL":
-            kind = EventKind.MARKET_INDEX if event.symbol == "SPY" else EventKind.SECTOR_INDEX
-            self.synchronizer.add(event.model_copy(update={"kind": kind, "symbol": "AAPL"}))
-        snapshot = self.synchronizer.snapshot("AAPL", event.normalized_timestamp)
-        if snapshot is None:
-            self._record_timing(event, processing_time, age_at_receipt_ms, started)
-            return None
-        state_id = tuple(sorted(snapshot.event_ids))
-        reasons = self._material_change_reasons(snapshot, event)
-        if not reasons:
-            self.metrics.evaluations_skipped += 1
-            self._skip("unchanged_synchronized_state")
-            self._record_timing(event, processing_time, age_at_receipt_ms, started)
-            return None
-        for consumption in self.quote_book.consume_current_state():
-            current_consumption = QuoteConsumption(
-                consumption.consumption_order,
-                consumption.quote_event_id,
-                consumption.trade_event_id,
-                consumption.quote_role,
-                consumption.quote.model_copy(update={"run_id": self.run_id}),
+        first_decision: Decision | None = None
+        for symbol in dict.fromkeys(targets):
+            snapshot = self._synchronizers[symbol].snapshot(symbol, event.normalized_timestamp)
+            if snapshot is None:
+                self.incomplete_state_reasons[symbol] = [
+                    "missing_required_equity_options_market_or_sector_state"
+                ]
+                continue
+            self.synchronized_input_count += 1
+            self.incomplete_state_reasons[symbol] = []
+            state_id = tuple(sorted(snapshot.event_ids))
+            reasons = self._material_change_reasons(snapshot, event)
+            if not reasons:
+                self.metrics.evaluations_skipped += 1
+                self._skip("unchanged_synchronized_state")
+                continue
+            for consumption in self.quote_book.consume_current_state():
+                current_consumption = QuoteConsumption(
+                    consumption.consumption_order,
+                    consumption.quote_event_id,
+                    consumption.trade_event_id,
+                    consumption.quote_role,
+                    consumption.quote.model_copy(update={"run_id": self.run_id}),
+                )
+                if not self._enqueue(AuditWrite(quote_consumption=current_consumption)):
+                    return first_decision
+            self._decided_states.add(state_id)
+            decision = decide([snapshot], self.settings).model_copy(
+                update={
+                    "run_id": self.run_id,
+                    "triggering_change_reasons": tuple(reasons),
+                    "synchronized_state_identity": ",".join(map(str, sorted(snapshot.event_ids))),
+                    "sweep_state": self.sweeps.snapshot(),
+                    "indicator_provenance": {
+                        **snapshot.provenance,
+                        "evaluation_symbol": snapshot.symbol,
+                    },
+                }
             )
-            if not self._enqueue(AuditWrite(quote_consumption=current_consumption)):
-                return None
-        self._decided_states.add(state_id)
-        decision = decide([snapshot], self.settings).model_copy(
-            update={
-                "run_id": self.run_id,
-                "triggering_change_reasons": tuple(reasons),
-                "synchronized_state_identity": ",".join(map(str, sorted(snapshot.event_ids))),
-                "sweep_state": self.sweeps.snapshot(),
-            }
-        )
-        self._decision_order += 1
-        decision = decision.model_copy(update={"decision_order": self._decision_order})
-        if not self._enqueue(AuditWrite(decision=decision)):
-            return None
-        self.metrics.evaluations_triggered += 1
-        self.decisions.append(decision)
-        if any(reason.startswith("session_boundary_") for reason in reasons):
-            self._pending_boundary_reasons.clear()
-        self._pending_sweep_reasons.clear()
+            self._decision_order += 1
+            decision = decision.model_copy(update={"decision_order": self._decision_order})
+            if not self._enqueue(AuditWrite(decision=decision)):
+                return first_decision
+            self.metrics.evaluations_triggered += 1
+            self.decisions.append(decision)
+            first_decision = first_decision or decision
+            if any(reason.startswith("session_boundary_") for reason in reasons):
+                self._pending_boundary_reasons.clear()
+            self._pending_sweep_reasons.clear()
         self._record_timing(event, processing_time, age_at_receipt_ms, started)
-        return decision
+        return first_decision
 
     def _enqueue(self, record: AuditWrite) -> bool:
         if self.writer is None:
@@ -408,7 +456,7 @@ class SignalPipeline:
                 if not self._enqueue(AuditWrite(sweep=audit)):
                     return None
         if self._pending_sweep_reasons:
-            current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
+            current = self.synchronizer.snapshot(self.symbols[0], now, allow_stale=True)
             if current is not None:
                 decision = decide([current], self.settings).model_copy(
                     update={
@@ -434,7 +482,7 @@ class SignalPipeline:
                 self._last_evaluated[current.symbol] = current
                 return decision
         if self._pending_boundary_reasons:
-            current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
+            current = self.synchronizer.snapshot(self.symbols[0], now, allow_stale=True)
             if current is not None:
                 decision = decide([current], self.settings).model_copy(
                     update={
@@ -459,7 +507,7 @@ class SignalPipeline:
                 self._pending_boundary_reasons.clear()
                 self._last_evaluated[current.symbol] = current
                 return decision
-        current = self.synchronizer.snapshot("AAPL", now, allow_stale=True)
+        current = self.synchronizer.snapshot(self.symbols[0], now, allow_stale=True)
         if current is None:
             self._skip("freshness_window_expiry")
             return None
@@ -492,14 +540,15 @@ class SignalPipeline:
         return decision
 
     def _refresh_sweep_state_in_synchronizer(self) -> None:
-        current = self.synchronizer._events.get(("AAPL", EventKind.OPTIONS))
-        if current is None:
-            return
-        payload = dict(current.payload)
-        payload.update(self.sweeps.snapshot())
-        self.synchronizer._events[("AAPL", EventKind.OPTIONS)] = current.model_copy(
-            update={"payload": payload}
-        )
+        for symbol, synchronizer in self._synchronizers.items():
+            current = synchronizer._events.get((symbol, EventKind.OPTIONS))
+            if current is None:
+                continue
+            payload = dict(current.payload)
+            payload.update(self.sweeps.snapshot())
+            synchronizer._events[(current.symbol, EventKind.OPTIONS)] = current.model_copy(
+                update={"payload": payload}
+            )
 
     def _handle_session_transition(self, timestamp: datetime) -> None:
         local_date = timestamp.astimezone(ET).date().isoformat()
@@ -531,7 +580,8 @@ class SignalPipeline:
         self._indicator_results.clear()
         self.sweeps.reset_session(session_date)
         self._pending_sweep_reasons.clear()
-        self.synchronizer.reset_session()
+        for synchronizer in self._synchronizers.values():
+            synchronizer.reset_session()
         if self.indicator_calculator is not None:
             self.indicator_calculator.states.clear()
             self.indicator_calculator.resistance._levels.clear()
@@ -583,9 +633,11 @@ class SignalPipeline:
                 "_calculated_indicators": True,
             }
         )
-        if event.symbol == "AAPL":
+        if event.symbol in self._synchronizers:
             market_entry = self._indicator_results.get("SPY")
-            sector_entry = self._indicator_results.get("XLK")
+            sector_entry = self._indicator_results.get(
+                self.sector_by_symbol.get(event.symbol, "XLK")
+            )
             market = market_entry[1] if market_entry is not None else None
             sector = sector_entry[1] if sector_entry is not None else None
             measurement = result["measurement_minute"]

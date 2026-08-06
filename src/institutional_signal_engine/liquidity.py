@@ -14,11 +14,16 @@ from .universe import (
     UniverseSelection,
 )
 
+PHASE4_OBSERVATION_SPREAD_POLICY_VERSION = "phase4-observation-spread-v1"
+PHASE4_OBSERVATION_MAX_ABSOLUTE_SPREAD = Decimal("0.05")
+PHASE4_OBSERVATION_MAX_PROPORTIONAL_SPREAD = Decimal("0.20")
+
 
 @dataclass(frozen=True)
 class EnrichmentResult:
     selections: tuple[UniverseSelection, ...]
     records: tuple[dict[str, object], ...]
+    diagnostics: tuple[dict[str, object], ...] = ()
 
 
 def finalize_liquidity(
@@ -33,6 +38,8 @@ def finalize_liquidity(
     alpaca_open_interest: dict[ThetaContract, int | None] | None = None,
     require_open_interest: bool = True,
     policy_version: str = PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
+    spread_policy_version: str | None = None,
+    maximum_proportional_spread: Decimal | None = None,
 ) -> EnrichmentResult:
     if not require_open_interest and policy_version != PHASE4_SWEEP_OBSERVATION_POLICY_VERSION:
         raise ValueError("phase4_observation_policy_required")
@@ -43,6 +50,16 @@ def finalize_liquidity(
     }
     selections: list[UniverseSelection] = []
     records: list[dict[str, object]] = []
+    diagnostics: list[dict[str, object]] = []
+    observation_spread = not require_open_interest
+    effective_absolute = (
+        PHASE4_OBSERVATION_MAX_ABSOLUTE_SPREAD if observation_spread else maximum_spread
+    )
+    effective_proportional = (
+        PHASE4_OBSERVATION_MAX_PROPORTIONAL_SPREAD
+        if observation_spread and maximum_proportional_spread is None
+        else maximum_proportional_spread
+    )
     for selection in coarse:
         accepted: list[ThetaContract] = []
         evidence: list[dict[str, object]] = []
@@ -57,8 +74,14 @@ def finalize_liquidity(
                 reasons.append("quote_snapshot_missing_or_identity_mismatch")
             elif not quote.valid(now, max_quote_age_seconds, minimum_quote_size):
                 reasons.append("quote_snapshot_invalid_stale_crossed_or_zero_size")
-            elif quote.spread is None or quote.spread > maximum_spread:
+            elif quote.spread is None or quote.spread > effective_absolute:
                 reasons.append("spread_threshold_failed")
+            elif (
+                effective_proportional is not None
+                and quote.spread_percentage is not None
+                and quote.spread_percentage > effective_proportional
+            ):
+                reasons.append("proportional_spread_threshold_failed")
             alpaca_oi = (alpaca_open_interest or {}).get(contract)
             if require_open_interest and oi is None:
                 reasons.append("dated_open_interest_missing_or_identity_mismatch")
@@ -127,6 +150,52 @@ def finalize_liquidity(
                     "catalog_symbol": mapping.source.occ_symbol if mapping else None,
                 }
             )
+            price_bucket = (
+                "missing"
+                if quote is None or quote.bid_price is None or quote.ask_price is None
+                else "lt_0.10"
+                if quote.ask_price < Decimal("0.10")
+                else "0.10_to_1"
+                if quote.ask_price < Decimal(1)
+                else "gte_1"
+            )
+            abs_bucket = (
+                "missing"
+                if quote is None or quote.spread is None
+                else "lt_0.01"
+                if quote.spread < Decimal("0.01")
+                else "0.01_to_0.05"
+                if quote.spread <= Decimal("0.05")
+                else "gt_0.05"
+            )
+            prop_bucket = (
+                "missing"
+                if quote is None or quote.spread_percentage is None
+                else "lt_0.20"
+                if quote.spread_percentage < Decimal("0.20")
+                else "0.20_to_1"
+                if quote.spread_percentage <= Decimal(1)
+                else "gt_1"
+            )
+            diagnostics.append(
+                {
+                    "symbol": selection.symbol,
+                    "option_price_bucket": price_bucket,
+                    "absolute_spread_bucket": abs_bucket,
+                    "proportional_spread_bucket": prop_bucket,
+                    "absolute_limit": str(effective_absolute),
+                    "proportional_limit": str(effective_proportional)
+                    if effective_proportional is not None
+                    else None,
+                    "policy_version": spread_policy_version
+                    or (
+                        PHASE4_OBSERVATION_SPREAD_POLICY_VERSION
+                        if observation_spread
+                        else "production"
+                    ),
+                    "reason": reasons[0] if reasons else "accepted",
+                }
+            )
         selections.append(
             UniverseSelection(
                 selection.symbol,
@@ -142,4 +211,4 @@ def finalize_liquidity(
                 policy_version,
             )
         )
-    return EnrichmentResult(tuple(selections), tuple(records))
+    return EnrichmentResult(tuple(selections), tuple(records), tuple(diagnostics))

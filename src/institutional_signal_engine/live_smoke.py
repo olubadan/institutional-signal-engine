@@ -96,6 +96,7 @@ async def run(
     contracts: Iterable[ThetaContract] = (SMOKE_AAPL_CONTRACT,),
     request_types: Iterable[str] = ("TRADE",),
     contract_metadata: dict[ThetaContract, dict[str, object]] | None = None,
+    diagnostic_membership: dict[str, set[ThetaContract]] | None = None,
 ) -> dict[str, object]:
     pilot_symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
     requested_contracts = tuple(contracts)
@@ -115,7 +116,8 @@ async def run(
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
     )
-    historical_symbols = (*pilot_symbols, "SPY", "XLK")
+    sector_by_symbol = {symbol: "XLK" for symbol in pilot_symbols}
+    historical_symbols = (*pilot_symbols, "SPY", *sorted(set(sector_by_symbol.values())))
     historical = await alpaca.historical_bootstrap(
         historical_symbols, datetime.now(ZoneInfo("America/New_York")).date()
     )
@@ -124,6 +126,7 @@ async def run(
         _secret(settings.theta_api_key),
         contracts=requested_contracts,
         request_types=request_types,
+        diagnostic_membership=diagnostic_membership,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -143,6 +146,8 @@ async def run(
         repository=repository,
         writer=writer,
         indicator_calculator=IndicatorCalculator(historical),
+        symbols=pilot_symbols,
+        sector_by_symbol=sector_by_symbol,
     )
 
     def process(event: CanonicalEvent) -> None:
@@ -229,11 +234,15 @@ async def run(
             if timing.provider == "thetadata" and timing.event_kind == "quote"
         ],
     }
-    synchronized_input_count = len(pipeline.decisions)
+    synchronized_input_count = pipeline.synchronized_input_count
     reasons = (
         list(decision.rejection_reasons)
         if decision is not None
-        else ["AAPL:insufficient_synchronized_inputs"]
+        else [
+            f"{symbol}:{reason}"
+            for symbol, reasons_for_symbol in pipeline.incomplete_state_reasons.items()
+            for reason in (reasons_for_symbol or ["no_decision"])
+        ]
     )
     return {
         "run_id": str(pipeline.run_id),
@@ -255,6 +264,34 @@ async def run(
             "thetadata": "success" if theta.subscription_acknowledged else "not_observed",
             "acknowledged_request_count": len(theta.acknowledged_ids),
             "rejected_or_unmatched": list(theta.diagnostics),
+            "rejected_event_diagnostics": list(theta.rejected_event_diagnostics),
+            "rejected_event_overflow": theta.rejected_event_overflow,
+            "request_registry": [
+                {
+                    "request_id": request_id,
+                    "root": request.contract.root,
+                    "expiration": request.contract.expiration,
+                    "strike": request.contract.strike,
+                    "right": request.contract.right,
+                    "request_type": request.req_type,
+                    "add": request.add,
+                    "connection_generation": request.generation,
+                    "acknowledged": request_id in theta.acknowledged_ids,
+                }
+                for request_id, request in sorted(theta.request_registry.items())
+            ],
+            "acknowledged_contracts": [
+                {
+                    "root": contract.root,
+                    "expiration": contract.expiration,
+                    "strike": contract.strike,
+                    "right": contract.right,
+                }
+                for contract in sorted(
+                    theta.acknowledged_contracts,
+                    key=lambda value: (value.root, value.expiration, value.strike, value.right),
+                )
+            ],
             "requests_by_type": {
                 req_type: {
                     "requested": sum(
@@ -306,6 +343,12 @@ async def run(
         ),
         "evaluation_skip_reasons": pipeline.metrics.skip_reasons or {},
         "synchronized_input_count": synchronized_input_count,
+        "synchronized_symbols": sorted(
+            symbol
+            for symbol, reasons_for_symbol in pipeline.incomplete_state_reasons.items()
+            if not reasons_for_symbol
+        ),
+        "incomplete_state_reasons": pipeline.incomplete_state_reasons,
         "timing_distributions": {
             name: _distribution(group) for name, group in timing_groups.items()
         },

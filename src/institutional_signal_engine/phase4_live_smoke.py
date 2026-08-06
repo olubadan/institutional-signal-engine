@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 from asyncio import Semaphore
 from collections import Counter
 from datetime import datetime, timedelta
@@ -13,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .contract_mapping import map_alpaca_contract, round_trip_validate
-from .liquidity import finalize_liquidity
+from .liquidity import PHASE4_OBSERVATION_SPREAD_POLICY_VERSION, finalize_liquidity
 from .live_smoke import _secret
 from .live_smoke import run as run_signal_smoke
 from .persistence import InMemoryRepository, PostgresRepository
@@ -97,6 +98,8 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
     coarse_contracts = {
         contract for selection in coarse_selections for contract in selection.contracts
     }
+    if len(coarse_contracts) > settings.phase4_max_enrichment_candidates:
+        raise RuntimeError("phase4_enrichment_candidate_limit_exceeded")
     mapping_by_contract = {
         result.theta_contract: result
         for result in mapping_results
@@ -226,6 +229,7 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         },
         require_open_interest=False,
         policy_version=PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
+        spread_policy_version=PHASE4_OBSERVATION_SPREAD_POLICY_VERSION,
     )
     selections = enrichment.selections
     allocation = allocate_subscription_capacity(
@@ -256,6 +260,30 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
             for contract in selection.contracts
         )
     }
+    diagnostic_membership = {
+        "discovered_universe": {
+            result.theta_contract
+            for result in mapping_results
+            if result.accepted and result.theta_contract is not None
+        },
+        "coarse_shortlist": coarse_contracts,
+        "enrichment_set": coarse_contracts,
+        "final_subscription_plan": selected_contracts,
+        "submitted_request_registry": selected_contracts,
+        "acknowledged_registry": set(),
+    }
+    try:
+        engine_commit = (
+            await asyncio.to_thread(
+                subprocess.run,
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        engine_commit = None
     manifest = UniverseManifest(
         run_id,
         as_of,
@@ -266,6 +294,11 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         capacity_excluded=allocation.capacity_excluded,
         coarse_exclusions=coarse_exclusions,
         enrichment_records=enrichment.records,
+        engine_commit=engine_commit,
+        sector_by_symbol={symbol: "XLK" for symbol in PILOT_SYMBOLS},
+        synchronization_symbols=tuple(
+            selection.symbol for selection in selections if selection.included
+        ),
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -310,9 +343,9 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
                     for result in mapping_results
                 ),
                 "coarse_shortlisted_contracts": sum(
-                    item.symbol == selection.symbol
+                    len(item.contracts)
                     for item in coarse_selections
-                    for _ in item.contracts
+                    if item.symbol == selection.symbol
                 ),
                 "quote_enriched_contracts": sum(
                     record["symbol"] == selection.symbol
@@ -331,11 +364,17 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
                     for evidence in selection.contract_evidence
                 ),
                 "final_selected_contracts": len(selection.contracts),
+                "quote_liquidity_passed_contracts": sum(
+                    record["symbol"] == selection.symbol and not record.get("rejection_reasons")
+                    for record in enrichment.records
+                    if "symbol" in record
+                ),
             }
             for selection in selections
         },
         "coarse_excluded_counts": dict(Counter(str(item["reason"]) for item in coarse_exclusions)),
         "enrichment_rejection_counts": dict(enrichment_rejection_counts),
+        "enrichment_spread_diagnostics": list(enrichment.diagnostics),
         "oi_diagnostic": oi_diagnostic,
         "selected_contracts": [
             {
@@ -386,8 +425,58 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         contracts=plan,
         request_types=("TRADE", "QUOTE"),
         contract_metadata=contract_metadata,
+        diagnostic_membership=diagnostic_membership,
     )
     report.update(signal_report)
+    raw_sync_symbols = signal_report.get("synchronized_symbols", ())
+    sync_symbols = (
+        tuple(str(symbol) for symbol in raw_sync_symbols)
+        if isinstance(raw_sync_symbols, (list, tuple))
+        else ()
+    )
+    raw_incomplete = signal_report.get("incomplete_state_reasons", {})
+    incomplete_reasons = (
+        {
+            str(symbol): tuple(str(reason) for reason in reasons)
+            for symbol, reasons in raw_incomplete.items()
+            if isinstance(reasons, (list, tuple))
+        }
+        if isinstance(raw_incomplete, dict)
+        else {}
+    )
+    raw_acknowledgement = signal_report.get("subscription_acknowledgement", {})
+    raw_rejected_diagnostics = (
+        raw_acknowledgement.get("rejected_event_diagnostics", [])
+        if isinstance(raw_acknowledgement, dict)
+        else []
+    )
+    raw_acknowledgements = (
+        raw_acknowledgement.get("request_registry", [])
+        if isinstance(raw_acknowledgement, dict)
+        else []
+    )
+    final_manifest = UniverseManifest(
+        run_id,
+        as_of,
+        tuple(PILOT_SYMBOLS),
+        selections,
+        plan,
+        mapping_records=tuple(result.record() for result in mapping_results),
+        acknowledgements=tuple(item for item in raw_acknowledgements if isinstance(item, dict)),
+        capacity_excluded=allocation.capacity_excluded,
+        coarse_exclusions=coarse_exclusions,
+        enrichment_records=(*enrichment.records, *enrichment.diagnostics),
+        engine_commit=engine_commit,
+        sector_by_symbol={symbol: "XLK" for symbol in PILOT_SYMBOLS},
+        synchronization_symbols=sync_symbols,
+        incomplete_state_reasons=incomplete_reasons,
+        rejected_event_diagnostics=tuple(
+            item for item in raw_rejected_diagnostics if isinstance(item, dict)
+        ),
+    )
+    repository.record_universe(final_manifest.record())
+    if isinstance(repository, PostgresRepository):
+        repository.flush()
     acknowledgement = signal_report.get("subscription_acknowledgement", {})
     if isinstance(acknowledgement, dict):
         requests_by_type = acknowledgement.get("requests_by_type", {})

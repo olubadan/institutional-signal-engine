@@ -481,3 +481,33 @@
   selection, and null OI-dependent signal ratios. Local checks currently pass
   with 113 hermetic tests, Ruff format/lint, and strict mypy; live observation
   and exact-head CI remain pending.
+
+### SESSION-0019 Phase 4 coverage and synchronization correction — 20260806
+
+- Corrected the historical live finding from run
+  `ee806be1-c9d3-4917-b0a6-8e38054cf04d`: it completed normally, processed
+  `31,596/31,596` accepted trades, and formed `221` clusters, but produced zero
+  synchronized inputs and zero S/F/R/E evaluations because the smoke path
+  requested AAPL while only BAC, NFLX, and NVDA were selected. OI was
+  unavailable/incomplete but was not the primary synchronization cause. No live
+  strategy decision or complete signal was demonstrated; replay of zero
+  decisions was vacuous.
+- The pipeline now synchronizes each selected option root with its own equity
+  state, SPY benchmark, configured sector ETF, option flow, and sweep state.
+  Missing state is reported per symbol, and decision provenance preserves the
+  evaluated symbol. AAPL is not required unless selected.
+- Phase 4 pre-enrichment is now capped at 100 contracts per symbol and 2,000
+  total candidates. Observation spread filtering is explicitly versioned as
+  `phase4-observation-spread-v1` with absolute `$0.05` and proportional `20%`
+  limits; production signal thresholds remain unchanged. Diagnostics preserve
+  formula, threshold, and price/spread buckets.
+- ThetaData rejected contract events now produce bounded, run-scoped aggregate
+  diagnostics with membership flags and an honest overflow count; rejected
+  events never enter strategy state. Universe manifests now include the engine
+  commit, policy/provenance, synchronization state, request registry and
+  acknowledgement evidence, enrichment diagnostics, and rejected-event
+  aggregates.
+- Deterministic verification passed locally: 118 hermetic tests, Ruff format,
+  Ruff lint, and strict mypy. No new live observation or provider REST retry was
+  performed. Exact-head CI is required after push; PR #4 remains draft and
+  unmerged, trading remains disabled, and orders remain 0/0.

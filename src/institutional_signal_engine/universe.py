@@ -141,6 +141,11 @@ class UniverseManifest:
     enrichment_records: tuple[dict[str, object], ...] = ()
     selection_version: str = "phase4-universe-v1"
     mapping_version: str = "alpaca-occ-thetadata-v1"
+    engine_commit: str | None = None
+    sector_by_symbol: dict[str, str] | None = None
+    synchronization_symbols: tuple[str, ...] = ()
+    incomplete_state_reasons: dict[str, tuple[str, ...]] | None = None
+    rejected_event_diagnostics: tuple[dict[str, object], ...] = ()
 
     def record(self) -> dict[str, object]:
         return {
@@ -168,6 +173,14 @@ class UniverseManifest:
             "policy_version": self.policy_version,
             "coarse_exclusions": list(self.coarse_exclusions),
             "enrichment_records": list(self.enrichment_records),
+            "engine_commit": self.engine_commit,
+            "sector_by_symbol": self.sector_by_symbol or {},
+            "synchronization_symbols": list(self.synchronization_symbols),
+            "incomplete_state_reasons": {
+                symbol: list(reasons)
+                for symbol, reasons in (self.incomplete_state_reasons or {}).items()
+            },
+            "rejected_event_diagnostics": list(self.rejected_event_diagnostics),
         }
 
 
