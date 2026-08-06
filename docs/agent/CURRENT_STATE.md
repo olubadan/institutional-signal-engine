@@ -401,6 +401,36 @@
 - Status remains blocked pending ThetaData restoration of the documented OI
   snapshot endpoint. Discovery endpoints were not retried.
 
+### SESSION-0017 closure — owner-authorized observation without OI — 20260806
+
+- Commits `97234b2`, `2b34851`, `b4c36cd`, and `20d798a` implement the
+  owner-authorized separation. The Phase 4-only policy is
+  `phase4-sweep-observation-without-oi-v1`; quote-liquid canonical calls may
+  be observed without OI, while missing OI remains null for the ratio and
+  blocks complete signal eligibility and executable candidates.
+- Corrected Alpaca snapshot parsing for the documented `snapshots` envelope.
+  Corrected PostgreSQL flushing and manifest-shape handling so full universe
+  manifests are queryable under the sanitized `__MANIFEST__` audit key.
+- Thirty-minute regular-session run
+  `64b167fe-6bf5-4f37-a686-267dbca1cdc7` mapped 11,956 contracts, selected 10
+  quote-liquid observation contracts across BAC, NFLX, NVDA, and TSLA, and
+  submitted/acknowledged 10 TRADE plus 10 QUOTE subscriptions. It received
+  165,144 ThetaData events and 874,245 Alpaca events; trades received and
+  processed were both 10,025. It recorded 1,029,364 quotes received, 7,280
+  consumed, and 16 pending at shutdown. Stale, late, duplicate, and
+  out-of-order counts were all zero; unknown-condition count was 154.
+- No qualifying sweep and no complete S/F/R/E signal were observed. OI was
+  unavailable; no OI-dependent signal is claimed. Orders constructed/submitted
+  remained 0/0, trading remained disabled, and the prior sanitized OI HTTP 500
+  was not retried. The short corrected persistence verification stored one
+  complete universe manifest row; its event and decision counts were zero
+  because it ended during startup/drain.
+- Local verification: Ruff format/lint, strict mypy, and 114 hermetic tests.
+  Exact-head GitHub Actions passed on `20d798a` in runs
+  `31115127177` (push) and `31115131804` (pull request). PR #4 remains draft
+  and unmerged. ThetaData OI snapshot availability and REST discovery remain
+  external provider blockers, but do not block owner-authorized observation.
+
 ### SESSION-0017 owner-directed observation eligibility — 20260806
 
 - Phase 4 now separates observation-subscription eligibility from complete
