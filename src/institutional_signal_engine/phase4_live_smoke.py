@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+from collections import Counter
 from datetime import datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -103,7 +104,16 @@ async def run(seconds: float) -> dict[str, object]:
         "alpaca_contracts_received": len(discovered),
         "contracts_accepted": sum(1 for result in mapping_results if result.accepted),
         "contracts_rejected": sum(1 for result in mapping_results if not result.accepted),
-        "mapping_failures": [result.record() for result in mapping_results if not result.accepted],
+        "mapping_failures": [
+            {"field": field, "reason": reason, "count": count}
+            for (field, reason), count in sorted(
+                Counter(
+                    (result.failed_field or "unknown", result.rejection_reason or "unknown")
+                    for result in mapping_results
+                    if not result.accepted
+                ).items()
+            )
+        ],
         "selected_contracts": [
             {
                 "symbol": selection.symbol,
