@@ -382,3 +382,6 @@
   rejected subscription counts were all zero because no contract passed the
   evidence filters. No ThetaData stream, sweep, or decision evidence was
   produced. Orders remained 0/0 and trading remained disabled.
+- Correction: the preceding pre-smoke note saying no live run was performed is
+  superseded by this regular-session policy smoke; no stream opened because
+  every symbol failed the mandatory evidence filters.
