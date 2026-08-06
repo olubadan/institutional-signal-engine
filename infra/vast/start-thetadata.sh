@@ -29,4 +29,4 @@ exec /usr/bin/docker run --rm \
   --volume "${state_dir}:/var/lib/thetadata:rw" \
   --workdir /var/lib/thetadata \
   eclipse-temurin:21-jre \
-  java -jar /opt/thetadata/ThetaTerminalv3.jar
+  java -jar /opt/thetadata/ThetaTerminalv3.jar --debug

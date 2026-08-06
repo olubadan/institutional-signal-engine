@@ -316,3 +316,21 @@
   or submitted. Preparation commit `df034e485edf48c4b082a22e40a62ce67cfbebb4`
   is published in draft PR #4. GitHub Actions run `31044392765` passed on that
   head. Next-session command is documented in `docs/phase4/README.md`.
+
+## Phase 4 Alpaca catalog and acknowledgement update — 20260806
+
+- PR #4 remains draft and unmerged on `feat/phase-4-live-universe`.
+- Added paginated Alpaca active-call contract discovery, immutable original
+  field capture, exact Decimal OCC/canonical/ThetaData mapping, independent OCC
+  decoding, round-trip validation, deterministic DTE/moneyness/liquidity
+  selection, 15,000-contract overflow failure, universe manifests, and
+  acknowledged-contract event gating.
+- Theta acknowledgements now follow the support-confirmed shape exactly:
+  `header.type=REQ_RESPONSE`, `header.req_id`, and `header.response`. STATUS
+  frames are independent keepalives; no acknowledgement contract is expected.
+- After a clean launcher restart with debug logging, active Terminal build was
+  `20260804:bdd51ae` at `2026-08-06T13:23:37Z`; MDDS was CONNECTED. One bounded
+  diagnostic returned contract-list HTTP 472 JSON and expiration/strike HTTP
+  500 HTML. Debug evidence identified a zstd JNI load failure under `/tmp`
+  restrictions. REST discovery remains cross-validation-only and was not retried.
+- Local verification at this pass: 98 hermetic tests, Ruff, and strict mypy.

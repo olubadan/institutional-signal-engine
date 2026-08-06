@@ -229,6 +229,33 @@ class AlpacaEquitiesProvider:
             source_provenance="alpaca:stocks/bars:completed-regular-sessions",
         )
 
+    async def current_prices(self, symbols: Iterable[str]) -> dict[str, Decimal]:
+        """Read current last-trade prices for moneyness selection."""
+        requested = tuple(sorted({symbol.upper() for symbol in symbols}))
+        headers = {
+            "APCA-API-KEY-ID": self.key_id,
+            "APCA-API-SECRET-KEY": self.secret_key,
+        }
+        async with httpx.AsyncClient(base_url=self.historical_url, timeout=self.timeout) as client:
+            response = await client.get(
+                "/v2/stocks/snapshots",
+                headers=headers,
+                params={"symbols": ",".join(requested), "feed": self.url.rsplit("/", 1)[-1]},
+            )
+        if response.status_code != 200:
+            raise ProviderError("alpaca", f"snapshot_http_{response.status_code}", False)
+        body: object = response.json()
+        if not isinstance(body, dict):
+            raise ProviderError("alpaca", "snapshot_malformed", False)
+        prices: dict[str, Decimal] = {}
+        for symbol, snapshot in body.items():
+            if not isinstance(snapshot, dict):
+                continue
+            trade = snapshot.get("latestTrade") or snapshot.get("latest_trade")
+            if isinstance(trade, dict) and trade.get("p") is not None:
+                prices[str(symbol).upper()] = Decimal(str(trade["p"]))
+        return prices
+
     async def health(self) -> dict[str, object]:
         return {
             "provider": "alpaca",

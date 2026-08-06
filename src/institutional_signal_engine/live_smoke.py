@@ -18,7 +18,7 @@ from .persistence_async import AsyncAuditWriter
 from .pipeline import EventTiming, SignalPipeline
 from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
-from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaDataOptionsProvider
+from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaContract, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent, EventKind
 
 
@@ -47,7 +47,7 @@ async def _collect(
 
 
 def _as_market_input(event: CanonicalEvent, kind: EventKind) -> CanonicalEvent:
-    return event.model_copy(update={"kind": kind, "symbol": "AAPL"})
+    return event.model_copy(update={"kind": kind})
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -90,7 +90,14 @@ def _distribution(timings: Iterable[EventTiming]) -> dict[str, object]:
     }
 
 
-async def run(seconds: float) -> dict[str, object]:
+async def run(
+    seconds: float,
+    symbols: Iterable[str] = ("AAPL",),
+    contracts: Iterable[ThetaContract] = (SMOKE_AAPL_CONTRACT,),
+    request_types: Iterable[str] = ("TRADE",),
+) -> dict[str, object]:
+    pilot_symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
+    requested_contracts = tuple(contracts)
     runtime_file = os.environ.get(
         "RUNTIME_ENV_FILE", "/etc/institutional-signal-engine/runtime.env"
     )
@@ -107,13 +114,15 @@ async def run(seconds: float) -> dict[str, object]:
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
     )
+    historical_symbols = (*pilot_symbols, "SPY", "XLK")
     historical = await alpaca.historical_bootstrap(
-        ["AAPL", "SPY", "XLK"], datetime.now(ZoneInfo("America/New_York")).date()
+        historical_symbols, datetime.now(ZoneInfo("America/New_York")).date()
     )
     theta = ThetaDataOptionsProvider(
         settings.theta_events_url,
         _secret(settings.theta_api_key),
-        contracts=(SMOKE_AAPL_CONTRACT,),
+        contracts=requested_contracts,
+        request_types=request_types,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -152,8 +161,10 @@ async def run(seconds: float) -> dict[str, object]:
     timer_task = asyncio.create_task(timer())
     try:
         (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
-            _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds, process),
-            _collect(theta, ["AAPL"], seconds, process),
+            _collect(alpaca, [*pilot_symbols, "SPY", "XLK"], seconds, process),
+            _collect(
+                theta, sorted({contract.root for contract in theta.contracts}), seconds, process
+            ),
         )
     finally:
         timer_task.cancel()
@@ -207,12 +218,14 @@ async def run(seconds: float) -> dict[str, object]:
             "thetadata": "success" if theta.connected else "failed",
         },
         "subscription_acknowledgement": {
-            "thetadata": "success" if theta.subscription_acknowledged else "not_observed"
+            "thetadata": "success" if theta.subscription_acknowledged else "not_observed",
+            "acknowledged_request_count": len(theta.acknowledged_ids),
+            "rejected_or_unmatched": list(theta.diagnostics),
         },
         "provider_stream_status": {"thetadata": theta.stream_status},
         "historical_bootstrap": {
             "status": "success",
-            "symbols": ["AAPL", "SPY", "XLK"],
+            "symbols": list(historical_symbols),
             "adjustment": historical.adjustment,
             "provenance": historical.source_provenance,
         },

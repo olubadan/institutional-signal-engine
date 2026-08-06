@@ -1,10 +1,12 @@
 """Typed option-universe selection and reconciliation."""
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
+from .contract_mapping import MappingResult
 from .providers.thetadata import ThetaContract
 
 PILOT_SYMBOLS: tuple[str, ...] = (
@@ -114,6 +116,44 @@ class UniverseSelection:
     provider_responses: tuple[dict[str, object], ...]
 
 
+@dataclass(frozen=True)
+class UniverseManifest:
+    run_id: UUID
+    session_date: date
+    input_symbols: tuple[str, ...]
+    selections: tuple[UniverseSelection, ...]
+    ordered_subscription_plan: tuple[ThetaContract, ...]
+    mapping_records: tuple[dict[str, object], ...] = ()
+    acknowledgements: tuple[dict[str, object], ...] = ()
+    reconnect_history: tuple[dict[str, object], ...] = ()
+    selection_version: str = "phase4-universe-v1"
+    mapping_version: str = "alpaca-occ-thetadata-v1"
+
+    def record(self) -> dict[str, object]:
+        return {
+            "run_id": str(self.run_id),
+            "session_date": self.session_date.isoformat(),
+            "input_symbols": list(self.input_symbols),
+            "selections": list(
+                selection_audits(self.run_id, self.selections, self.ordered_subscription_plan)
+            ),
+            "subscription_plan": [
+                {
+                    "root": contract.root,
+                    "expiration": contract.expiration,
+                    "strike": contract.strike,
+                    "right": contract.right,
+                }
+                for contract in self.ordered_subscription_plan
+            ],
+            "mapping_records": list(self.mapping_records),
+            "acknowledgements": list(self.acknowledgements),
+            "reconnect_history": list(self.reconnect_history),
+            "selection_version": self.selection_version,
+            "mapping_version": self.mapping_version,
+        }
+
+
 class UniverseLimitExceeded(ValueError):
     """The plan cannot be connected because it exceeds the Standard limit."""
 
@@ -208,6 +248,110 @@ class Phase4UniverseSelector:
             abs(strike_dollars - item.underlying_price) / item.underlying_price
             <= self.max_moneyness_distance
         )
+
+
+class AlpacaContractSelector:
+    """Select canonical contracts using only Alpaca discovery records."""
+
+    def __init__(
+        self,
+        min_days_to_expiration: int = 7,
+        max_days_to_expiration: int = 45,
+        max_moneyness_distance: Decimal = Decimal("0.20"),
+    ) -> None:
+        self.min_days = min_days_to_expiration
+        self.max_days = max_days_to_expiration
+        self.max_moneyness_distance = max_moneyness_distance
+
+    def select(
+        self,
+        results: tuple[MappingResult, ...],
+        underlying_prices: dict[str, Decimal],
+        as_of: date,
+    ) -> tuple[UniverseSelection, ...]:
+        by_symbol: dict[str, list[MappingResult]] = {}
+        failures: dict[str, list[str]] = {}
+        for result in results:
+            symbol = result.source.underlying_symbol
+            if not result.accepted or result.canonical is None:
+                failures.setdefault(symbol, []).append(
+                    result.rejection_reason or "mapping_rejected"
+                )
+                continue
+            canonical = result.canonical
+            dte = (result.source.expiration - as_of).days
+            raw = result.source.original_fields
+            if canonical.right != "C":
+                failures.setdefault(symbol, []).append("calls_only")
+            elif not self.min_days <= dte <= self.max_days:
+                failures.setdefault(symbol, []).append("expiration_outside_configured_window")
+            elif symbol not in underlying_prices or underlying_prices[symbol] <= 0:
+                failures.setdefault(symbol, []).append("underlying_price_unavailable")
+            elif result.source.open_interest is None or result.source.open_interest_date is None:
+                failures.setdefault(symbol, []).append("dated_open_interest_unavailable")
+            elif result.source.open_interest_date > as_of:
+                failures.setdefault(symbol, []).append("open_interest_date_in_future")
+            elif raw.get("average_options_volume") is None:
+                failures.setdefault(symbol, []).append("average_options_volume_unavailable")
+            elif raw.get("bid") is None or raw.get("ask") is None:
+                failures.setdefault(symbol, []).append("quote_liquidity_unavailable")
+            else:
+                strike = Decimal(canonical.strike) / Decimal(1000)
+                distance = abs(strike - underlying_prices[symbol]) / underlying_prices[symbol]
+                if distance > self.max_moneyness_distance:
+                    failures.setdefault(symbol, []).append("moneyness_outside_configured_range")
+                else:
+                    by_symbol.setdefault(symbol, []).append(result)
+        selections: list[UniverseSelection] = []
+        for symbol in sorted(set(by_symbol) | set(failures)):
+            valid_results = [
+                item
+                for item in by_symbol.get(symbol, [])
+                if item.canonical is not None and item.theta_contract is not None
+            ]
+
+            def sort_key(
+                item: MappingResult, selected_symbol: str = symbol
+            ) -> tuple[date, Decimal, int]:
+                assert item.canonical is not None
+                return (
+                    item.source.expiration,
+                    abs(
+                        Decimal(item.canonical.strike) / Decimal(1000)
+                        - underlying_prices[selected_symbol]
+                    ),
+                    item.canonical.strike,
+                )
+
+            candidates = sorted(
+                valid_results,
+                key=sort_key,
+            )
+            expiration = candidates[0].source.expiration if candidates else None
+            selected = tuple(
+                item.theta_contract
+                for item in candidates
+                if item.source.expiration == expiration and item.theta_contract is not None
+            )
+            reasons = tuple(sorted(set(failures.get(symbol, ()))))
+            selections.append(
+                UniverseSelection(
+                    symbol,
+                    bool(selected),
+                    int(expiration.strftime("%Y%m%d")) if expiration else None,
+                    tuple(dict.fromkeys(selected)),
+                    () if selected else reasons or ("no_contracts_selected",),
+                    (
+                        "alpaca_contract_discovery",
+                        "canonical_mapping",
+                        "dated_open_interest",
+                        "liquidity_evidence",
+                        "moneyness",
+                    ),
+                    (),
+                )
+            )
+        return tuple(selections)
 
 
 def subscription_plan(selections: tuple[UniverseSelection, ...]) -> tuple[ThetaContract, ...]:

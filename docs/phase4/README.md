@@ -15,11 +15,14 @@ filters, and selects the nearest expiration with qualifying contracts. Plans are
 deduplicated, sorted, capped at 15,000 contracts before connection, and rendered
 as individual Standard `STREAM` requests. `STREAM_BULK` is not used.
 
-The ThetaData discovery client performs one-shot v3 requests with no retries.
-The 2026-08-05 diagnostic returned MDDS `200`/`CONNECTED`; contract-list,
-expiration, and strike discovery each returned sanitized HTTP `500` HTML
-responses. The expiration-plus-strike workflow is implemented and fixture-tested,
-but dynamic live discovery is not verified.
+The ThetaData discovery client is retained only as a future cross-validation
+source and is not a runtime dependency. The 2026-08-06 launcher-restarted
+diagnostic used Terminal build `20260804:bdd51ae`: MDDS returned `200` with
+`CONNECTED`; contract-list returned sanitized HTTP `472` JSON, and expiration
+and strike discovery returned sanitized HTTP `500` HTML. Debug evidence showed
+the Terminal's gRPC bridge could not load its zstd JNI library under the
+launcher `/tmp` restrictions. Alpaca remains the primary catalog and the
+expiration-plus-strike workflow is fixture-tested only.
 
 Next-session command, only after 09:30 America/New_York and with trading still
 disabled:

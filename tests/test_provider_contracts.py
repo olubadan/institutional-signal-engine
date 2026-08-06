@@ -69,7 +69,12 @@ def test_thetadata_normalizes_official_trade_shape():
     event = provider._normalize(
         {
             "header": {"type": "TRADE", "status": "CONNECTED"},
-            "contract": {"root": "AAPL"},
+            "contract": {
+                "root": "AAPL",
+                "expiration": 20260102,
+                "strike": 100000,
+                "right": "C",
+            },
             "trade": {
                 "ms_of_day": 3600000,
                 "sequence": -7,
@@ -101,20 +106,27 @@ def test_thetadata_correlates_acknowledgement_to_outstanding_request():
     request = provider.subscription_payloads()[0]
     assert provider._observe_control(
         {
-            "header": {"type": "REQ_RESPONSE", "status": "CONNECTED"},
-            "id": request["id"],
-            "contract": request["contract"],
+            "header": {
+                "type": "REQ_RESPONSE",
+                "status": "CONNECTED",
+                "response": "SUBSCRIBED",
+                "req_id": request["id"],
+            }
         }
     )
     assert provider.subscription_acknowledged
     assert request["id"] not in provider.outstanding
     assert provider._observe_control(
         {
-            "header": {"type": "REQ_RESPONSE", "status": "CONNECTED"},
-            "id": request["id"],
+            "header": {
+                "type": "REQ_RESPONSE",
+                "status": "CONNECTED",
+                "response": "SUBSCRIBED",
+                "req_id": request["id"],
+            }
         }
     )
-    assert "unmatched_request_response" in provider.diagnostics
+    assert "duplicate_request_response" in provider.diagnostics
 
 
 def test_thetadata_correlates_official_header_request_id_shape():
@@ -129,12 +141,98 @@ def test_thetadata_correlates_official_header_request_id_shape():
                 "type": "REQ_RESPONSE",
                 "status": "CONNECTED",
                 "req_id": request["id"],
-                "response": "STREAM",
+                "response": "SUBSCRIBED",
             }
         }
     )
     assert provider.subscription_acknowledged
     assert request["id"] not in provider.outstanding
+
+
+def test_thetadata_status_frames_are_independent_keepalives():
+    contract = ThetaContract("AAPL", 20260807, 310000, "C")
+    provider = ThetaDataOptionsProvider(
+        "ws://127.0.0.1:25520/v1/events", "secret", contracts=(contract,)
+    )
+    request = provider.subscription_payloads()[0]
+    assert provider._observe_control({"header": {"type": "STATUS", "status": "CONNECTED"}})
+    assert not provider.subscription_acknowledged
+    assert provider._observe_control(
+        {
+            "header": {
+                "type": "REQ_RESPONSE",
+                "status": "CONNECTED",
+                "response": "SUBSCRIBED",
+                "req_id": request["id"],
+            }
+        }
+    )
+    assert provider.subscription_acknowledged
+
+
+@pytest.mark.parametrize("response", ("ERROR", "MAX_STREAMS_REACHED", "INVALID_PERMS"))
+def test_thetadata_supported_rejection_responses_are_recorded(response: str):
+    contract = ThetaContract("AAPL", 20260807, 310000, "C")
+    provider = ThetaDataOptionsProvider(
+        "ws://127.0.0.1:25520/v1/events", "secret", contracts=(contract,)
+    )
+    request = provider.subscription_payloads()[0]
+    assert provider._observe_control(
+        {
+            "header": {
+                "type": "REQ_RESPONSE",
+                "status": "CONNECTED",
+                "response": response,
+                "req_id": request["id"],
+            }
+        }
+    )
+    assert f"request_rejected:{response.lower()}" in provider.diagnostics
+    assert not provider.subscription_acknowledged
+
+
+def test_thetadata_unknown_id_duplicate_and_unknown_response_fail_closed():
+    provider = ThetaDataOptionsProvider("ws://127.0.0.1:25520/v1/events", "secret")
+    assert provider._observe_control(
+        {
+            "header": {
+                "type": "REQ_RESPONSE",
+                "status": "CONNECTED",
+                "response": "SUBSCRIBED",
+                "req_id": 99,
+            }
+        }
+    )
+    assert "unmatched_request_response" in provider.diagnostics
+
+    contract = ThetaContract("AAPL", 20260807, 310000, "C")
+    provider = ThetaDataOptionsProvider(
+        "ws://127.0.0.1:25520/v1/events", "secret", contracts=(contract,)
+    )
+    request = provider.subscription_payloads()[0]
+    response = {
+        "header": {
+            "type": "REQ_RESPONSE",
+            "status": "CONNECTED",
+            "response": "SUBSCRIBED",
+            "req_id": request["id"],
+        }
+    }
+    assert provider._observe_control(response)
+    assert provider._observe_control(response)
+    assert "duplicate_request_response" in provider.diagnostics
+    second = provider.subscription_payloads()[0]
+    assert provider._observe_control(
+        {
+            "header": {
+                "type": "REQ_RESPONSE",
+                "status": "CONNECTED",
+                "response": "NOT_SUPPORTED",
+                "req_id": second["id"],
+            }
+        }
+    )
+    assert "unknown_request_response" in provider.diagnostics
 
 
 def test_thetadata_standard_exact_contract_payload_and_strike_conversion():
