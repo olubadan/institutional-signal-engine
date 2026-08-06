@@ -27,7 +27,7 @@ from .providers.thetadata_open_interest import (
     ThetaDataOpenInterestProvider,
 )
 from .universe import (
-    PHASE4_OBSERVATION_POLICY_VERSION,
+    PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
     PILOT_SYMBOLS,
     AlpacaContractSelector,
     UniverseManifest,
@@ -49,7 +49,7 @@ def _load_settings() -> Settings:
     return settings
 
 
-async def run(seconds: float) -> dict[str, object]:
+async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, object]:
     settings = _load_settings()
     alpaca = AlpacaEquitiesProvider(
         settings.alpaca_data_url,
@@ -149,39 +149,41 @@ async def run(seconds: float) -> dict[str, object]:
         oi_diagnostic["mdss"] = await oi_provider.mdss_status()
     except ProviderError as exc:
         oi_diagnostic["mdss"] = {"status": "unavailable", "reason": exc.category}
-    if aapl_contract is not None:
-        assert isinstance(aapl_contract, ThetaContract)
+    if skip_oi_diagnostic:
+        oi_diagnostic.update(
+            {
+                "status": "skipped_after_prior_http_500",
+                "endpoint_unavailable": True,
+                "reason": "endpoint_unavailable",
+            }
+        )
+    elif aapl_contract is not None:
+        target_contract = aapl_contract
         try:
-            first_oi = await oi_provider.snapshot(aapl_contract)
+            first_oi = await oi_provider.snapshot(target_contract)
         except ProviderError as exc:
             oi_diagnostic.update(
                 {"status": "failed", "reason": exc.category, **oi_provider.last_diagnostic}
             )
-            return {
-                "run_id": str(run_id),
-                "trading_enabled": False,
-                "status": "blocked_open_interest_provider",
-                "reason": exc.category,
-                "oi_diagnostic": oi_diagnostic,
-                "coarse_shortlisted_contracts": len(coarse_contracts),
-                "orders_constructed": 0,
-                "orders_submitted": 0,
-            }
-        oi_evidence[aapl_contract] = first_oi
-        oi_diagnostic.update(
-            {
-                "status": "success",
-                "canonical_contract": {
-                    "root": aapl_contract.root,
-                    "expiration": aapl_contract.expiration,
-                    "strike": aapl_contract.strike,
-                    "right": aapl_contract.right,
-                },
-                "oi_value": first_oi.open_interest,
-                "reported_at": first_oi.reported_at.isoformat(),
-                "effective_date": first_oi.effective_date.isoformat(),
-            }
-        )
+            oi_diagnostic["endpoint_unavailable"] = True
+            oi_diagnostic["status"] = "endpoint_unavailable_observation_continues"
+            oi_diagnostic["reason"] = "endpoint_unavailable"
+        else:
+            oi_evidence[target_contract] = first_oi
+            oi_diagnostic.update(
+                {
+                    "status": "success",
+                    "canonical_contract": {
+                        "root": target_contract.root,
+                        "expiration": target_contract.expiration,
+                        "strike": target_contract.strike,
+                        "right": target_contract.right,
+                    },
+                    "oi_value": first_oi.open_interest,
+                    "reported_at": first_oi.reported_at.isoformat(),
+                    "effective_date": first_oi.effective_date.isoformat(),
+                }
+            )
     semaphore = Semaphore(5)
     rate_lock = asyncio.Lock()
     next_oi_request = 0.0
@@ -202,7 +204,7 @@ async def run(seconds: float) -> dict[str, object]:
                 return contract, None
 
     remaining = [contract for contract in coarse_contracts if contract not in oi_evidence]
-    if remaining:
+    if remaining and oi_diagnostic.get("status") == "success":
         for contract, evidence in await asyncio.gather(
             *(enrich_oi(contract) for contract in remaining)
         ):
@@ -217,6 +219,13 @@ async def run(seconds: float) -> dict[str, object]:
         max_quote_age_seconds=settings.phase4_quote_freshness_seconds,
         maximum_spread=settings.thresholds.maximum_spread,
         minimum_quote_size=settings.phase4_min_quote_size,
+        alpaca_open_interest={
+            result.theta_contract: result.source.open_interest
+            for result in mapping_results
+            if result.accepted and result.theta_contract is not None
+        },
+        require_open_interest=False,
+        policy_version=PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
     )
     selections = enrichment.selections
     allocation = allocate_subscription_capacity(
@@ -362,7 +371,7 @@ async def run(seconds: float) -> dict[str, object]:
             "quote_limit": settings.phase4_quote_subscription_limit,
         },
         "capacity_excluded": list(allocation.capacity_excluded),
-        "policy_version": PHASE4_OBSERVATION_POLICY_VERSION,
+        "policy_version": PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
         "subscription_plan_count": len(plan),
         "manifest_persisted": True,
         "orders_constructed": 0,
@@ -370,7 +379,7 @@ async def run(seconds: float) -> dict[str, object]:
     }
     if not plan:
         report["status"] = "blocked_no_contracts_selected"
-        report["reason"] = "mandatory_observation_evidence_unavailable"
+        report["reason"] = "quote_observation_evidence_unavailable"
         return report
     signal_report = await run_signal_smoke(
         seconds,
@@ -408,9 +417,10 @@ async def run(seconds: float) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=float, default=60.0)
+    parser.add_argument("--skip-oi-diagnostic", action="store_true")
     arguments = parser.parse_args()
     try:
-        result = asyncio.run(run(arguments.seconds))
+        result = asyncio.run(run(arguments.seconds, arguments.skip_oi_diagnostic))
     except (ProviderError, RuntimeError, ValueError) as exc:
         result = {
             "status": "blocked",

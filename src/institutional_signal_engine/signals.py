@@ -13,10 +13,10 @@ def _gate(name: str, passed: bool, reason: str) -> GateResult:
 
 def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> Candidate:
     t = settings.thresholds
-    ratio = (
+    ratio: Decimal | None = (
         (Decimal(item.option_volume) / Decimal(item.open_interest))
         if item.option_volume is not None and item.open_interest
-        else Decimal(0)
+        else None
     )
     missing = set(item.indicator_reasons)
     liquidity = (
@@ -32,6 +32,7 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
         and item.option_volume is not None
         and item.open_interest is not None
         and item.call_premium >= t.minimum_call_premium
+        and ratio is not None
         and ratio >= t.minimum_option_volume_oi_ratio
     )
     equity = (
@@ -76,7 +77,9 @@ def evaluate(item: SynchronizedInput, settings: Settings, ordinal: int = 0) -> C
         _gate(
             "options",
             options,
-            "missing_or_premium_or_volume_oi_threshold"
+            "OPEN_INTEREST_UNAVAILABLE"
+            if item.open_interest is None or item.open_interest <= 0
+            else "missing_or_premium_or_volume_oi_threshold"
             if missing
             else "premium_or_volume_oi_threshold",
         ),
@@ -106,7 +109,7 @@ def rank(candidates: list[Candidate]) -> list[Candidate]:
         key=lambda c: (
             -c.freshness_score,
             -c.call_premium,
-            -c.option_volume_oi_ratio,
+            -(c.option_volume_oi_ratio or Decimal(0)),
             -c.relative_volume,
             -c.distance_to_resistance,
             c.ordinal,

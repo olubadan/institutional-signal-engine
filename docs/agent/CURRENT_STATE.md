@@ -400,3 +400,20 @@
   streams were made; orders remained 0/0.
 - Status remains blocked pending ThetaData restoration of the documented OI
   snapshot endpoint. Discovery endpoints were not retried.
+
+### SESSION-0017 owner-directed observation eligibility — 20260806
+
+- Phase 4 now separates observation-subscription eligibility from complete
+  S/F/R/E eligibility. Quote-liquid, round-trip-validated active calls may be
+  subscribed for sweep observation without OI under policy
+  `phase4-sweep-observation-without-oi-v1`; the policy is Phase 4-only and does
+  not authorize orders or complete signals.
+- ThetaData dated OI remains preferred optional enrichment. The known sanitized
+  HTTP 500 is recorded once and the live runner supports an explicit
+  `--skip-oi-diagnostic` mode so today’s observation does not retry that endpoint.
+  Missing OI remains `null` for the OI ratio, blocks the OI-dependent gate with
+  `OPEN_INTEREST_UNAVAILABLE`, and keeps executable candidates at zero.
+- Added regression coverage for missing/undated Alpaca OI, optional observation
+  selection, and null OI-dependent signal ratios. Local checks currently pass
+  with 113 hermetic tests, Ruff format/lint, and strict mypy; live observation
+  and exact-head CI remain pending.

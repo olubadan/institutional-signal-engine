@@ -34,6 +34,7 @@ PILOT_SYMBOLS: tuple[str, ...] = (
 )
 
 PHASE4_OBSERVATION_POLICY_VERSION = "phase4-observation-liquidity-relaxation-v1"
+PHASE4_SWEEP_OBSERVATION_POLICY_VERSION = "phase4-sweep-observation-without-oi-v1"
 PHASE4_LIQUIDITY_EVIDENCE_SOURCE = "OWNER_APPROVED_PHASE4_PILOT"
 
 

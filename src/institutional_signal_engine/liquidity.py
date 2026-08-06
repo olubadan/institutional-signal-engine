@@ -10,7 +10,7 @@ from .providers.thetadata import ThetaContract
 from .providers.thetadata_open_interest import OpenInterestEvidence
 from .universe import (
     PHASE4_LIQUIDITY_EVIDENCE_SOURCE,
-    PHASE4_OBSERVATION_POLICY_VERSION,
+    PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
     UniverseSelection,
 )
 
@@ -30,7 +30,12 @@ def finalize_liquidity(
     max_quote_age_seconds: int = 60,
     maximum_spread: Decimal = Decimal("0.01"),
     minimum_quote_size: int = 1,
+    alpaca_open_interest: dict[ThetaContract, int | None] | None = None,
+    require_open_interest: bool = True,
+    policy_version: str = PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
 ) -> EnrichmentResult:
+    if not require_open_interest and policy_version != PHASE4_SWEEP_OBSERVATION_POLICY_VERSION:
+        raise ValueError("phase4_observation_policy_required")
     mapping_by_contract = {
         result.theta_contract: result
         for result in mappings
@@ -54,12 +59,17 @@ def finalize_liquidity(
                 reasons.append("quote_snapshot_invalid_stale_crossed_or_zero_size")
             elif quote.spread is None or quote.spread > maximum_spread:
                 reasons.append("spread_threshold_failed")
-            if oi is None:
+            alpaca_oi = (alpaca_open_interest or {}).get(contract)
+            if require_open_interest and oi is None:
                 reasons.append("dated_open_interest_missing_or_identity_mismatch")
-            elif oi.open_interest <= 0:
+            elif require_open_interest and oi is not None and oi.open_interest <= 0:
                 reasons.append("dated_open_interest_missing_or_zero")
-            if not reasons and quote is not None and oi is not None:
+            if not reasons and quote is not None:
                 accepted.append(contract)
+                effective_oi = oi.open_interest if oi is not None else alpaca_oi
+                oi_available = effective_oi is not None and effective_oi > 0
+                if require_open_interest and not oi_available:
+                    raise AssertionError("required_open_interest_passed_without_evidence")
                 evidence.append(
                     {
                         "root": contract.root,
@@ -81,16 +91,26 @@ def finalize_liquidity(
                         "latest_trade_timestamp": quote.latest_trade_timestamp.isoformat()
                         if quote.latest_trade_timestamp is not None
                         else None,
-                        "oi_evidence_source": oi.source,
-                        "oi_reported_at": oi.reported_at.isoformat(),
-                        "oi_effective_date": oi.effective_date.isoformat(),
-                        "open_interest": oi.open_interest,
-                        "open_interest_verified_as_of": oi.verified_as_of,
+                        "oi_evidence_source": oi.source if oi is not None else None,
+                        "oi_reported_at": oi.reported_at.isoformat() if oi is not None else None,
+                        "oi_effective_date": oi.effective_date.isoformat()
+                        if oi is not None
+                        else None,
+                        "open_interest": effective_oi,
+                        "oi_date_source": (
+                            oi.source if oi is not None else "ALPACA_UNDATED" if alpaca_oi else None
+                        ),
+                        "open_interest_verified_as_of": oi.verified_as_of
+                        if oi is not None
+                        else False,
+                        "evidence_quality": "PHASE4_OBSERVATIONAL",
+                        "oi_available_at_subscription": oi_available,
+                        "signal_eligible_at_subscription": oi_available,
+                        "subscription_purpose": "PHASE4_SWEEP_OBSERVATION",
                         "selection_stage": "FINAL_LIQUIDITY_QUALIFIED",
                         "symbol_liquidity_evidence_source": PHASE4_LIQUIDITY_EVIDENCE_SOURCE,
                         "symbol_liquidity_verified": False,
-                        "evidence_quality": "PHASE4_OBSERVATIONAL",
-                        "policy_version": PHASE4_OBSERVATION_POLICY_VERSION,
+                        "policy_version": policy_version,
                     }
                 )
             records.append(
@@ -114,12 +134,12 @@ def finalize_liquidity(
                 selection.expiration if accepted else None,
                 tuple(accepted),
                 () if accepted else ("final_liquidity_evidence_failed",),
-                (*selection.provenance, "quote_snapshot", "dated_open_interest"),
+                (*selection.provenance, "quote_snapshot", "optional_open_interest"),
                 selection.provider_responses,
                 tuple(evidence),
                 PHASE4_LIQUIDITY_EVIDENCE_SOURCE,
                 False,
-                PHASE4_OBSERVATION_POLICY_VERSION,
+                policy_version,
             )
         )
     return EnrichmentResult(tuple(selections), tuple(records))

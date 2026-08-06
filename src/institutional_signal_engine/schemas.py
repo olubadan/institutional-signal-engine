@@ -98,7 +98,7 @@ class Candidate(BaseModel):
     symbol: str
     freshness_score: Decimal
     call_premium: Decimal
-    option_volume_oi_ratio: Decimal
+    option_volume_oi_ratio: Decimal | None
     relative_volume: Decimal
     distance_to_resistance: Decimal
     ordinal: int

@@ -21,9 +21,12 @@ fixture-verified but not live-verified while HTTP 500 remains awaiting
 support.
 PR #3 is merged into main. Continue on `feat/phase-4-live-universe` and draft
 PR #4. SESSION-0016 added two-stage coarse shortlist and Alpaca snapshot
-enrichment, but the single bounded ThetaData OI snapshot diagnostic returned
-HTTP 500 while MDDS was CONNECTED. Do not retry it until provider support
-restores the endpoint. Contract/expiration/strike discovery remains
+enrichment. The owner then authorized observation subscriptions without OI:
+use `phase4-sweep-observation-without-oi-v1`; missing OI must remain null for
+the signal ratio and block complete S/F/R/E. The single bounded ThetaData OI
+snapshot diagnostic returned HTTP 500 while MDDS was CONNECTED; do not retry
+it today. Run the regular-session observation with
+`--skip-oi-diagnostic`. Contract/expiration/strike discovery remains
 cross-validation-only and must not be retried repeatedly. Keep
 `TRADING_ENABLED=false`; do not construct or submit orders, expose ports,
 reveal credentials, merge PR #4, or begin Phase 5 work.

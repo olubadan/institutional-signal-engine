@@ -70,6 +70,72 @@ def test_quote_snapshot_validity_boundaries():
     assert quote.spread == Decimal("0.01")
 
 
+def test_observation_subscription_does_not_require_open_interest():
+    source = AlpacaOptionContract.from_payload(alpaca_payload(), NOW)
+    mapping = map_alpaca_contract(source)
+    quote = OptionQuoteEvidence(
+        CanonicalOptionIdentity("AAPL", 20260814, 310000, "C"),
+        "AAPL260814C00310000",
+        "OPRA",
+        NOW,
+        Decimal("1.00"),
+        2,
+        Decimal("1.01"),
+        3,
+        Decimal("1.00"),
+        NOW,
+        "fixture",
+    )
+    selection = UniverseSelection("AAPL", True, 20260814, (CONTRACT,), (), (), ())
+    result = finalize_liquidity(
+        (selection,),
+        (mapping,),
+        {CONTRACT: quote},
+        {},
+        NOW,
+        require_open_interest=False,
+        alpaca_open_interest={CONTRACT: None},
+    )
+    assert result.selections[0].included
+    evidence = result.selections[0].contract_evidence[0]
+    assert evidence["subscription_purpose"] == "PHASE4_SWEEP_OBSERVATION"
+    assert evidence["oi_available_at_subscription"] is False
+    assert evidence["signal_eligible_at_subscription"] is False
+    assert evidence["policy_version"] == "phase4-sweep-observation-without-oi-v1"
+
+
+def test_observation_subscription_can_preserve_positive_undated_alpaca_oi():
+    source = AlpacaOptionContract.from_payload(alpaca_payload(), NOW)
+    mapping = map_alpaca_contract(source)
+    quote = OptionQuoteEvidence(
+        CanonicalOptionIdentity("AAPL", 20260814, 310000, "C"),
+        "AAPL260814C00310000",
+        "INDICATIVE",
+        NOW,
+        Decimal("1.00"),
+        2,
+        Decimal("1.01"),
+        3,
+        None,
+        None,
+        "fixture",
+    )
+    selection = UniverseSelection("AAPL", True, 20260814, (CONTRACT,), (), (), ())
+    result = finalize_liquidity(
+        (selection,),
+        (mapping,),
+        {CONTRACT: quote},
+        {},
+        NOW,
+        require_open_interest=False,
+        alpaca_open_interest={CONTRACT: 10},
+    )
+    evidence = result.selections[0].contract_evidence[0]
+    assert evidence["oi_date_source"] == "ALPACA_UNDATED"
+    assert evidence["open_interest_verified_as_of"] is False
+    assert evidence["evidence_quality"] == "PHASE4_OBSERVATIONAL"
+
+
 @pytest.mark.asyncio
 async def test_alpaca_snapshot_batches_and_preserves_feed(monkeypatch: pytest.MonkeyPatch):
     class Response:
