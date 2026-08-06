@@ -1,5 +1,6 @@
 """Typed option-universe selection and reconciliation."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -268,9 +269,11 @@ class AlpacaContractSelector:
         results: tuple[MappingResult, ...],
         underlying_prices: dict[str, Decimal],
         as_of: date,
+        symbols: Iterable[str] = (),
     ) -> tuple[UniverseSelection, ...]:
         by_symbol: dict[str, list[MappingResult]] = {}
         failures: dict[str, list[str]] = {}
+        expected_symbols = {symbol.upper() for symbol in symbols}
         for result in results:
             symbol = result.source.underlying_symbol
             if not result.accepted or result.canonical is None:
@@ -303,7 +306,10 @@ class AlpacaContractSelector:
                 else:
                     by_symbol.setdefault(symbol, []).append(result)
         selections: list[UniverseSelection] = []
-        for symbol in sorted(set(by_symbol) | set(failures)):
+        all_symbols = expected_symbols | set(by_symbol) | set(failures)
+        for symbol in sorted(all_symbols):
+            if symbol not in by_symbol and symbol not in failures:
+                failures[symbol] = ["no_alpaca_contracts_returned"]
             valid_results = [
                 item
                 for item in by_symbol.get(symbol, [])

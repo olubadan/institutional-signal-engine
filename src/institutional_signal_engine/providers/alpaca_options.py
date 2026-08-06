@@ -32,7 +32,6 @@ class AlpacaOptionsContractProvider:
             "underlying_symbols": ",".join(requested),
             "type": "call",
             "status": "active",
-            "tradable": "true",
             "limit": limit,
         }
         headers = {

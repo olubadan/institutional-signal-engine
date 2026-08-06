@@ -70,7 +70,9 @@ async def run(seconds: float) -> dict[str, object]:
     mapping_results = tuple(
         round_trip_validate(map_alpaca_contract(contract)) for contract in discovered
     )
-    selections = AlpacaContractSelector().select(mapping_results, prices, as_of)
+    selections = AlpacaContractSelector().select(
+        mapping_results, prices, as_of, symbols=PILOT_SYMBOLS
+    )
     plan = subscription_plan(selections)
     manifest = UniverseManifest(
         run_id,

@@ -114,6 +114,15 @@ def test_alpaca_selection_records_unavailable_average_volume():
     assert "average_options_volume_unavailable" in selected[0].rejection_reasons
 
 
+def test_alpaca_selection_reports_symbols_with_no_returned_contracts():
+    selected = AlpacaContractSelector().select(
+        (), {"AAPL": Decimal(310)}, RECEIVED.date(), symbols=("AAPL", "MSFT")
+    )
+    assert [item.symbol for item in selected] == ["AAPL", "MSFT"]
+    assert selected[0].rejection_reasons == ("no_alpaca_contracts_returned",)
+    assert selected[1].rejection_reasons == ("no_alpaca_contracts_returned",)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "failed_field"),
     (
