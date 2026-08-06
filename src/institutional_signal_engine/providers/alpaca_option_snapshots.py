@@ -108,8 +108,11 @@ class AlpacaOptionSnapshotProvider:
                 body: object = response.json()
                 if not isinstance(body, dict):
                     raise ProviderError("alpaca", "option_snapshot_malformed", False)
+                snapshots = body.get("snapshots", body)
+                if not isinstance(snapshots, dict):
+                    raise ProviderError("alpaca", "option_snapshot_malformed", False)
                 by_symbol = {symbol: identity for symbol, identity in batch}
-                for provider_symbol, raw in body.items():
+                for provider_symbol, raw in snapshots.items():
                     identity = by_symbol.get(provider_symbol)
                     if identity is None or not isinstance(raw, dict):
                         continue

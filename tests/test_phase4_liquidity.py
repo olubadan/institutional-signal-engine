@@ -143,15 +143,17 @@ async def test_alpaca_snapshot_batches_and_preserves_feed(monkeypatch: pytest.Mo
 
         def json(self) -> dict[str, object]:
             return {
-                "AAPL260814C00310000": {
-                    "latestQuote": {
-                        "bp": "1.00",
-                        "ap": "1.01",
-                        "bs": 2,
-                        "as": 3,
-                        "t": "2026-08-06T14:00:00Z",
-                    },
-                    "latestTrade": {"p": "1.00", "t": "2026-08-06T13:59:59Z"},
+                "snapshots": {
+                    "AAPL260814C00310000": {
+                        "latestQuote": {
+                            "bp": "1.00",
+                            "ap": "1.01",
+                            "bs": 2,
+                            "as": 3,
+                            "t": "2026-08-06T14:00:00Z",
+                        },
+                        "latestTrade": {"p": "1.00", "t": "2026-08-06T13:59:59Z"},
+                    }
                 }
             }
 
