@@ -371,3 +371,14 @@
 - Local verification: 104 hermetic tests, Ruff format/lint, and strict mypy.
   No live run was performed for this amendment; PR #4 remains draft and
   unmerged, trading remains disabled, and no orders are constructed/submitted.
+
+### SESSION-0015 regular-session smoke — 20260806
+
+- Run `cc56f1d3-6dca-411b-ad46-fd9f9b84888e` received/mapped 11,956 contracts,
+  with zero mapping failures. All symbols failed closed for missing or zero OI
+  and unavailable quote liquidity; the owner-approved average-volume
+  relaxation did not override those mandatory requirements.
+- Requested, selected, capacity-excluded, submitted, acknowledged, and
+  rejected subscription counts were all zero because no contract passed the
+  evidence filters. No ThetaData stream, sweep, or decision evidence was
+  produced. Orders remained 0/0 and trading remained disabled.

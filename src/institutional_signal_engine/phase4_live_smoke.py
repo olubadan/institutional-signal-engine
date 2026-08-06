@@ -190,7 +190,7 @@ async def run(seconds: float) -> dict[str, object]:
     }
     if not plan:
         report["status"] = "blocked_no_contracts_selected"
-        report["reason"] = "mandatory_liquidity_evidence_unavailable_or_mapping_failure"
+        report["reason"] = "mandatory_observation_evidence_unavailable"
         return report
     signal_report = await run_signal_smoke(
         seconds,
