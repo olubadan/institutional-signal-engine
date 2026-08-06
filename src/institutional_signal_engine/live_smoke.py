@@ -95,6 +95,7 @@ async def run(
     symbols: Iterable[str] = ("AAPL",),
     contracts: Iterable[ThetaContract] = (SMOKE_AAPL_CONTRACT,),
     request_types: Iterable[str] = ("TRADE",),
+    contract_metadata: dict[ThetaContract, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     pilot_symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
     requested_contracts = tuple(contracts)
@@ -145,6 +146,39 @@ async def run(
     )
 
     def process(event: CanonicalEvent) -> None:
+        if event.kind == EventKind.OPTIONS and contract_metadata:
+            contract = event.payload.get("contract")
+            if isinstance(contract, dict):
+                key = ThetaContract(
+                    str(contract.get("root", "")).upper(),
+                    int(contract.get("expiration", 0)),
+                    int(contract.get("strike", 0)),
+                    str(contract.get("right", "")),
+                )
+                metadata = contract_metadata.get(key)
+                if metadata is not None:
+                    indicator_provenance = {
+                        name: str(value)
+                        for name, value in metadata.items()
+                        if name
+                        in {
+                            "oi_date_source",
+                            "open_interest_verified_as_of",
+                            "evidence_quality",
+                            "symbol_liquidity_evidence_source",
+                            "symbol_liquidity_verified",
+                            "policy_version",
+                        }
+                    }
+                    event = event.model_copy(update={"payload": {**event.payload, **metadata}})
+                    event = event.model_copy(
+                        update={
+                            "payload": {
+                                **event.payload,
+                                "indicator_provenance": indicator_provenance,
+                            }
+                        }
+                    )
         if event.symbol == "SPY":
             event = _as_market_input(event, EventKind.MARKET_INDEX)
         elif event.symbol == "XLK":
@@ -221,6 +255,22 @@ async def run(
             "thetadata": "success" if theta.subscription_acknowledged else "not_observed",
             "acknowledged_request_count": len(theta.acknowledged_ids),
             "rejected_or_unmatched": list(theta.diagnostics),
+            "requests_by_type": {
+                req_type: {
+                    "requested": sum(
+                        request.req_type == req_type for request in theta.request_registry.values()
+                    ),
+                    "acknowledged": sum(
+                        theta.request_registry[request_id].req_type == req_type
+                        for request_id in theta.acknowledged_ids
+                        if request_id in theta.request_registry
+                    ),
+                    "rejected_or_unmatched": sum(
+                        request_type == req_type for request_type in theta.rejected_request_types
+                    ),
+                }
+                for req_type in request_types
+            },
         },
         "provider_stream_status": {"thetadata": theta.stream_status},
         "historical_bootstrap": {

@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from .contract_mapping import MappingResult
@@ -32,6 +32,9 @@ PILOT_SYMBOLS: tuple[str, ...] = (
     "ORCL",
     "CRM",
 )
+
+PHASE4_OBSERVATION_POLICY_VERSION = "phase4-observation-liquidity-relaxation-v1"
+PHASE4_LIQUIDITY_EVIDENCE_SOURCE = "OWNER_APPROVED_PHASE4_PILOT"
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,10 @@ class UniverseSelection:
     rejection_reasons: tuple[str, ...]
     provenance: tuple[str, ...]
     provider_responses: tuple[dict[str, object], ...]
+    contract_evidence: tuple[dict[str, object], ...] = ()
+    symbol_liquidity_evidence_source: str | None = None
+    symbol_liquidity_verified: bool = True
+    policy_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,8 @@ class UniverseManifest:
     mapping_records: tuple[dict[str, object], ...] = ()
     acknowledgements: tuple[dict[str, object], ...] = ()
     reconnect_history: tuple[dict[str, object], ...] = ()
+    capacity_excluded: tuple[dict[str, object], ...] = ()
+    policy_version: str = PHASE4_OBSERVATION_POLICY_VERSION
     selection_version: str = "phase4-universe-v1"
     mapping_version: str = "alpaca-occ-thetadata-v1"
 
@@ -150,8 +159,10 @@ class UniverseManifest:
             "mapping_records": list(self.mapping_records),
             "acknowledgements": list(self.acknowledgements),
             "reconnect_history": list(self.reconnect_history),
+            "capacity_excluded": list(self.capacity_excluded),
             "selection_version": self.selection_version,
             "mapping_version": self.mapping_version,
+            "policy_version": self.policy_version,
         }
 
 
@@ -259,10 +270,14 @@ class AlpacaContractSelector:
         min_days_to_expiration: int = 7,
         max_days_to_expiration: int = 45,
         max_moneyness_distance: Decimal = Decimal("0.20"),
+        policy_version: str = PHASE4_OBSERVATION_POLICY_VERSION,
     ) -> None:
+        if policy_version != PHASE4_OBSERVATION_POLICY_VERSION:
+            raise ValueError("phase4_observation_policy_required")
         self.min_days = min_days_to_expiration
         self.max_days = max_days_to_expiration
         self.max_moneyness_distance = max_moneyness_distance
+        self.policy_version = policy_version
 
     def select(
         self,
@@ -290,12 +305,17 @@ class AlpacaContractSelector:
                 failures.setdefault(symbol, []).append("expiration_outside_configured_window")
             elif symbol not in underlying_prices or underlying_prices[symbol] <= 0:
                 failures.setdefault(symbol, []).append("underlying_price_unavailable")
-            elif result.source.open_interest is None or result.source.open_interest_date is None:
-                failures.setdefault(symbol, []).append("dated_open_interest_unavailable")
-            elif result.source.open_interest_date > as_of:
+            elif result.source.open_interest is None or result.source.open_interest <= 0:
+                failures.setdefault(symbol, []).append("missing_or_zero_open_interest")
+            elif (
+                result.source.open_interest_date is not None
+                and result.source.open_interest_date > as_of
+            ):
                 failures.setdefault(symbol, []).append("open_interest_date_in_future")
-            elif raw.get("average_options_volume") is None:
-                failures.setdefault(symbol, []).append("average_options_volume_unavailable")
+            elif raw.get("average_options_volume") is not None and Decimal(
+                str(raw["average_options_volume"])
+            ) < Decimal(2000):
+                failures.setdefault(symbol, []).append("average_options_volume_below_2000")
             elif raw.get("bid") is None or raw.get("ask") is None:
                 failures.setdefault(symbol, []).append("quote_liquidity_unavailable")
             else:
@@ -334,10 +354,39 @@ class AlpacaContractSelector:
                 key=sort_key,
             )
             expiration = candidates[0].source.expiration if candidates else None
-            selected = tuple(
-                item.theta_contract
+            selected_items = tuple(
+                item
                 for item in candidates
                 if item.source.expiration == expiration and item.theta_contract is not None
+            )
+            selected = tuple(item.theta_contract for item in selected_items if item.theta_contract)
+            contract_evidence = tuple(
+                cast(
+                    dict[str, object],
+                    {
+                        "root": item.theta_contract.root,
+                        "expiration": item.theta_contract.expiration,
+                        "strike": item.theta_contract.strike,
+                        "right": item.theta_contract.right,
+                        "open_interest": item.source.open_interest,
+                        "oi_date_source": (
+                            "ALPACA_DATED"
+                            if item.source.open_interest_date is not None
+                            else "ALPACA_UNDATED"
+                        ),
+                        "open_interest_verified_as_of": item.source.open_interest_date is not None,
+                        "evidence_quality": (
+                            "PRODUCTION_QUALIFIED"
+                            if item.source.open_interest_date is not None
+                            else "PHASE4_OBSERVATIONAL"
+                        ),
+                        "symbol_liquidity_evidence_source": PHASE4_LIQUIDITY_EVIDENCE_SOURCE,
+                        "symbol_liquidity_verified": False,
+                        "policy_version": self.policy_version,
+                    },
+                )
+                for item in selected_items
+                if item.theta_contract is not None
             )
             reasons = tuple(sorted(set(failures.get(symbol, ()))))
             selections.append(
@@ -350,11 +399,15 @@ class AlpacaContractSelector:
                     (
                         "alpaca_contract_discovery",
                         "canonical_mapping",
-                        "dated_open_interest",
+                        "open_interest_observation_policy",
                         "liquidity_evidence",
                         "moneyness",
                     ),
                     (),
+                    contract_evidence,
+                    PHASE4_LIQUIDITY_EVIDENCE_SOURCE,
+                    False,
+                    self.policy_version,
                 )
             )
         return tuple(selections)
@@ -372,6 +425,88 @@ def subscription_plan(selections: tuple[UniverseSelection, ...]) -> tuple[ThetaC
         sorted(
             contracts, key=lambda value: (value.root, value.expiration, value.strike, value.right)
         )
+    )
+
+
+@dataclass(frozen=True)
+class CapacityAllocation:
+    requested: tuple[ThetaContract, ...]
+    selected: tuple[ThetaContract, ...]
+    trade_plan: tuple[ThetaContract, ...]
+    quote_plan: tuple[ThetaContract, ...]
+    capacity_excluded: tuple[dict[str, object], ...]
+
+
+def allocate_subscription_capacity(
+    selections: tuple[UniverseSelection, ...],
+    underlying_prices: dict[str, Decimal],
+    trade_limit: int = 15_000,
+    quote_limit: int = 15_000,
+    max_contracts_per_symbol: int = 1_000,
+) -> CapacityAllocation:
+    """Allocate Standard subscriptions deterministically without truncation."""
+    if min(trade_limit, quote_limit, max_contracts_per_symbol) < 1:
+        raise ValueError("subscription limits must be positive")
+    candidates: dict[str, list[ThetaContract]] = {}
+    for selection in selections:
+        if not selection.included:
+            continue
+        price = underlying_prices.get(selection.symbol)
+        if price is None or price <= 0:
+            continue
+        candidates[selection.symbol] = sorted(
+            set(selection.contracts),
+            key=lambda contract: (
+                contract.expiration,
+                abs(Decimal(contract.strike) / Decimal(1000) - price),
+                contract.strike,
+                contract.right,
+            ),
+        )
+    requested = tuple(contract for symbol in sorted(candidates) for contract in candidates[symbol])
+    selected: list[ThetaContract] = []
+    excluded: list[dict[str, object]] = []
+    indices = {symbol: 0 for symbol in candidates}
+    selected_per_symbol = {symbol: 0 for symbol in candidates}
+    rank_by_symbol = {symbol: 0 for symbol in candidates}
+    capacity = min(trade_limit, quote_limit)
+    while True:
+        progressed = False
+        for symbol in sorted(candidates):
+            index = indices[symbol]
+            if index >= len(candidates[symbol]):
+                continue
+            contract = candidates[symbol][index]
+            indices[symbol] += 1
+            rank_by_symbol[symbol] += 1
+            progressed = True
+            if len(selected) >= capacity or selected_per_symbol[symbol] >= max_contracts_per_symbol:
+                excluded.append(
+                    {
+                        "symbol": symbol,
+                        "root": contract.root,
+                        "expiration": contract.expiration,
+                        "strike": contract.strike,
+                        "right": contract.right,
+                        "rank": rank_by_symbol[symbol],
+                        "reason": "SUBSCRIPTION_CAPACITY_EXCLUDED",
+                        "trade_limit": trade_limit,
+                        "quote_limit": quote_limit,
+                        "max_contracts_per_symbol": max_contracts_per_symbol,
+                    }
+                )
+            else:
+                selected.append(contract)
+                selected_per_symbol[symbol] += 1
+        if not progressed:
+            break
+    selected_tuple = tuple(selected)
+    return CapacityAllocation(
+        requested=requested,
+        selected=selected_tuple,
+        trade_plan=selected_tuple,
+        quote_plan=selected_tuple,
+        capacity_excluded=tuple(excluded),
     )
 
 
@@ -408,6 +543,11 @@ def selection_audits(
             "rejection_reasons": list(selection.rejection_reasons),
             "provenance": list(selection.provenance),
             "provider_responses": list(selection.provider_responses),
+            "contract_evidence": list(selection.contract_evidence),
+            "symbol_liquidity_evidence_source": selection.symbol_liquidity_evidence_source,
+            "symbol_liquidity_verified": selection.symbol_liquidity_verified,
+            "policy_version": selection.policy_version,
+            "capacity_excluded": [],
             "subscription_plan": plan_values,
         }
         for selection in selections

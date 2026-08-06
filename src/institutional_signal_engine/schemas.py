@@ -72,6 +72,12 @@ class SynchronizedInput(BaseModel):
     qualifying_sweep_premium: Decimal = Decimal(0)
     session_sweep_gate: bool = False
     most_recent_qualifying_sweep_timestamp: datetime | None = None
+    oi_date_source: str | None = None
+    open_interest_verified_as_of: bool = True
+    evidence_quality: str | None = None
+    symbol_liquidity_evidence_source: str | None = None
+    symbol_liquidity_verified: bool = True
+    policy_version: str | None = None
 
     _utc_as_of = field_validator("as_of")(utc)
     _utc_first = field_validator("first_signal_at")(lambda v: utc(v) if v else v)

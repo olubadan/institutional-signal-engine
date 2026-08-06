@@ -55,6 +55,9 @@ class Settings(BaseModel):
     persistence_hard_limit: int = Field(default=20_000, gt=0)
     persistence_batch_size: int = Field(default=100, gt=0)
     persistence_flush_interval: Decimal = Field(default=Decimal("0.05"), gt=0)
+    phase4_max_contracts_per_symbol: int = Field(default=1000, gt=0)
+    phase4_trade_subscription_limit: int = Field(default=15000, gt=0)
+    phase4_quote_subscription_limit: int = Field(default=15000, gt=0)
     config_version: str = "phase3-v1"
     engine_version: str = "0.1.0"
 
@@ -91,6 +94,15 @@ class Settings(BaseModel):
             persistence_hard_limit=int(values.get("PERSISTENCE_HARD_LIMIT", "20000")),
             persistence_batch_size=int(values.get("PERSISTENCE_BATCH_SIZE", "100")),
             persistence_flush_interval=Decimal(values.get("PERSISTENCE_FLUSH_INTERVAL", "0.05")),
+            phase4_max_contracts_per_symbol=int(
+                values.get("PHASE4_MAX_CONTRACTS_PER_SYMBOL", "1000")
+            ),
+            phase4_trade_subscription_limit=int(
+                values.get("PHASE4_TRADE_SUBSCRIPTION_LIMIT", "15000")
+            ),
+            phase4_quote_subscription_limit=int(
+                values.get("PHASE4_QUOTE_SUBSCRIPTION_LIMIT", "15000")
+            ),
         )
 
     @classmethod

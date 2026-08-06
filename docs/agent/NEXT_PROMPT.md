@@ -20,11 +20,13 @@ feed naturally produces one. Treat ThetaData discovery as
 fixture-verified but not live-verified while HTTP 500 remains awaiting
 support.
 PR #3 is merged into main. Continue on `feat/phase-4-live-universe` and draft
-PR #4. The final regular-session catalog run received and mapped 11,956 Alpaca
-contracts but selected none because dated open interest or average options
-volume evidence was unavailable; do not fabricate either value. Add a typed
-liquidity-evidence source or obtain owner-approved equivalent evidence before
-retrying the bounded pilot. ThetaData REST discovery remains unavailable,
+PR #4. SESSION-0015 implemented the owner-approved
+`phase4-observation-liquidity-relaxation-v1` policy: symbol-level liquidity
+provenance is `OWNER_APPROVED_PHASE4_PILOT` with verified=false, positive
+undated OI is observational only, and deterministic separate TRADE/QUOTE
+capacity allocation is persisted. Run the next regular-session pilot using
+this policy and report evidence quality explicitly; missing or zero OI still
+fails closed. ThetaData REST discovery remains unavailable,
 cross-validation-only, and must not be retried repeatedly. Keep
 `TRADING_ENABLED=false`; do not construct or submit orders, expose ports,
 reveal credentials, merge PR #4, or begin Phase 5 work.

@@ -165,6 +165,7 @@ class ThetaDataOptionsProvider:
         self.outstanding: dict[int, SubscriptionRequest] = {}
         self.request_registry: dict[int, SubscriptionRequest] = {}
         self.diagnostics: list[str] = []
+        self.rejected_request_types: list[str] = []
         self.connection_generation = 0
         self.connected = False
         self.subscription_acknowledged = False
@@ -222,6 +223,7 @@ class ThetaDataOptionsProvider:
                 self.subscription_acknowledged = True
             elif response in {"ERROR", "MAX_STREAMS_REACHED", "INVALID_PERMS"}:
                 self.diagnostics.append(f"request_rejected:{response.lower()}")
+                self.rejected_request_types.append(request.req_type)
             else:
                 self.diagnostics.append("unknown_request_response")
             return True

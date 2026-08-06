@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -5,11 +6,15 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from institutional_signal_engine.config import Settings
 from institutional_signal_engine.persistence import InMemoryRepository
 from institutional_signal_engine.providers.thetadata import (
     ThetaContract,
     ThetaDataDiscoveryClient,
 )
+from institutional_signal_engine.schemas import CanonicalEvent, EventKind
+from institutional_signal_engine.signals import decide
+from institutional_signal_engine.synchronization import Synchronizer
 from institutional_signal_engine.universe import (
     ContractEvidence,
     Phase4UniverseSelector,
@@ -137,6 +142,53 @@ def test_universe_audit_persists_and_replays():
     audit = selection_audits(run_id, (selection,), (contract,))[0]
     repository.record_universe(audit)
     assert tuple(repository.replay_universe(run_id)) == (audit,)
+
+
+def test_observational_oi_provenance_reaches_synchronized_decision():
+    now = datetime(2026, 8, 6, 14, 0, tzinfo=UTC)
+    synchronizer = Synchronizer(max_staleness=timedelta(minutes=1))
+    payloads = {
+        EventKind.EQUITY: {"price": Decimal(310), "volume": 200000, "spread": Decimal("0.01")},
+        EventKind.OPTIONS: {
+            "option_volume": 100,
+            "open_interest": 10,
+            "call_premium": Decimal(100000),
+            "oi_date_source": "ALPACA_UNDATED",
+            "open_interest_verified_as_of": False,
+            "evidence_quality": "PHASE4_OBSERVATIONAL",
+            "symbol_liquidity_evidence_source": "OWNER_APPROVED_PHASE4_PILOT",
+            "symbol_liquidity_verified": False,
+            "policy_version": "phase4-observation-liquidity-relaxation-v1",
+            "indicator_provenance": {
+                "oi_date_source": "ALPACA_UNDATED",
+                "open_interest_verified_as_of": "False",
+                "evidence_quality": "PHASE4_OBSERVATIONAL",
+            },
+        },
+        EventKind.MARKET_INDEX: {"delta": Decimal("0.01")},
+        EventKind.SECTOR_INDEX: {"delta": Decimal("0.01")},
+    }
+    for sequence, (kind, payload) in enumerate(payloads.items()):
+        event = CanonicalEvent(
+            event_id=uuid4(),
+            kind=kind,
+            symbol="AAPL",
+            source="fixture",
+            source_timestamp=now,
+            received_timestamp=now,
+            normalized_timestamp=now,
+            sequence=sequence,
+            payload=payload,
+        )
+        assert synchronizer.add(event)
+    item = synchronizer.snapshot("AAPL", now)
+    assert item is not None
+    assert item.oi_date_source == "ALPACA_UNDATED"
+    assert item.open_interest_verified_as_of is False
+    assert item.evidence_quality == "PHASE4_OBSERVATIONAL"
+    decision = decide([item], Settings())
+    assert decision.indicator_provenance["options:oi_date_source"] == "ALPACA_UNDATED"
+    assert decision.indicator_provenance["options:evidence_quality"] == "PHASE4_OBSERVATIONAL"
 
 
 def test_discovery_http_500_is_sanitized_and_fail_closed(monkeypatch: pytest.MonkeyPatch):

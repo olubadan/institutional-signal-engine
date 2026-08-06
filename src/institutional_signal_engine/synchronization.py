@@ -79,10 +79,17 @@ class Synchronizer:
             most_recent_qualifying_sweep_timestamp=options.get(
                 "most_recent_qualifying_sweep_timestamp"
             ),
+            oi_date_source=options.get("oi_date_source"),
+            open_interest_verified_as_of=bool(options.get("open_interest_verified_as_of", True)),
+            evidence_quality=options.get("evidence_quality"),
+            symbol_liquidity_evidence_source=options.get("symbol_liquidity_evidence_source"),
+            symbol_liquidity_verified=bool(options.get("symbol_liquidity_verified", True)),
+            policy_version=options.get("policy_version"),
             provenance={
                 f"{name}:{key}": value
                 for name, payload in (
                     ("equity", equity),
+                    ("options", options),
                     ("market", market),
                     ("sector", sector),
                 )

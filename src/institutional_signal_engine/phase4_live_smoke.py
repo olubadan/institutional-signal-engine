@@ -18,10 +18,11 @@ from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.alpaca_options import AlpacaOptionsContractProvider
 from .providers.common import ProviderError
 from .universe import (
+    PHASE4_OBSERVATION_POLICY_VERSION,
     PILOT_SYMBOLS,
     AlpacaContractSelector,
     UniverseManifest,
-    subscription_plan,
+    allocate_subscription_capacity,
 )
 
 
@@ -80,7 +81,34 @@ async def run(seconds: float) -> dict[str, object]:
     selections = AlpacaContractSelector().select(
         mapping_results, prices, as_of, symbols=PILOT_SYMBOLS
     )
-    plan = subscription_plan(selections)
+    allocation = allocate_subscription_capacity(
+        selections,
+        prices,
+        trade_limit=settings.phase4_trade_subscription_limit,
+        quote_limit=settings.phase4_quote_subscription_limit,
+        max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
+    )
+    plan = allocation.selected
+    selected_contracts = set(plan)
+    contract_metadata = {
+        next(
+            contract
+            for contract in selection.contracts
+            if contract.root == str(item["root"])
+            and contract.expiration == int(str(item["expiration"]))
+            and contract.strike == int(str(item["strike"]))
+            and contract.right == str(item["right"])
+        ): item
+        for selection in selections
+        for item in selection.contract_evidence
+        if any(
+            contract.root == str(item["root"])
+            and contract.expiration == int(str(item["expiration"]))
+            and contract.strike == int(str(item["strike"]))
+            and contract.right == str(item["right"])
+            for contract in selection.contracts
+        )
+    }
     manifest = UniverseManifest(
         run_id,
         as_of,
@@ -88,6 +116,7 @@ async def run(seconds: float) -> dict[str, object]:
         selections,
         plan,
         mapping_records=tuple(result.record() for result in mapping_results),
+        capacity_excluded=allocation.capacity_excluded,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -132,11 +161,28 @@ async def run(seconds: float) -> dict[str, object]:
                         "right": contract.right,
                     }
                     for contract in selection.contracts
+                    if contract in selected_contracts
                 ],
             }
             for selection in selections
             if selection.included
         ],
+        "subscription_counts": {
+            "requested": len(allocation.requested),
+            "selected": len(allocation.selected),
+            "capacity_excluded": len(allocation.capacity_excluded),
+            "trade_submitted": len(allocation.trade_plan),
+            "quote_submitted": len(allocation.quote_plan),
+            "trade_acknowledged": 0,
+            "quote_acknowledged": 0,
+            "trade_rejected": 0,
+            "quote_rejected": 0,
+            "rejected_or_unmatched": 0,
+            "trade_limit": settings.phase4_trade_subscription_limit,
+            "quote_limit": settings.phase4_quote_subscription_limit,
+        },
+        "capacity_excluded": list(allocation.capacity_excluded),
+        "policy_version": PHASE4_OBSERVATION_POLICY_VERSION,
         "subscription_plan_count": len(plan),
         "manifest_persisted": True,
         "orders_constructed": 0,
@@ -151,8 +197,30 @@ async def run(seconds: float) -> dict[str, object]:
         symbols=tuple(selection.symbol for selection in selections if selection.included),
         contracts=plan,
         request_types=("TRADE", "QUOTE"),
+        contract_metadata=contract_metadata,
     )
     report.update(signal_report)
+    acknowledgement = signal_report.get("subscription_acknowledgement", {})
+    if isinstance(acknowledgement, dict):
+        requests_by_type = acknowledgement.get("requests_by_type", {})
+        if isinstance(requests_by_type, dict) and isinstance(report["subscription_counts"], dict):
+            report["subscription_counts"].update(
+                {
+                    "trade_acknowledged": int(
+                        requests_by_type.get("TRADE", {}).get("acknowledged", 0)
+                    ),
+                    "quote_acknowledged": int(
+                        requests_by_type.get("QUOTE", {}).get("acknowledged", 0)
+                    ),
+                    "trade_rejected": int(
+                        requests_by_type.get("TRADE", {}).get("rejected_or_unmatched", 0)
+                    ),
+                    "quote_rejected": int(
+                        requests_by_type.get("QUOTE", {}).get("rejected_or_unmatched", 0)
+                    ),
+                    "rejected_or_unmatched": len(acknowledgement.get("rejected_or_unmatched", [])),
+                }
+            )
     report["status"] = "live_observation_complete"
     return report
 

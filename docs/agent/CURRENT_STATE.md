@@ -353,3 +353,21 @@
   produced. Smallest next action: add a typed Alpaca liquidity-evidence source
   or obtain owner approval for an equivalent evidence field. ThetaData REST
   discovery remains unavailable and was not retried.
+
+### SESSION-0015 precision amendments — 20260806
+
+- Implemented policy `phase4-observation-liquidity-relaxation-v1` only in the
+  Phase 4 Alpaca selector. Each symbol records
+  `symbol_liquidity_evidence_source=OWNER_APPROVED_PHASE4_PILOT` and
+  `symbol_liquidity_verified=false`; selected contracts inherit this
+  provenance. The policy cannot be selected under another version.
+- Phase 4 accepts positive undated OI observationally, preserving
+  `oi_date_source=ALPACA_UNDATED`, `open_interest_verified_as_of=false`, and
+  `evidence_quality=PHASE4_OBSERVATIONAL` through decisions. Missing or zero OI
+  remains a fail-closed reason.
+- Added separate deterministic TRADE/QUOTE capacity budgets, per-symbol caps,
+  round-robin allocation, and persisted capacity exclusions with rank and
+  `SUBSCRIPTION_CAPACITY_EXCLUDED` reason. Counts are reported separately.
+- Local verification: 104 hermetic tests, Ruff format/lint, and strict mypy.
+  No live run was performed for this amendment; PR #4 remains draft and
+  unmerged, trading remains disabled, and no orders are constructed/submitted.
