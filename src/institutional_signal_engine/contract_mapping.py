@@ -139,7 +139,7 @@ class MappingResult:
 def decode_occ_symbol(symbol: str) -> CanonicalOptionIdentity:
     value = symbol.strip()
     padded = value
-    if len(value) == 19:
+    if " " not in value:
         root_match = re.fullmatch(r"([A-Z0-9]{1,6})(\d{6})([CP])(\d{8})", value.upper())
         if root_match is None:
             raise ValueError("occ_symbol_encoding")
