@@ -5,7 +5,7 @@ import asyncio
 import json
 import os
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -56,7 +56,13 @@ async def run(seconds: float) -> dict[str, object]:
     try:
         prices = await alpaca.current_prices(PILOT_SYMBOLS)
         discovered = [
-            contract async for contract in catalog.discover_active_calls(PILOT_SYMBOLS, limit=100)
+            contract
+            async for contract in catalog.discover_active_calls(
+                PILOT_SYMBOLS,
+                limit=100,
+                expiration_date_gte=as_of + timedelta(days=7),
+                expiration_date_lte=as_of + timedelta(days=45),
+            )
         ]
     except ProviderError as exc:
         return {

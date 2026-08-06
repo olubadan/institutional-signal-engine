@@ -1,7 +1,7 @@
 """Alpaca option-contract discovery with complete pagination."""
 
 from collections.abc import AsyncIterator, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 
@@ -26,6 +26,8 @@ class AlpacaOptionsContractProvider:
         self,
         symbols: Iterable[str],
         limit: int = 100,
+        expiration_date_gte: date | None = None,
+        expiration_date_lte: date | None = None,
     ) -> AsyncIterator[AlpacaOptionContract]:
         requested = tuple(sorted({symbol.upper() for symbol in symbols}))
         params: dict[str, str | int] = {
@@ -34,6 +36,10 @@ class AlpacaOptionsContractProvider:
             "status": "active",
             "limit": limit,
         }
+        if expiration_date_gte is not None:
+            params["expiration_date_gte"] = expiration_date_gte.isoformat()
+        if expiration_date_lte is not None:
+            params["expiration_date_lte"] = expiration_date_lte.isoformat()
         headers = {
             "APCA-API-KEY-ID": self.key_id,
             "APCA-API-SECRET-KEY": self.secret_key,
