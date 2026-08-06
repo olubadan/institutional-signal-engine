@@ -323,13 +323,12 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
                     for record in enrichment.records
                 ),
                 "oi_enriched_contracts": sum(
-                    record["symbol"] == selection.symbol
-                    and isinstance(record["rejection_reasons"], tuple)
-                    and not any(
-                        "dated_open_interest" in str(reason)
-                        for reason in record["rejection_reasons"]
-                    )
-                    for record in enrichment.records
+                    evidence.get("oi_available_at_subscription") is True
+                    for evidence in selection.contract_evidence
+                ),
+                "oi_blocked_contracts": sum(
+                    evidence.get("oi_available_at_subscription") is not True
+                    for evidence in selection.contract_evidence
                 ),
                 "final_selected_contracts": len(selection.contracts),
             }

@@ -139,6 +139,7 @@ class PostgresRepository:
             and not self._pending_decisions
             and not self._pending_quote_consumptions
             and not self._pending_sweeps
+            and not self._pending_universe
         ):
             return
         connection = self._session()

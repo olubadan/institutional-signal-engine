@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from institutional_signal_engine.config import Settings
-from institutional_signal_engine.persistence import InMemoryRepository
+from institutional_signal_engine.persistence import InMemoryRepository, PostgresRepository
 from institutional_signal_engine.providers.thetadata import (
     ThetaContract,
     ThetaDataDiscoveryClient,
@@ -142,6 +142,23 @@ def test_universe_audit_persists_and_replays():
     audit = selection_audits(run_id, (selection,), (contract,))[0]
     repository.record_universe(audit)
     assert tuple(repository.replay_universe(run_id)) == (audit,)
+
+
+def test_postgres_universe_audit_is_included_in_flush_work_detection(monkeypatch):
+    class Connection:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, statement, parameters=None):
+            self.statements.append((statement, parameters))
+
+    repository = PostgresRepository("postgresql://fixture")
+    audit = {"run_id": str(uuid4()), "symbol": "AAPL", "included": False}
+    connection = Connection()
+    monkeypatch.setattr(repository, "_session", lambda: connection)
+    repository.record_universe(audit)
+    repository.flush()
+    assert any("INSERT INTO universe_audits" in statement for statement, _ in connection.statements)
 
 
 def test_observational_oi_provenance_reaches_synchronized_decision():
