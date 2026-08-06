@@ -509,7 +509,7 @@
   aggregates.
 - Deterministic verification passed locally: 118 hermetic tests, Ruff format,
   Ruff lint, and strict mypy. Exact-head CI run
-  [31127726384](https://github.com/olubadan/institutional-signal-engine/actions/runs/31127726384)
+  [31127740251](https://github.com/olubadan/institutional-signal-engine/actions/runs/31127740251)
   passed all jobs on the pushed implementation head. No new live observation or
   provider REST retry was performed; PR #4 remains draft and unmerged, trading
   remains disabled, and orders remain 0/0.
