@@ -4,19 +4,28 @@ import argparse
 import asyncio
 import json
 import os
+from asyncio import Semaphore
 from collections import Counter
 from datetime import datetime, timedelta
+from time import monotonic
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .contract_mapping import map_alpaca_contract, round_trip_validate
+from .liquidity import finalize_liquidity
 from .live_smoke import _secret
 from .live_smoke import run as run_signal_smoke
 from .persistence import InMemoryRepository, PostgresRepository
 from .providers.alpaca import AlpacaEquitiesProvider
+from .providers.alpaca_option_snapshots import AlpacaOptionSnapshotProvider
 from .providers.alpaca_options import AlpacaOptionsContractProvider
 from .providers.common import ProviderError
+from .providers.thetadata import ThetaContract
+from .providers.thetadata_open_interest import (
+    OpenInterestEvidence,
+    ThetaDataOpenInterestProvider,
+)
 from .universe import (
     PHASE4_OBSERVATION_POLICY_VERSION,
     PILOT_SYMBOLS,
@@ -78,9 +87,136 @@ async def run(seconds: float) -> dict[str, object]:
     mapping_results = tuple(
         round_trip_validate(map_alpaca_contract(contract)) for contract in discovered
     )
-    selections = AlpacaContractSelector().select(
-        mapping_results, prices, as_of, symbols=PILOT_SYMBOLS
+    coarse_selections, coarse_exclusions = AlpacaContractSelector().coarse_select(
+        mapping_results,
+        prices,
+        as_of,
+        symbols=PILOT_SYMBOLS,
+        max_per_symbol=settings.phase4_pre_enrichment_max_per_symbol,
     )
+    coarse_contracts = {
+        contract for selection in coarse_selections for contract in selection.contracts
+    }
+    mapping_by_contract = {
+        result.theta_contract: result
+        for result in mapping_results
+        if result.accepted and result.theta_contract in coarse_contracts
+    }
+    quote_provider = AlpacaOptionSnapshotProvider(
+        "https://data.alpaca.markets",
+        _secret(settings.alpaca_key_id),
+        _secret(settings.alpaca_secret_key),
+    )
+    try:
+        quote_evidence = await quote_provider.snapshots(
+            tuple(
+                (result.source.occ_symbol, result.canonical)
+                for result in mapping_by_contract.values()
+                if result.canonical is not None
+            ),
+            feed="opra",
+        )
+    except ProviderError as exc:
+        return {
+            "run_id": str(run_id),
+            "trading_enabled": False,
+            "status": "blocked_quote_provider",
+            "reason": exc.category,
+            "coarse_shortlisted_contracts": len(coarse_contracts),
+            "orders_constructed": 0,
+            "orders_submitted": 0,
+        }
+    quote_by_contract = {
+        evidence.identity.theta_contract(): evidence for evidence in quote_evidence
+    }
+    oi_provider = ThetaDataOpenInterestProvider(settings.theta_terminal_http_url)
+    aapl_contract = next(
+        (
+            contract
+            for selection in coarse_selections
+            if selection.symbol == "AAPL"
+            for contract in selection.contracts
+        ),
+        None,
+    )
+    oi_evidence: dict[ThetaContract, OpenInterestEvidence] = {}
+    oi_diagnostic: dict[str, object] = {
+        "request_timestamp": datetime.now(ZoneInfo("America/New_York")).isoformat(),
+        "endpoint": "/v3/option/snapshot/open_interest",
+        "status": "not_attempted",
+    }
+    try:
+        oi_diagnostic["mdss"] = await oi_provider.mdss_status()
+    except ProviderError as exc:
+        oi_diagnostic["mdss"] = {"status": "unavailable", "reason": exc.category}
+    if aapl_contract is not None:
+        assert isinstance(aapl_contract, ThetaContract)
+        try:
+            first_oi = await oi_provider.snapshot(aapl_contract)
+        except ProviderError as exc:
+            oi_diagnostic.update({"status": "failed", "reason": exc.category})
+            return {
+                "run_id": str(run_id),
+                "trading_enabled": False,
+                "status": "blocked_open_interest_provider",
+                "reason": exc.category,
+                "oi_diagnostic": oi_diagnostic,
+                "coarse_shortlisted_contracts": len(coarse_contracts),
+                "orders_constructed": 0,
+                "orders_submitted": 0,
+            }
+        oi_evidence[aapl_contract] = first_oi
+        oi_diagnostic.update(
+            {
+                "status": "success",
+                "canonical_contract": {
+                    "root": aapl_contract.root,
+                    "expiration": aapl_contract.expiration,
+                    "strike": aapl_contract.strike,
+                    "right": aapl_contract.right,
+                },
+                "oi_value": first_oi.open_interest,
+                "reported_at": first_oi.reported_at.isoformat(),
+                "effective_date": first_oi.effective_date.isoformat(),
+            }
+        )
+    semaphore = Semaphore(5)
+    rate_lock = asyncio.Lock()
+    next_oi_request = 0.0
+
+    async def enrich_oi(
+        contract: ThetaContract,
+    ) -> tuple[ThetaContract, OpenInterestEvidence | None]:
+        nonlocal next_oi_request
+        async with semaphore:
+            async with rate_lock:
+                delay = next_oi_request - monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                next_oi_request = monotonic() + float(settings.phase4_oi_request_interval_seconds)
+            try:
+                return contract, await oi_provider.snapshot(contract)
+            except ProviderError:
+                return contract, None
+
+    remaining = [contract for contract in coarse_contracts if contract not in oi_evidence]
+    if remaining:
+        for contract, evidence in await asyncio.gather(
+            *(enrich_oi(contract) for contract in remaining)
+        ):
+            if evidence is not None:
+                oi_evidence[contract] = evidence
+    enrichment = finalize_liquidity(
+        coarse_selections,
+        mapping_results,
+        quote_by_contract,
+        oi_evidence,
+        datetime.now(ZoneInfo("America/New_York")),
+        max_quote_age_seconds=settings.phase4_quote_freshness_seconds,
+        maximum_spread=settings.thresholds.maximum_spread,
+        minimum_quote_size=settings.phase4_min_quote_size,
+    )
+    selections = enrichment.selections
     allocation = allocate_subscription_capacity(
         selections,
         prices,
@@ -117,6 +253,8 @@ async def run(seconds: float) -> dict[str, object]:
         plan,
         mapping_records=tuple(result.record() for result in mapping_results),
         capacity_excluded=allocation.capacity_excluded,
+        coarse_exclusions=coarse_exclusions,
+        enrichment_records=enrichment.records,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -149,6 +287,40 @@ async def run(seconds: float) -> dict[str, object]:
                 ).items()
             )
         ],
+        "selection_counts_by_symbol": {
+            selection.symbol: {
+                "catalog_contracts": sum(
+                    result.source.underlying_symbol == selection.symbol
+                    for result in mapping_results
+                ),
+                "coarse_shortlisted_contracts": sum(
+                    item.symbol == selection.symbol
+                    for item in coarse_selections
+                    for _ in item.contracts
+                ),
+                "quote_enriched_contracts": sum(
+                    record["symbol"] == selection.symbol
+                    and isinstance(record["rejection_reasons"], tuple)
+                    and not any(
+                        "quote_snapshot" in str(reason) for reason in record["rejection_reasons"]
+                    )
+                    for record in enrichment.records
+                ),
+                "oi_enriched_contracts": sum(
+                    record["symbol"] == selection.symbol
+                    and isinstance(record["rejection_reasons"], tuple)
+                    and not any(
+                        "dated_open_interest" in str(reason)
+                        for reason in record["rejection_reasons"]
+                    )
+                    for record in enrichment.records
+                ),
+                "final_selected_contracts": len(selection.contracts),
+            }
+            for selection in selections
+        },
+        "coarse_excluded": list(coarse_exclusions),
+        "oi_diagnostic": oi_diagnostic,
         "selected_contracts": [
             {
                 "symbol": selection.symbol,

@@ -58,6 +58,11 @@ class Settings(BaseModel):
     phase4_max_contracts_per_symbol: int = Field(default=1000, gt=0)
     phase4_trade_subscription_limit: int = Field(default=15000, gt=0)
     phase4_quote_subscription_limit: int = Field(default=15000, gt=0)
+    phase4_pre_enrichment_max_per_symbol: int = Field(default=25, gt=0)
+    phase4_quote_freshness_seconds: int = Field(default=60, gt=0)
+    phase4_min_quote_size: int = Field(default=1, gt=0)
+    phase4_oi_request_interval_seconds: Decimal = Field(default=Decimal("0.05"), ge=0)
+    theta_terminal_http_url: str = "http://127.0.0.1:25503/v3"
     config_version: str = "phase3-v1"
     engine_version: str = "0.1.0"
 
@@ -102,6 +107,17 @@ class Settings(BaseModel):
             ),
             phase4_quote_subscription_limit=int(
                 values.get("PHASE4_QUOTE_SUBSCRIPTION_LIMIT", "15000")
+            ),
+            phase4_pre_enrichment_max_per_symbol=int(
+                values.get("PHASE4_PRE_ENRICHMENT_MAX_PER_SYMBOL", "25")
+            ),
+            phase4_quote_freshness_seconds=int(values.get("PHASE4_QUOTE_FRESHNESS_SECONDS", "60")),
+            phase4_min_quote_size=int(values.get("PHASE4_MIN_QUOTE_SIZE", "1")),
+            phase4_oi_request_interval_seconds=Decimal(
+                values.get("PHASE4_OI_REQUEST_INTERVAL_SECONDS", "0.05")
+            ),
+            theta_terminal_http_url=values.get(
+                "THETA_TERMINAL_HTTP_URL", "http://127.0.0.1:25503/v3"
             ),
         )
 

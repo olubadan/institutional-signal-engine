@@ -136,6 +136,8 @@ class UniverseManifest:
     reconnect_history: tuple[dict[str, object], ...] = ()
     capacity_excluded: tuple[dict[str, object], ...] = ()
     policy_version: str = PHASE4_OBSERVATION_POLICY_VERSION
+    coarse_exclusions: tuple[dict[str, object], ...] = ()
+    enrichment_records: tuple[dict[str, object], ...] = ()
     selection_version: str = "phase4-universe-v1"
     mapping_version: str = "alpaca-occ-thetadata-v1"
 
@@ -163,6 +165,8 @@ class UniverseManifest:
             "selection_version": self.selection_version,
             "mapping_version": self.mapping_version,
             "policy_version": self.policy_version,
+            "coarse_exclusions": list(self.coarse_exclusions),
+            "enrichment_records": list(self.enrichment_records),
         }
 
 
@@ -411,6 +415,117 @@ class AlpacaContractSelector:
                 )
             )
         return tuple(selections)
+
+    def coarse_select(
+        self,
+        results: tuple[MappingResult, ...],
+        underlying_prices: dict[str, Decimal],
+        as_of: date,
+        symbols: Iterable[str] = (),
+        max_per_symbol: int = 25,
+    ) -> tuple[tuple[UniverseSelection, ...], tuple[dict[str, object], ...]]:
+        """Build a bounded shortlist before quote/OI enrichment."""
+        if max_per_symbol < 1:
+            raise ValueError("max_per_symbol must be positive")
+        candidates: dict[str, list[MappingResult]] = {}
+        exclusions: list[dict[str, object]] = []
+        for result in results:
+            symbol = result.source.underlying_symbol
+            reason: str | None = None
+            if not result.accepted or result.canonical is None or result.theta_contract is None:
+                reason = result.rejection_reason or "mapping_rejected"
+            elif result.canonical.right != "C":
+                reason = "calls_only"
+            elif not self.min_days <= (result.source.expiration - as_of).days <= self.max_days:
+                reason = "expiration_outside_configured_window"
+            elif symbol not in underlying_prices or underlying_prices[symbol] <= 0:
+                reason = "underlying_price_unavailable"
+            else:
+                strike = Decimal(result.canonical.strike) / Decimal(1000)
+                if (
+                    abs(strike - underlying_prices[symbol]) / underlying_prices[symbol]
+                    > self.max_moneyness_distance
+                ):
+                    reason = "moneyness_outside_configured_range"
+            if reason is not None:
+                exclusions.append(
+                    {
+                        "symbol": symbol,
+                        "provider_symbol": result.source.occ_symbol,
+                        "selection_stage": "COARSE_SHORTLIST",
+                        "reason": reason,
+                    }
+                )
+            else:
+                candidates.setdefault(symbol, []).append(result)
+        expected = {symbol.upper() for symbol in symbols}
+        selections: list[UniverseSelection] = []
+        for symbol in sorted(expected | set(candidates)):
+
+            def coarse_key(
+                item: MappingResult, selected_symbol: str = symbol
+            ) -> tuple[date, Decimal, int]:
+                assert item.canonical is not None
+                return (
+                    item.source.expiration,
+                    abs(
+                        Decimal(item.canonical.strike) / Decimal(1000)
+                        - underlying_prices[selected_symbol]
+                    ),
+                    item.canonical.strike,
+                )
+
+            ordered = sorted(
+                candidates.get(symbol, []),
+                key=coarse_key,
+            )
+            nearest = ordered[0].source.expiration if ordered else None
+            eligible = [item for item in ordered if item.source.expiration == nearest]
+            chosen = eligible[:max_per_symbol]
+            for rank, item in enumerate(eligible[max_per_symbol:], max_per_symbol + 1):
+                exclusions.append(
+                    {
+                        "symbol": symbol,
+                        "provider_symbol": item.source.occ_symbol,
+                        "selection_stage": "COARSE_SHORTLIST",
+                        "rank": rank,
+                        "reason": "COARSE_SHORTLIST_CAPACITY_EXCLUDED",
+                    }
+                )
+            contracts = tuple(item.theta_contract for item in chosen if item.theta_contract)
+            evidence = tuple(
+                {
+                    "root": contract.root,
+                    "expiration": contract.expiration,
+                    "strike": contract.strike,
+                    "right": contract.right,
+                    "selection_stage": "COARSE_SHORTLIST",
+                    "provider_symbol": item.source.occ_symbol,
+                }
+                for item, contract in zip(chosen, contracts, strict=True)
+            )
+            selections.append(
+                UniverseSelection(
+                    symbol,
+                    bool(contracts),
+                    int(nearest.strftime("%Y%m%d")) if nearest else None,
+                    contracts,
+                    () if contracts else ("no_coarse_shortlist_contract",),
+                    (
+                        "alpaca_contract_discovery",
+                        "canonical_mapping",
+                        "nearest_eligible_expiration",
+                        "moneyness",
+                        "selection_stage:COARSE_SHORTLIST",
+                    ),
+                    (),
+                    evidence,
+                    PHASE4_LIQUIDITY_EVIDENCE_SOURCE,
+                    False,
+                    PHASE4_OBSERVATION_POLICY_VERSION,
+                )
+            )
+        return tuple(selections), tuple(exclusions)
 
 
 def subscription_plan(selections: tuple[UniverseSelection, ...]) -> tuple[ThetaContract, ...]:
