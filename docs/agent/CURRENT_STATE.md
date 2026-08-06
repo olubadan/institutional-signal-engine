@@ -334,3 +334,22 @@
   500 HTML. Debug evidence identified a zstd JNI load failure under `/tmp`
   restrictions. REST discovery remains cross-validation-only and was not retried.
 - Local verification at this pass: 98 hermetic tests, Ruff, and strict mypy.
+
+### SESSION-0014 closure evidence — 20260806
+
+- Final head: `2cc3759b21ea977fa07d1d4cb57845f839edc22a3` on
+  `feat/phase-4-live-universe`; PR #4 remains draft and unmerged.
+- The implementation uses Alpaca’s documented options-contract filters with
+  explicit 7–45 DTE bounds, accepts compact and padded OCC representations, and
+  gates ThetaData data on correlated `REQ_RESPONSE` acknowledgements. Local
+  verification passed with 99 hermetic tests, Ruff, and strict mypy.
+- Regular-session pilot run `87a96eb6-b0ff-4bd9-bfca-0748eced65df` received and
+  mapped 11,956 contracts, rejected none, persisted the universe manifest,
+  selected no contracts, and opened no ThetaData subscriptions. All 20 symbols
+  failed closed because dated open-interest or average-options-volume evidence
+  was unavailable. Orders remained 0/0 and trading remained disabled.
+- This is not a live Phase 4 observation: no contract plan existed, so no
+  ThetaData acknowledgements, events, qualifying sweeps, or replay metrics were
+  produced. Smallest next action: add a typed Alpaca liquidity-evidence source
+  or obtain owner approval for an equivalent evidence field. ThetaData REST
+  discovery remains unavailable and was not retried.
