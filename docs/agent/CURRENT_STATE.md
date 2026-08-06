@@ -508,6 +508,8 @@
   acknowledgement evidence, enrichment diagnostics, and rejected-event
   aggregates.
 - Deterministic verification passed locally: 118 hermetic tests, Ruff format,
-  Ruff lint, and strict mypy. No new live observation or provider REST retry was
-  performed. Exact-head CI is required after push; PR #4 remains draft and
-  unmerged, trading remains disabled, and orders remain 0/0.
+  Ruff lint, and strict mypy. Exact-head CI run
+  [31127726384](https://github.com/olubadan/institutional-signal-engine/actions/runs/31127726384)
+  passed all jobs on the pushed implementation head. No new live observation or
+  provider REST retry was performed; PR #4 remains draft and unmerged, trading
+  remains disabled, and orders remain 0/0.
