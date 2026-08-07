@@ -13,7 +13,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .contract_mapping import map_alpaca_contract, round_trip_validate
+from .contract_mapping import AlpacaOptionContract, map_alpaca_contract, round_trip_validate
 from .liquidity import PHASE4_OBSERVATION_SPREAD_POLICY_VERSION, finalize_liquidity
 from .live_smoke import _secret
 from .live_smoke import run as run_signal_smoke
@@ -27,6 +27,7 @@ from .providers.thetadata_open_interest import (
     OpenInterestEvidence,
     ThetaDataOpenInterestProvider,
 )
+from .startup import StageCallback, StageRecorder, StartupTimeout, bounded_startup
 from .universe import (
     PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
     PILOT_SYMBOLS,
@@ -50,8 +51,20 @@ def _load_settings() -> Settings:
     return settings
 
 
-async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, object]:
+async def run(
+    seconds: float,
+    skip_oi_diagnostic: bool = False,
+    startup_timeout_seconds: float | None = None,
+    stage_callback: StageCallback | None = None,
+) -> dict[str, object]:
+    recorder = StageRecorder(stage_callback)
     settings = _load_settings()
+    recorder.emit("configuration_loaded")
+    startup_timeout = startup_timeout_seconds or float(settings.phase4_startup_timeout_seconds)
+
+    def startup_remaining() -> float:
+        return max(0.001, startup_timeout - recorder.elapsed_seconds)
+
     alpaca = AlpacaEquitiesProvider(
         settings.alpaca_data_url,
         _secret(settings.alpaca_key_id),
@@ -65,17 +78,38 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
     run_id = uuid4()
     as_of = datetime.now(ZoneInfo("America/New_York")).date()
     try:
-        prices = await alpaca.current_prices(PILOT_SYMBOLS)
-        discovered = [
-            contract
+        recorder.emit(
+            "universe_discovery_started", completed_items=0, remaining_items=len(PILOT_SYMBOLS)
+        )
+        prices = await bounded_startup(
+            alpaca.current_prices(PILOT_SYMBOLS),
+            recorder,
+            "equity_price_snapshots",
+            startup_remaining(),
+        )
+        discovered_list: list[AlpacaOptionContract] = []
+
+        async def discover() -> None:
             async for contract in catalog.discover_active_calls(
                 PILOT_SYMBOLS,
                 limit=100,
                 expiration_date_gte=as_of + timedelta(days=7),
                 expiration_date_lte=as_of + timedelta(days=45),
-            )
-        ]
+            ):
+                discovered_list.append(contract)
+
+        await bounded_startup(
+            discover(), recorder, "alpaca_contract_pagination", startup_remaining()
+        )
+        discovered = tuple(discovered_list)
+        recorder.emit(
+            "universe_discovery_completed",
+            completed_items=len(discovered),
+            remaining_items=0,
+        )
+        recorder.emit("providers_authenticated")
     except ProviderError as exc:
+        recorder.emit("report_emitted", status="blocked_provider", error_category=exc.category)
         return {
             "run_id": str(run_id),
             "trading_enabled": False,
@@ -110,16 +144,25 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
     )
+    recorder.emit("enrichment_started", completed_items=0, remaining_items=len(mapping_by_contract))
     try:
-        quote_evidence = await quote_provider.snapshots(
-            tuple(
-                (result.source.occ_symbol, result.canonical)
-                for result in mapping_by_contract.values()
-                if result.canonical is not None
+        quote_evidence = await bounded_startup(
+            quote_provider.snapshots(
+                tuple(
+                    (result.source.occ_symbol, result.canonical)
+                    for result in mapping_by_contract.values()
+                    if result.canonical is not None
+                ),
+                feed="opra",
             ),
-            feed="opra",
+            recorder,
+            "alpaca_quote_enrichment",
+            startup_remaining(),
         )
     except ProviderError as exc:
+        recorder.emit(
+            "report_emitted", status="blocked_quote_provider", error_category=exc.category
+        )
         return {
             "run_id": str(run_id),
             "trading_enabled": False,
@@ -129,9 +172,11 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
             "orders_constructed": 0,
             "orders_submitted": 0,
         }
+    assert isinstance(quote_evidence, tuple)
     quote_by_contract = {
         evidence.identity.theta_contract(): evidence for evidence in quote_evidence
     }
+    recorder.emit("enrichment_completed", completed_items=len(quote_evidence), remaining_items=0)
     oi_provider = ThetaDataOpenInterestProvider(settings.theta_terminal_http_url)
     aapl_contract = next(
         (
@@ -149,7 +194,9 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         "status": "not_attempted",
     }
     try:
-        oi_diagnostic["mdss"] = await oi_provider.mdss_status()
+        oi_diagnostic["mdss"] = await bounded_startup(
+            oi_provider.mdss_status(), recorder, "thetadata_mdss_status", startup_remaining()
+        )
     except ProviderError as exc:
         oi_diagnostic["mdss"] = {"status": "unavailable", "reason": exc.category}
     if skip_oi_diagnostic:
@@ -240,6 +287,8 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
     )
     plan = allocation.selected
+    recorder.emit("selection_completed", completed_items=len(plan), remaining_items=0)
+    recorder.emit("subscription_planning_completed", completed_items=len(plan), remaining_items=0)
     selected_contracts = set(plan)
     contract_metadata = {
         next(
@@ -304,7 +353,13 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
     )
     if isinstance(repository, PostgresRepository):
-        repository.initialize()
+        await bounded_startup(
+            asyncio.to_thread(repository.initialize),
+            recorder,
+            "database_connected",
+            startup_remaining(),
+        )
+    recorder.emit("database_connected")
     repository.record_universe(manifest.record())
     if isinstance(repository, PostgresRepository):
         repository.flush()
@@ -418,6 +473,7 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
     if not plan:
         report["status"] = "blocked_no_contracts_selected"
         report["reason"] = "quote_observation_evidence_unavailable"
+        recorder.emit("report_emitted", status=report["status"])
         return report
     signal_report = await run_signal_smoke(
         seconds,
@@ -426,6 +482,8 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
         request_types=("TRADE", "QUOTE"),
         contract_metadata=contract_metadata,
         diagnostic_membership=diagnostic_membership,
+        startup_timeout_seconds=startup_timeout,
+        stage_callback=lambda stage, fields: recorder.emit(stage, **fields),
     )
     report.update(signal_report)
     raw_sync_symbols = signal_report.get("synchronized_symbols", ())
@@ -499,6 +557,9 @@ async def run(seconds: float, skip_oi_diagnostic: bool = False) -> dict[str, obj
                 }
             )
     report["status"] = "live_observation_complete"
+    recorder.emit("observation_completed", status=report["status"])
+    recorder.emit("persistence_drained")
+    recorder.emit("report_emitted", status=report["status"])
     return report
 
 
@@ -506,9 +567,33 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--skip-oi-diagnostic", action="store_true")
+    parser.add_argument("--startup-timeout-seconds", type=float, default=None)
     arguments = parser.parse_args()
     try:
-        result = asyncio.run(run(arguments.seconds, arguments.skip_oi_diagnostic))
+        result = asyncio.run(
+            asyncio.wait_for(
+                run(
+                    arguments.seconds,
+                    arguments.skip_oi_diagnostic,
+                    arguments.startup_timeout_seconds,
+                ),
+                timeout=(arguments.seconds + 2 * (arguments.startup_timeout_seconds or 120) + 30),
+            )
+        )
+    except StartupTimeout as exc:
+        result = exc.report()
+        print(json.dumps(result, sort_keys=True), flush=True)
+        raise SystemExit(2)
+    except TimeoutError:
+        result = {
+            "status": "total_command_timeout",
+            "error_category": "total_command_timeout",
+            "trading_enabled": False,
+            "orders_constructed": 0,
+            "orders_submitted": 0,
+        }
+        print(json.dumps(result, sort_keys=True), flush=True)
+        raise SystemExit(2)
     except (ProviderError, RuntimeError, ValueError) as exc:
         result = {
             "status": "blocked",

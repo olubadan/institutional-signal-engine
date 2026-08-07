@@ -20,6 +20,7 @@ from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
 from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaContract, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent, EventKind
+from .startup import StageCallback, StageRecorder, StartupTimeout, bounded_startup
 
 
 def _secret(value: SecretStr | None) -> str:
@@ -97,9 +98,17 @@ async def run(
     request_types: Iterable[str] = ("TRADE",),
     contract_metadata: dict[ThetaContract, dict[str, object]] | None = None,
     diagnostic_membership: dict[str, set[ThetaContract]] | None = None,
+    startup_timeout_seconds: float = 120.0,
+    stage_callback: StageCallback | None = None,
 ) -> dict[str, object]:
+    recorder = StageRecorder(stage_callback)
+
+    def startup_remaining() -> float:
+        return max(0.001, startup_timeout_seconds - recorder.elapsed_seconds)
+
     pilot_symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
     requested_contracts = tuple(contracts)
+    requested_types = tuple(request_types)
     runtime_file = os.environ.get(
         "RUNTIME_ENV_FILE", "/etc/institutional-signal-engine/runtime.env"
     )
@@ -110,6 +119,7 @@ async def run(
     )
     if settings.trading_enabled:
         raise RuntimeError("signal-only smoke refuses trading-enabled configuration")
+    recorder.emit("configuration_loaded")
 
     alpaca = AlpacaEquitiesProvider(
         settings.alpaca_data_url,
@@ -118,21 +128,37 @@ async def run(
     )
     sector_by_symbol = {symbol: "XLK" for symbol in pilot_symbols}
     historical_symbols = (*pilot_symbols, "SPY", *sorted(set(sector_by_symbol.values())))
-    historical = await alpaca.historical_bootstrap(
-        historical_symbols, datetime.now(ZoneInfo("America/New_York")).date()
+    historical = await bounded_startup(
+        alpaca.historical_bootstrap(
+            historical_symbols, datetime.now(ZoneInfo("America/New_York")).date()
+        ),
+        recorder,
+        "alpaca_historical_bootstrap",
+        startup_remaining(),
     )
+
+    def provider_stage(stage: str) -> None:
+        recorder.emit(stage)
+
     theta = ThetaDataOptionsProvider(
         settings.theta_events_url,
         _secret(settings.theta_api_key),
         contracts=requested_contracts,
-        request_types=request_types,
+        request_types=requested_types,
         diagnostic_membership=diagnostic_membership,
+        stage_callback=provider_stage,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
     )
     if isinstance(repository, PostgresRepository):
-        repository.initialize()
+        await bounded_startup(
+            asyncio.to_thread(repository.initialize),
+            recorder,
+            "database_connected",
+            startup_remaining(),
+        )
+    recorder.emit("database_connected")
     writer = AsyncAuditWriter(
         repository,
         soft_limit=settings.persistence_soft_limit,
@@ -198,17 +224,71 @@ async def run(
             pipeline.tick()
 
     timer_task = asyncio.create_task(timer())
-    try:
-        (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
-            _collect(alpaca, [*pilot_symbols, "SPY", "XLK"], seconds, process),
-            _collect(
-                theta, sorted({contract.root for contract in theta.contracts}), seconds, process
-            ),
+    theta_acknowledged = asyncio.Event()
+
+    def mark_provider_stage(stage: str) -> None:
+        recorder.emit(stage)
+        if stage == "subscriptions_acknowledged":
+            theta_acknowledged.set()
+
+    theta.stage_callback = mark_provider_stage
+    option_task = asyncio.create_task(
+        _collect(
+            theta,
+            sorted({contract.root for contract in theta.contracts}),
+            seconds + startup_timeout_seconds,
+            process,
         )
+    )
+    equity_task: asyncio.Task[tuple[list[CanonicalEvent], str]] | None = None
+    try:
+        try:
+            await asyncio.wait_for(theta_acknowledged.wait(), startup_remaining())
+        except TimeoutError as exc:
+            recorder.emit(
+                "startup_timeout",
+                failed_stage="subscriptions_acknowledged",
+                completed_items=0,
+                remaining_items=len(theta.contracts) * len(requested_types),
+                error_category="startup_timeout",
+            )
+            await bounded_startup(
+                writer.close(), recorder, "persistence_drained", startup_timeout_seconds
+            )
+            recorder.emit("persistence_drained")
+            raise StartupTimeout(
+                "subscriptions_acknowledged",
+                recorder.elapsed_seconds,
+                0,
+                len(theta.contracts),
+            ) from exc
+        recorder.emit("observation_started", observation_seconds=seconds)
+        equity_task = asyncio.create_task(
+            _collect(alpaca, [*pilot_symbols, "SPY", "XLK"], seconds, process)
+        )
+        equities, alpaca_health = await equity_task
+        if not option_task.done():
+            option_task.cancel()
+        option_result = await asyncio.gather(option_task, return_exceptions=True)
+        options_result = option_result[0]
+        if isinstance(options_result, BaseException):
+            options: list[CanonicalEvent] = []
+            theta_health = f"failed:{type(options_result).__name__}"
+        else:
+            options, theta_health = options_result
     finally:
+        tasks = (equity_task, option_task)
+        for task in tasks:
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in tasks if task is not None), return_exceptions=True)
         timer_task.cancel()
         await asyncio.gather(timer_task, return_exceptions=True)
-    await writer.close()
+    await bounded_startup(writer.close(), recorder, "persistence_drained", startup_timeout_seconds)
+    recorder.emit("persistence_drained")
+    recorder.emit("observation_completed")
     decision = pipeline.decisions[-1] if pipeline.decisions else None
     all_events = equities + options
     timings = pipeline.metrics.timings or []

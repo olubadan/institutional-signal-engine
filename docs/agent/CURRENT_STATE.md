@@ -513,3 +513,32 @@
   passed all jobs on the pushed implementation head. No new live observation or
   provider REST retry was performed; PR #4 remains draft and unmerged, trading
   remains disabled, and orders remain 0/0.
+
+### SESSION-0020 startup-boundary correction — 20260807
+
+- The prior 600-second Phase 4 smoke started but remained alive for about
+  10m41s with a zero-byte protected log, no run ID, and no report. Because the
+  process emitted no progress or stack evidence before it was stopped, the
+  exact blocked provider operation cannot be retrospectively identified from
+  that run; no live observation was restarted.
+- Added flushed, sanitized startup stage records covering configuration,
+  database, provider authentication, discovery, enrichment, selection,
+  subscription planning, websocket connection, acknowledgements, observation,
+  persistence drain, and final report emission. Sensitive-looking fields are
+  redacted before output.
+- Added a configurable global startup budget (`PHASE4_STARTUP_TIMEOUT_SECONDS`,
+  CLI `--startup-timeout-seconds`) around Alpaca historical/pricing and paged
+  contract calls, quote enrichment, database initialization, MDDS status, and
+  subscription acknowledgement. The CLI also has an outer total-command
+  timeout, so startup cannot run indefinitely; timeout records contain only
+  stage, elapsed time, counts, and sanitized error category.
+- The signal smoke now waits for correlated ThetaData acknowledgements before
+  emitting `observation_started` or starting equity collection, so the
+  requested observation timer begins after startup succeeds. Accepted writes
+  are drained on acknowledgement timeout before the bounded failure exits.
+- No strategy, selection, spread, sweep, gate, discovery endpoint, OI endpoint,
+  threshold, or live-observation result was changed. Trading remains disabled
+  and orders remain 0/0.
+- Verification passed locally: Ruff format check, Ruff lint, strict mypy,
+  `uv lock --check`, shell syntax, structural/secret scan, and 122 hermetic
+  tests. ShellCheck was unavailable locally and remains covered by CI.

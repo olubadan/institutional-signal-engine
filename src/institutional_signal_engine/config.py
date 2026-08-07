@@ -60,6 +60,7 @@ class Settings(BaseModel):
     phase4_quote_subscription_limit: int = Field(default=15000, gt=0)
     phase4_pre_enrichment_max_per_symbol: int = Field(default=100, gt=0)
     phase4_max_enrichment_candidates: int = Field(default=2000, gt=0)
+    phase4_startup_timeout_seconds: int = Field(default=120, gt=0)
     phase4_quote_freshness_seconds: int = Field(default=60, gt=0)
     phase4_min_quote_size: int = Field(default=1, gt=0)
     phase4_oi_request_interval_seconds: Decimal = Field(default=Decimal("0.05"), ge=0)
@@ -115,6 +116,7 @@ class Settings(BaseModel):
             phase4_max_enrichment_candidates=int(
                 values.get("PHASE4_MAX_ENRICHMENT_CANDIDATES", "2000")
             ),
+            phase4_startup_timeout_seconds=int(values.get("PHASE4_STARTUP_TIMEOUT_SECONDS", "120")),
             phase4_quote_freshness_seconds=int(values.get("PHASE4_QUOTE_FRESHNESS_SECONDS", "60")),
             phase4_min_quote_size=int(values.get("PHASE4_MIN_QUOTE_SIZE", "1")),
             phase4_oi_request_interval_seconds=Decimal(
