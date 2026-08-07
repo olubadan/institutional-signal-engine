@@ -527,6 +527,31 @@ class SignalPipeline:
         if now - previous.as_of <= self.synchronizer.max_staleness:
             self._skip("freshness_window_not_expired")
             return None
+        timer_event = CanonicalEvent(
+            event_id=uuid5(
+                NAMESPACE_URL,
+                f"freshness-timer:{self.run_id}:{now.isoformat()}:{current.symbol}",
+            ),
+            run_id=self.run_id,
+            ingest_order=self._ingest_order + 1,
+            kind=EventKind.OPTIONS,
+            symbol=current.symbol,
+            source="engine",
+            source_timestamp=now,
+            received_timestamp=now,
+            normalized_timestamp=now,
+            sequence=self._ingest_order + 1,
+            payload={
+                "provider_event_kind": "sweep_timer",
+                "sweep_expiry_timestamps": [
+                    (previous.as_of + self.synchronizer.max_staleness).isoformat()
+                ],
+                "trigger_reason": "freshness_window_expiry",
+            },
+        )
+        self._ingest_order += 1
+        if not self._enqueue(AuditWrite(event=timer_event)):
+            return None
         decision = decide([current], self.settings).model_copy(
             update={
                 "run_id": self.run_id,
