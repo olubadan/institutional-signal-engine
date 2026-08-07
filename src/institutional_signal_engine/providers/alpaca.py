@@ -144,35 +144,52 @@ class AlpacaEquitiesProvider:
         }
 
         async def fetch(timeframe: str) -> dict[str, list[dict[str, Any]]]:
-            params: dict[str, str | int] = {
-                "symbols": ",".join(requested),
-                "timeframe": timeframe,
-                "start": f"{start.isoformat()}T00:00:00Z",
-                "end": f"{end.isoformat()}T23:59:59Z",
-                "adjustment": "split",
-                "feed": self.url.rsplit("/", 1)[-1],
-                "limit": 10000,
-            }
-            result: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in requested}
-            token: str | None = None
             async with httpx.AsyncClient(
                 base_url=self.historical_url, timeout=self.timeout
             ) as client:
-                while True:
-                    if token is not None:
-                        params["page_token"] = token
-                    response = await client.get("/v2/stocks/bars", headers=headers, params=params)
-                    if response.status_code != 200:
-                        raise ProviderError(
-                            "alpaca", f"historical_http_{response.status_code}", False
-                        )
-                    body = response.json()
-                    for symbol, bars in body.get("bars", {}).items():
-                        if symbol in result and isinstance(bars, list):
-                            result[symbol].extend(bars)
-                    token = body.get("next_page_token")
-                    if not token:
-                        return result
+                semaphore = asyncio.Semaphore(5)
+
+                async def fetch_symbol(symbol: str) -> tuple[str, list[dict[str, Any]]]:
+                    async with semaphore:
+                        params: dict[str, str | int] = {
+                            "symbols": symbol,
+                            "timeframe": timeframe,
+                            "start": f"{start.isoformat()}T00:00:00Z",
+                            "end": f"{end.isoformat()}T23:59:59Z",
+                            "adjustment": "split",
+                            "feed": self.url.rsplit("/", 1)[-1],
+                            "limit": 10000,
+                        }
+                        rows: list[dict[str, Any]] = []
+                        token: str | None = None
+                        while True:
+                            if token is not None:
+                                params["page_token"] = token
+                            try:
+                                response = await client.get(
+                                    "/v2/stocks/bars", headers=headers, params=params
+                                )
+                            except httpx.TimeoutException as exc:
+                                raise ProviderError("alpaca", "historical_timeout", True) from exc
+                            if response.status_code != 200:
+                                raise ProviderError(
+                                    "alpaca", f"historical_http_{response.status_code}", False
+                                )
+                            body = response.json()
+                            if not isinstance(body, dict):
+                                raise ProviderError("alpaca", "historical_malformed", False)
+                            bars = body.get("bars", {})
+                            if isinstance(bars, dict):
+                                symbol_rows = bars.get(symbol, [])
+                                if isinstance(symbol_rows, list):
+                                    rows.extend(row for row in symbol_rows if isinstance(row, dict))
+                            token_value = body.get("next_page_token")
+                            token = str(token_value) if token_value else None
+                            if token is None:
+                                return symbol, rows
+
+                fetched = await asyncio.gather(*(fetch_symbol(symbol) for symbol in requested))
+                return dict(fetched)
 
         daily = await fetch("1Day")
         minute = await fetch("1Min")
@@ -228,6 +245,36 @@ class AlpacaEquitiesProvider:
             adjustment="split",
             source_provenance="alpaca:stocks/bars:completed-regular-sessions",
         )
+
+    async def current_prices(self, symbols: Iterable[str]) -> dict[str, Decimal]:
+        """Read current last-trade prices for moneyness selection."""
+        requested = tuple(sorted({symbol.upper() for symbol in symbols}))
+        headers = {
+            "APCA-API-KEY-ID": self.key_id,
+            "APCA-API-SECRET-KEY": self.secret_key,
+        }
+        async with httpx.AsyncClient(base_url=self.historical_url, timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    "/v2/stocks/snapshots",
+                    headers=headers,
+                    params={"symbols": ",".join(requested), "feed": self.url.rsplit("/", 1)[-1]},
+                )
+            except httpx.TimeoutException as exc:
+                raise ProviderError("alpaca", "snapshot_timeout", True) from exc
+        if response.status_code != 200:
+            raise ProviderError("alpaca", f"snapshot_http_{response.status_code}", False)
+        body: object = response.json()
+        if not isinstance(body, dict):
+            raise ProviderError("alpaca", "snapshot_malformed", False)
+        prices: dict[str, Decimal] = {}
+        for symbol, snapshot in body.items():
+            if not isinstance(snapshot, dict):
+                continue
+            trade = snapshot.get("latestTrade") or snapshot.get("latest_trade")
+            if isinstance(trade, dict) and trade.get("p") is not None:
+                prices[str(symbol).upper()] = Decimal(str(trade["p"]))
+        return prices
 
     async def health(self) -> dict[str, object]:
         return {

@@ -11,10 +11,35 @@ from .quote_book import QuoteConsumption
 from .schemas import CanonicalEvent, Decision
 
 
+def _ordered_consumed_inputs(
+    events: Iterable[CanonicalEvent], quote_consumptions: Iterable[QuoteConsumption]
+) -> list[CanonicalEvent]:
+    """Reconstruct the live ingress order from persisted trades and consumed quotes."""
+    unique_quotes: dict[object, CanonicalEvent] = {}
+    for consumption in sorted(quote_consumptions, key=lambda value: value.consumption_order):
+        quote = consumption.quote
+        if quote.ingest_order == 0:
+            quote = quote.model_copy(update={"ingest_order": consumption.consumption_order})
+        unique_quotes.setdefault(consumption.quote_event_id, quote)
+    inputs = [*unique_quotes.values(), *events]
+    return sorted(
+        inputs,
+        key=lambda value: (
+            value.ingest_order,
+            0 if value.payload.get("provider_event_kind") == "quote" else 1,
+            value.received_timestamp,
+            value.normalized_timestamp,
+            value.source,
+            value.sequence,
+            str(value.event_id),
+        ),
+    )
+
+
 def replay(
     events: Iterable[CanonicalEvent], symbols: Iterable[str], settings: Settings
 ) -> tuple[Decision, ...]:
-    del symbols
+    replay_symbols = tuple(symbols)
     ordered = sorted(
         events,
         key=lambda value: (
@@ -33,7 +58,11 @@ def replay(
         else uuid5(NAMESPACE_URL, "replay:" + ",".join(str(event.event_id) for event in ordered))
     )
     pipeline = SignalPipeline(
-        settings, repository=InMemoryRepository(), now=lambda: clock[0], run_id=run_id
+        settings,
+        repository=InMemoryRepository(),
+        now=lambda: clock[0],
+        run_id=run_id,
+        symbols=replay_symbols,
     )
     for event in ordered:
         clock[0] = event.normalized_timestamp
@@ -51,34 +80,16 @@ def replay_with_consumed_quotes(
     settings: Settings,
 ) -> tuple[Decision, ...]:
     """Replay only the trades and the exact quotes live processing consumed."""
-    del symbols
-    ordered = sorted(
-        events,
-        key=lambda value: (
-            value.ingest_order,
-            value.received_timestamp,
-            value.normalized_timestamp,
-            value.source,
-            value.sequence,
-            str(value.event_id),
-        ),
-    )
-    by_trade: dict[object, list[CanonicalEvent]] = {}
-    unassociated: list[CanonicalEvent] = []
-    for consumption in sorted(quote_consumptions, key=lambda value: value.consumption_order):
-        if consumption.trade_event_id is None:
-            unassociated.append(consumption.quote)
-        else:
-            by_trade.setdefault(consumption.trade_event_id, []).append(consumption.quote)
-    inputs: list[CanonicalEvent] = []
-    inputs.extend(unassociated)
-    for event in ordered:
-        inputs.extend(by_trade.get(event.event_id, []))
-        inputs.append(event)
+    replay_symbols = tuple(symbols)
+    inputs = _ordered_consumed_inputs(events, quote_consumptions)
     clock = [inputs[0].normalized_timestamp] if inputs else [datetime.min.replace(tzinfo=UTC)]
     run_id = inputs[0].run_id if inputs else UUID(int=0)
     pipeline = SignalPipeline(
-        settings, repository=InMemoryRepository(), now=lambda: clock[0], run_id=run_id
+        settings,
+        repository=InMemoryRepository(),
+        now=lambda: clock[0],
+        run_id=run_id,
+        symbols=replay_symbols,
     )
     for event in inputs:
         clock[0] = event.normalized_timestamp

@@ -18,8 +18,9 @@ from .persistence_async import AsyncAuditWriter
 from .pipeline import EventTiming, SignalPipeline
 from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
-from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaDataOptionsProvider
+from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaContract, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent, EventKind
+from .startup import StageCallback, StageRecord, StageRecorder, StartupTimeout, bounded_startup
 
 
 def _secret(value: SecretStr | None) -> str:
@@ -39,6 +40,8 @@ async def _collect(
                 on_event(event)
     except TimeoutError:
         return events, "healthy" if events else "connected_no_events"
+    except asyncio.CancelledError:
+        return events, "stopped"
     except ProviderError as exc:
         return events, f"failed:{exc.category}"
     except (OSError, RuntimeError, ValueError) as exc:
@@ -47,7 +50,7 @@ async def _collect(
 
 
 def _as_market_input(event: CanonicalEvent, kind: EventKind) -> CanonicalEvent:
-    return event.model_copy(update={"kind": kind, "symbol": "AAPL"})
+    return event.model_copy(update={"kind": kind})
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -90,7 +93,24 @@ def _distribution(timings: Iterable[EventTiming]) -> dict[str, object]:
     }
 
 
-async def run(seconds: float) -> dict[str, object]:
+async def run(
+    seconds: float,
+    symbols: Iterable[str] = ("AAPL",),
+    contracts: Iterable[ThetaContract] = (SMOKE_AAPL_CONTRACT,),
+    request_types: Iterable[str] = ("TRADE",),
+    contract_metadata: dict[ThetaContract, dict[str, object]] | None = None,
+    diagnostic_membership: dict[str, set[ThetaContract]] | None = None,
+    startup_timeout_seconds: float = 120.0,
+    stage_callback: StageCallback | None = None,
+) -> dict[str, object]:
+    recorder = StageRecorder(stage_callback)
+
+    def startup_remaining() -> float:
+        return max(0.001, startup_timeout_seconds - recorder.elapsed_seconds)
+
+    pilot_symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
+    requested_contracts = tuple(contracts)
+    requested_types = tuple(request_types)
     runtime_file = os.environ.get(
         "RUNTIME_ENV_FILE", "/etc/institutional-signal-engine/runtime.env"
     )
@@ -101,25 +121,46 @@ async def run(seconds: float) -> dict[str, object]:
     )
     if settings.trading_enabled:
         raise RuntimeError("signal-only smoke refuses trading-enabled configuration")
+    recorder.emit("configuration_loaded")
 
     alpaca = AlpacaEquitiesProvider(
         settings.alpaca_data_url,
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
     )
-    historical = await alpaca.historical_bootstrap(
-        ["AAPL", "SPY", "XLK"], datetime.now(ZoneInfo("America/New_York")).date()
+    sector_by_symbol = {symbol: "XLK" for symbol in pilot_symbols}
+    historical_symbols = (*pilot_symbols, "SPY", *sorted(set(sector_by_symbol.values())))
+    historical = await bounded_startup(
+        alpaca.historical_bootstrap(
+            historical_symbols, datetime.now(ZoneInfo("America/New_York")).date()
+        ),
+        recorder,
+        "alpaca_historical_bootstrap",
+        startup_remaining(),
     )
+
+    def provider_stage(stage: StageRecord) -> None:
+        recorder.emit_record(stage)
+
     theta = ThetaDataOptionsProvider(
         settings.theta_events_url,
         _secret(settings.theta_api_key),
-        contracts=(SMOKE_AAPL_CONTRACT,),
+        contracts=requested_contracts,
+        request_types=requested_types,
+        diagnostic_membership=diagnostic_membership,
+        stage_callback=provider_stage,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
     )
     if isinstance(repository, PostgresRepository):
-        repository.initialize()
+        await bounded_startup(
+            asyncio.to_thread(repository.initialize),
+            recorder,
+            "database_connected",
+            startup_remaining(),
+        )
+    recorder.emit("database_connected")
     writer = AsyncAuditWriter(
         repository,
         soft_limit=settings.persistence_soft_limit,
@@ -133,9 +174,44 @@ async def run(seconds: float) -> dict[str, object]:
         repository=repository,
         writer=writer,
         indicator_calculator=IndicatorCalculator(historical),
+        symbols=pilot_symbols,
+        sector_by_symbol=sector_by_symbol,
     )
 
     def process(event: CanonicalEvent) -> None:
+        if event.kind == EventKind.OPTIONS and contract_metadata:
+            contract = event.payload.get("contract")
+            if isinstance(contract, dict):
+                key = ThetaContract(
+                    str(contract.get("root", "")).upper(),
+                    int(contract.get("expiration", 0)),
+                    int(contract.get("strike", 0)),
+                    str(contract.get("right", "")),
+                )
+                metadata = contract_metadata.get(key)
+                if metadata is not None:
+                    indicator_provenance = {
+                        name: str(value)
+                        for name, value in metadata.items()
+                        if name
+                        in {
+                            "oi_date_source",
+                            "open_interest_verified_as_of",
+                            "evidence_quality",
+                            "symbol_liquidity_evidence_source",
+                            "symbol_liquidity_verified",
+                            "policy_version",
+                        }
+                    }
+                    event = event.model_copy(update={"payload": {**event.payload, **metadata}})
+                    event = event.model_copy(
+                        update={
+                            "payload": {
+                                **event.payload,
+                                "indicator_provenance": indicator_provenance,
+                            }
+                        }
+                    )
         if event.symbol == "SPY":
             event = _as_market_input(event, EventKind.MARKET_INDEX)
         elif event.symbol == "XLK":
@@ -150,15 +226,71 @@ async def run(seconds: float) -> dict[str, object]:
             pipeline.tick()
 
     timer_task = asyncio.create_task(timer())
-    try:
-        (equities, alpaca_health), (options, theta_health) = await asyncio.gather(
-            _collect(alpaca, ["AAPL", "SPY", "XLK"], seconds, process),
-            _collect(theta, ["AAPL"], seconds, process),
+    theta_acknowledged = asyncio.Event()
+
+    def mark_provider_stage(stage: dict[str, object]) -> None:
+        recorder.emit_record(stage)
+        if stage.get("stage") == "subscriptions_acknowledged":
+            theta_acknowledged.set()
+
+    theta.stage_callback = mark_provider_stage
+    option_task = asyncio.create_task(
+        _collect(
+            theta,
+            sorted({contract.root for contract in theta.contracts}),
+            seconds + startup_timeout_seconds,
+            process,
         )
+    )
+    equity_task: asyncio.Task[tuple[list[CanonicalEvent], str]] | None = None
+    try:
+        try:
+            await asyncio.wait_for(theta_acknowledged.wait(), startup_remaining())
+        except TimeoutError as exc:
+            recorder.emit(
+                "startup_timeout",
+                failed_stage="subscriptions_acknowledged",
+                completed_items=0,
+                remaining_items=len(theta.contracts) * len(requested_types),
+                error_category="startup_timeout",
+            )
+            await bounded_startup(
+                writer.close(), recorder, "persistence_drained", startup_timeout_seconds
+            )
+            recorder.emit("persistence_drained")
+            raise StartupTimeout(
+                "subscriptions_acknowledged",
+                recorder.elapsed_seconds,
+                0,
+                len(theta.contracts),
+            ) from exc
+        recorder.emit("observation_started", observation_seconds=seconds)
+        equity_task = asyncio.create_task(
+            _collect(alpaca, [*pilot_symbols, "SPY", "XLK"], seconds, process)
+        )
+        equities, alpaca_health = await equity_task
+        if not option_task.done():
+            option_task.cancel()
+        option_result = await asyncio.gather(option_task, return_exceptions=True)
+        options_result = option_result[0]
+        if isinstance(options_result, BaseException):
+            options: list[CanonicalEvent] = []
+            theta_health = f"failed:{type(options_result).__name__}"
+        else:
+            options, theta_health = options_result
     finally:
+        tasks = (equity_task, option_task)
+        for task in tasks:
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in tasks if task is not None), return_exceptions=True)
         timer_task.cancel()
         await asyncio.gather(timer_task, return_exceptions=True)
-    await writer.close()
+    await bounded_startup(writer.close(), recorder, "persistence_drained", startup_timeout_seconds)
+    recorder.emit("persistence_drained")
+    recorder.emit("observation_completed")
     decision = pipeline.decisions[-1] if pipeline.decisions else None
     all_events = equities + options
     timings = pipeline.metrics.timings or []
@@ -184,11 +316,15 @@ async def run(seconds: float) -> dict[str, object]:
             if timing.provider == "thetadata" and timing.event_kind == "quote"
         ],
     }
-    synchronized_input_count = len(pipeline.decisions)
+    synchronized_input_count = pipeline.synchronized_input_count
     reasons = (
         list(decision.rejection_reasons)
         if decision is not None
-        else ["AAPL:insufficient_synchronized_inputs"]
+        else [
+            f"{symbol}:{reason}"
+            for symbol, reasons_for_symbol in pipeline.incomplete_state_reasons.items()
+            for reason in (reasons_for_symbol or ["no_decision"])
+        ]
     )
     return {
         "run_id": str(pipeline.run_id),
@@ -207,12 +343,58 @@ async def run(seconds: float) -> dict[str, object]:
             "thetadata": "success" if theta.connected else "failed",
         },
         "subscription_acknowledgement": {
-            "thetadata": "success" if theta.subscription_acknowledged else "not_observed"
+            "thetadata": "success" if theta.subscription_acknowledged else "not_observed",
+            "acknowledged_request_count": len(theta.acknowledged_ids),
+            "rejected_or_unmatched": list(theta.diagnostics),
+            "rejected_event_diagnostics": list(theta.rejected_event_diagnostics),
+            "rejected_event_overflow": theta.rejected_event_overflow,
+            "request_registry": [
+                {
+                    "request_id": request_id,
+                    "root": request.contract.root,
+                    "expiration": request.contract.expiration,
+                    "strike": request.contract.strike,
+                    "right": request.contract.right,
+                    "request_type": request.req_type,
+                    "add": request.add,
+                    "connection_generation": request.generation,
+                    "acknowledged": request_id in theta.acknowledged_ids,
+                }
+                for request_id, request in sorted(theta.request_registry.items())
+            ],
+            "acknowledged_contracts": [
+                {
+                    "root": contract.root,
+                    "expiration": contract.expiration,
+                    "strike": contract.strike,
+                    "right": contract.right,
+                }
+                for contract in sorted(
+                    theta.acknowledged_contracts,
+                    key=lambda value: (value.root, value.expiration, value.strike, value.right),
+                )
+            ],
+            "requests_by_type": {
+                req_type: {
+                    "requested": sum(
+                        request.req_type == req_type for request in theta.request_registry.values()
+                    ),
+                    "acknowledged": sum(
+                        theta.request_registry[request_id].req_type == req_type
+                        for request_id in theta.acknowledged_ids
+                        if request_id in theta.request_registry
+                    ),
+                    "rejected_or_unmatched": sum(
+                        request_type == req_type for request_type in theta.rejected_request_types
+                    ),
+                }
+                for req_type in request_types
+            },
         },
         "provider_stream_status": {"thetadata": theta.stream_status},
         "historical_bootstrap": {
             "status": "success",
-            "symbols": ["AAPL", "SPY", "XLK"],
+            "symbols": list(historical_symbols),
             "adjustment": historical.adjustment,
             "provenance": historical.source_provenance,
         },
@@ -243,6 +425,12 @@ async def run(seconds: float) -> dict[str, object]:
         ),
         "evaluation_skip_reasons": pipeline.metrics.skip_reasons or {},
         "synchronized_input_count": synchronized_input_count,
+        "synchronized_symbols": sorted(
+            symbol
+            for symbol, reasons_for_symbol in pipeline.incomplete_state_reasons.items()
+            if not reasons_for_symbol
+        ),
+        "incomplete_state_reasons": pipeline.incomplete_state_reasons,
         "timing_distributions": {
             name: _distribution(group) for name, group in timing_groups.items()
         },

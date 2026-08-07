@@ -54,6 +54,18 @@ def test_capacity_is_strictly_less_than_maximum():
     assert not next(g for g in candidate.gates if g.name == "R").passed
 
 
+def test_missing_open_interest_is_not_a_zero_ratio_and_blocks_signal():
+    candidate = evaluate(item(open_interest=None), Settings())
+    assert candidate.option_volume_oi_ratio is None
+    options_gate = next(g for g in candidate.gates if g.name == "options")
+    assert not options_gate.passed
+    assert options_gate.reason == "OPEN_INTEREST_UNAVAILABLE"
+    assert not all(g.passed for g in candidate.gates if g.name == "E")
+    decision = decide([item(open_interest=None)], Settings())
+    assert "AAPL:options:OPEN_INTEREST_UNAVAILABLE" in decision.rejection_reasons
+    assert decision.counters.executable_candidates == 0
+
+
 def test_freshness_uses_only_most_recent_qualifying_sweep_timestamp():
     fresh = evaluate(
         item(

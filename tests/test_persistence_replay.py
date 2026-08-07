@@ -3,7 +3,8 @@ from uuid import uuid4
 
 from institutional_signal_engine.config import Settings
 from institutional_signal_engine.persistence import InMemoryRepository
-from institutional_signal_engine.replay import replay
+from institutional_signal_engine.quote_book import QuoteConsumption
+from institutional_signal_engine.replay import _ordered_consumed_inputs, replay
 from institutional_signal_engine.schemas import CanonicalEvent, EventKind
 
 
@@ -51,3 +52,13 @@ def test_replay_is_deterministic_for_identical_ordered_events():
         _event(EventKind.SECTOR_INDEX, 1, {"delta": 1}),
     ]
     assert replay(events, ["AAPL"], Settings()) == replay(events, ["AAPL"], Settings())
+
+
+def test_replay_orders_consumed_quotes_by_ingress_before_trades():
+    quote = _event(EventKind.EQUITY, 1, {"provider_event_kind": "quote", "price": 100})
+    quote = quote.model_copy(update={"ingest_order": 1})
+    trade = _event(EventKind.EQUITY, 2, {"provider_event_kind": "trade", "price": 100})
+    trade = trade.model_copy(update={"ingest_order": 2})
+    consumption = QuoteConsumption(1, quote.event_id, trade.event_id, "BOTH", quote)
+    ordered = _ordered_consumed_inputs((trade,), (consumption,))
+    assert [event.event_id for event in ordered] == [quote.event_id, trade.event_id]

@@ -5,19 +5,21 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 3 — signal-only vertical slice in progress on
-  `feat/signal-only-vertical-slice`
+- **Current phase:** Phase 4 — live multi-symbol universe validation complete;
+  PR #4 is ready for owner merge authorization
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline; Phase 2 — reproducible Vast environment verified with
   documented Ubuntu 22.04/finite-duration exception and merged in PR #2
-- **Active branch:** `feat/signal-only-vertical-slice`
+- **Active branch:** `feat/phase-4-live-universe`
+- **Validated implementation head:** `88763d451bf7b07033eaec999d106879ecfaa285`
 - **Latest authoritative main commit:** `a3b34c5166040797123e943c23f0428344198ac3`.
   Phase 2 implementation is verified through
   `1b2920ce7a6a305c9b9cfa4f395b4f06862d1a68`; the active branch head after
   session closure is the journal-close commit containing this snapshot.
-- **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
-  [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
-  draft, cleanly mergeable, and unmerged at the SESSION-0010 correction head.
+- **Pull-request state:** PRs #1, #2, and #3 are merged into `main`; Phase 4 PR
+  [#4](https://github.com/olubadan/institutional-signal-engine/pull/4) is open,
+  ready for review, cleanly mergeable, and unmerged at the validated closure
+  head. The owner must authorize the merge.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
   correlated Standard exact-contract requests, dynamic-universe selection ports,
@@ -81,8 +83,9 @@
   with field-by-field equality. This proof applies to this corrected run under
   its recorded engine, configuration and condition-mapping versions; it does
   not claim that every historical run is replayable.
-- **Next action:** Obtain independent review of PR #3. Keep it draft and
-  unmerged; dynamic ThetaData discovery remains the only provider blocker.
+- **Next action:** Owner review and merge authorization for PR #4. No additional
+  Phase 4 observation is required. Phase 5 begins only after PR #4 is merged
+  and the owner explicitly approves it.
 
 ## Final engineering review — 20260805
 
@@ -294,3 +297,287 @@
   `src`, and 70 hermetic tests. GitHub Actions push run `31040159885` and PR
   run `31040159733` passed on that exact head. PR #3 remains draft and
   unmerged; trading remains disabled.
+
+## Phase 3 closure and Phase 4 initialization — 20260805
+
+- PR #3 was marked ready and merge-committed using the established merge
+  method. Resulting `main` commit: `bbe969bf1d0df3b1dcdae6a2b4bd4ebb48899aeb`.
+  The Phase 3 branch history and journals were retained.
+- Phase 4 branch `feat/phase-4-live-universe` is based on synchronized `main`.
+  Draft PR #4 is the live multi-symbol universe validation workstream.
+- Added bounded pilot eligibility, deterministic v3 expiration/strike discovery,
+  liquidity/moneyness selection, deduplication, Standard individual-subscription
+  planning, 15,000-contract enforcement, reconciliation, and replayable universe
+  audit persistence. No live-market validation was run.
+- One sanitized off-hours diagnostic at `2026-08-05T20:28:59Z` found MDDS
+  `CONNECTED` (HTTP 200), while contract-list, expiration, and strike helpers
+  returned HTTP 500 HTML responses. Theta Terminal startup version was
+  `20260803:9017549`. Dynamic live discovery remains blocked pending provider
+  support; the expiration-plus-strike workflow is fixture-tested.
+- Local Phase 4 preparation checks pass: Ruff format/lint, strict mypy on `src`,
+  and 77 hermetic tests. Trading remains disabled; no orders were constructed
+  or submitted. Preparation commit `df034e485edf48c4b082a22e40a62ce67cfbebb4`
+  is published in draft PR #4. GitHub Actions run `31044392765` passed on that
+  head. Next-session command is documented in `docs/phase4/README.md`.
+
+## Phase 4 Alpaca catalog and acknowledgement update — 20260806
+
+- PR #4 remains draft and unmerged on `feat/phase-4-live-universe`.
+- Added paginated Alpaca active-call contract discovery, immutable original
+  field capture, exact Decimal OCC/canonical/ThetaData mapping, independent OCC
+  decoding, round-trip validation, deterministic DTE/moneyness/liquidity
+  selection, 15,000-contract overflow failure, universe manifests, and
+  acknowledged-contract event gating.
+- Theta acknowledgements now follow the support-confirmed shape exactly:
+  `header.type=REQ_RESPONSE`, `header.req_id`, and `header.response`. STATUS
+  frames are independent keepalives; no acknowledgement contract is expected.
+- After a clean launcher restart with debug logging, active Terminal build was
+  `20260804:bdd51ae` at `2026-08-06T13:23:37Z`; MDDS was CONNECTED. One bounded
+  diagnostic returned contract-list HTTP 472 JSON and expiration/strike HTTP
+  500 HTML. Debug evidence identified a zstd JNI load failure under `/tmp`
+  restrictions. REST discovery remains cross-validation-only and was not retried.
+- Local verification at this pass: 98 hermetic tests, Ruff, and strict mypy.
+
+### SESSION-0014 closure evidence — 20260806
+
+- Final head: `2cc3759b21ea977fa07d1d4cb57845f839edc22a3` on
+  `feat/phase-4-live-universe`; PR #4 remains draft and unmerged.
+- The implementation uses Alpaca’s documented options-contract filters with
+  explicit 7–45 DTE bounds, accepts compact and padded OCC representations, and
+  gates ThetaData data on correlated `REQ_RESPONSE` acknowledgements. Local
+  verification passed with 99 hermetic tests, Ruff, and strict mypy.
+- Regular-session pilot run `87a96eb6-b0ff-4bd9-bfca-0748eced65df` received and
+  mapped 11,956 contracts, rejected none, persisted the universe manifest,
+  selected no contracts, and opened no ThetaData subscriptions. All 20 symbols
+  failed closed because dated open-interest or average-options-volume evidence
+  was unavailable. Orders remained 0/0 and trading remained disabled.
+- This is not a live Phase 4 observation: no contract plan existed, so no
+  ThetaData acknowledgements, events, qualifying sweeps, or replay metrics were
+  produced. Smallest next action: add a typed Alpaca liquidity-evidence source
+  or obtain owner approval for an equivalent evidence field. ThetaData REST
+  discovery remains unavailable and was not retried.
+
+### SESSION-0015 precision amendments — 20260806
+
+- Implemented policy `phase4-observation-liquidity-relaxation-v1` only in the
+  Phase 4 Alpaca selector. Each symbol records
+  `symbol_liquidity_evidence_source=OWNER_APPROVED_PHASE4_PILOT` and
+  `symbol_liquidity_verified=false`; selected contracts inherit this
+  provenance. The policy cannot be selected under another version.
+- Phase 4 accepts positive undated OI observationally, preserving
+  `oi_date_source=ALPACA_UNDATED`, `open_interest_verified_as_of=false`, and
+  `evidence_quality=PHASE4_OBSERVATIONAL` through decisions. Missing or zero OI
+  remains a fail-closed reason.
+- Added separate deterministic TRADE/QUOTE capacity budgets, per-symbol caps,
+  round-robin allocation, and persisted capacity exclusions with rank and
+  `SUBSCRIPTION_CAPACITY_EXCLUDED` reason. Counts are reported separately.
+- Local verification: 104 hermetic tests, Ruff format/lint, and strict mypy.
+  No live run was performed for this amendment; PR #4 remains draft and
+  unmerged, trading remains disabled, and no orders are constructed/submitted.
+
+### SESSION-0015 regular-session smoke — 20260806
+
+- Run `cc56f1d3-6dca-411b-ad46-fd9f9b84888e` received/mapped 11,956 contracts,
+  with zero mapping failures. All symbols failed closed for missing or zero OI
+  and unavailable quote liquidity; the owner-approved average-volume
+  relaxation did not override those mandatory requirements.
+- Requested, selected, capacity-excluded, submitted, acknowledged, and
+  rejected subscription counts were all zero because no contract passed the
+  evidence filters. No ThetaData stream, sweep, or decision evidence was
+  produced. Orders remained 0/0 and trading remained disabled.
+- Correction: the preceding pre-smoke note saying no live run was performed is
+  superseded by this regular-session policy smoke; no stream opened because
+  every symbol failed the mandatory evidence filters.
+
+### SESSION-0016 liquidity enrichment — 20260806
+
+- Added coarse shortlist, Alpaca OPRA/indicative snapshot evidence, ThetaData
+  dated OI evidence, exact identity joining, quote freshness/spread/size checks,
+  previous-session effective dates, persisted exclusions/enrichment records,
+  and final selection gating. Local verification passed with 110 hermetic
+  tests, Ruff, and strict mypy.
+- Regular-session run `97071de6-f0bb-456c-b3ac-2bbf45036ff1` produced a coarse
+  shortlist of 500 contracts. The single bounded AAPL OI diagnostic returned
+  HTTP 500 from `/v3/option/snapshot/open_interest`; MDDS was CONNECTED and the
+  active Terminal build was `20260804:bdd51ae`. No further OI requests or
+  streams were made; orders remained 0/0.
+- Status remains blocked pending ThetaData restoration of the documented OI
+  snapshot endpoint. Discovery endpoints were not retried.
+
+### SESSION-0017 closure — owner-authorized observation without OI — 20260806
+
+- Commits `97234b2`, `2b34851`, `b4c36cd`, and `20d798a` implement the
+  owner-authorized separation. The Phase 4-only policy is
+  `phase4-sweep-observation-without-oi-v1`; quote-liquid canonical calls may
+  be observed without OI, while missing OI remains null for the ratio and
+  blocks complete signal eligibility and executable candidates.
+- Corrected Alpaca snapshot parsing for the documented `snapshots` envelope.
+  Corrected PostgreSQL flushing and manifest-shape handling so full universe
+  manifests are queryable under the sanitized `__MANIFEST__` audit key.
+- Thirty-minute regular-session run
+  `64b167fe-6bf5-4f37-a686-267dbca1cdc7` mapped 11,956 contracts, selected 10
+  quote-liquid observation contracts across BAC, NFLX, NVDA, and TSLA, and
+  submitted/acknowledged 10 TRADE plus 10 QUOTE subscriptions. It received
+  165,144 ThetaData events and 874,245 Alpaca events; trades received and
+  processed were both 10,025. It recorded 1,029,364 quotes received, 7,280
+  consumed, and 16 pending at shutdown. Stale, late, duplicate, and
+  out-of-order counts were all zero; unknown-condition count was 154.
+- No qualifying sweep and no complete S/F/R/E signal were observed. OI was
+  unavailable; no OI-dependent signal is claimed. Orders constructed/submitted
+  remained 0/0, trading remained disabled, and the prior sanitized OI HTTP 500
+  was not retried. The short corrected persistence verification stored one
+  complete universe manifest row; its event and decision counts were zero
+  because it ended during startup/drain.
+- Local verification: Ruff format/lint, strict mypy, and 114 hermetic tests.
+  Exact-head GitHub Actions passed on `20d798a` in runs
+  `31115127177` (push) and `31115131804` (pull request). PR #4 remains draft
+  and unmerged. ThetaData OI snapshot availability and REST discovery remain
+  external provider blockers, but do not block owner-authorized observation.
+
+### SESSION-0018 extended observation — 20260806
+
+- The required-head observation launched at 13:18:23 ET completed normally at
+  approximately 15:49:18 ET. Run ID `ee806be1-c9d3-4917-b0a6-8e38054cf04d`
+  reported `live_observation_complete`; no restart was performed.
+- The deterministic policy selected 14 contracts across BAC, NFLX, and NVDA.
+  TRADE and QUOTE requests were each submitted/acknowledged `14/14`, with no
+  request rejection. Provider authentication succeeded and MDDS remained
+  CONNECTED.
+- Alpaca/ThetaData event counts were `1,896,125/437,969`; accepted trades
+  received/processed were `31,596/31,596`. Quotes received, overwritten,
+  consumed, and pending were `2,302,498/2,302,479/22,960/18`. Stale, late,
+  duplicate, and out-of-order counts were `0/0/0/0`; unknown conditions were
+  `302`. The acknowledged-contract registry separately rejected `459,009`
+  unacknowledged data messages.
+- PostgreSQL contained `31,596` canonical events, `31,568` quote consumptions,
+  `221` sweep clusters, `208` transitions, and `0` decisions. Replay returned
+  `31,596` events and `0` decisions; decision field equality is vacuous because
+  no synchronized decision was created. The required historical head did not
+  persist a universe manifest.
+- No qualifying sweep occurred. The closest clusters passed five of six
+  cluster thresholds but failed cluster premium: NVDA 20260814/250000C at
+  `$450`, and NFLX 20260814/77000C at `$1,804`; other near clusters also failed
+  exchange participation. S/F/R/E evaluations and candidate counters were all
+  zero because synchronized inputs were zero; missing OI remained unavailable
+  and no complete signal is claimed. Orders remained `0/0` and trading stayed
+  disabled.
+- Provider-age p50/p95 (ms): Alpaca quotes `21.08/56.37`, Alpaca trades
+  `21.74/69.17`, Theta quotes `30.45/79.91`, Theta trades `33.46/121.16`.
+  Internal queue-wait p50/p95 (ms): `0.053/0.115`, `0.057/0.114`,
+  `0.138/0.207`, and `0.127/0.189`, respectively. Database-write latency
+  p50/p95/max was `21.86/32.30/554.39 ms`; queue depth p50/p95/max was
+  `1/10/83`; no soft or hard backpressure failures occurred.
+
+### SESSION-0017 owner-directed observation eligibility — 20260806
+
+- Phase 4 now separates observation-subscription eligibility from complete
+  S/F/R/E eligibility. Quote-liquid, round-trip-validated active calls may be
+  subscribed for sweep observation without OI under policy
+  `phase4-sweep-observation-without-oi-v1`; the policy is Phase 4-only and does
+  not authorize orders or complete signals.
+- ThetaData dated OI remains preferred optional enrichment. The known sanitized
+  HTTP 500 is recorded once and the live runner supports an explicit
+  `--skip-oi-diagnostic` mode so today’s observation does not retry that endpoint.
+  Missing OI remains `null` for the OI ratio, blocks the OI-dependent gate with
+  `OPEN_INTEREST_UNAVAILABLE`, and keeps executable candidates at zero.
+- Added regression coverage for missing/undated Alpaca OI, optional observation
+  selection, and null OI-dependent signal ratios. Local checks currently pass
+  with 113 hermetic tests, Ruff format/lint, and strict mypy; live observation
+  and exact-head CI remain pending.
+
+### SESSION-0019 Phase 4 coverage and synchronization correction — 20260806
+
+- Corrected the historical live finding from run
+  `ee806be1-c9d3-4917-b0a6-8e38054cf04d`: it completed normally, processed
+  `31,596/31,596` accepted trades, and formed `221` clusters, but produced zero
+  synchronized inputs and zero S/F/R/E evaluations because the smoke path
+  requested AAPL while only BAC, NFLX, and NVDA were selected. OI was
+  unavailable/incomplete but was not the primary synchronization cause. No live
+  strategy decision or complete signal was demonstrated; replay of zero
+  decisions was vacuous.
+- The pipeline now synchronizes each selected option root with its own equity
+  state, SPY benchmark, configured sector ETF, option flow, and sweep state.
+  Missing state is reported per symbol, and decision provenance preserves the
+  evaluated symbol. AAPL is not required unless selected.
+- Phase 4 pre-enrichment is now capped at 100 contracts per symbol and 2,000
+  total candidates. Observation spread filtering is explicitly versioned as
+  `phase4-observation-spread-v1` with absolute `$0.05` and proportional `20%`
+  limits; production signal thresholds remain unchanged. Diagnostics preserve
+  formula, threshold, and price/spread buckets.
+- ThetaData rejected contract events now produce bounded, run-scoped aggregate
+  diagnostics with membership flags and an honest overflow count; rejected
+  events never enter strategy state. Universe manifests now include the engine
+  commit, policy/provenance, synchronization state, request registry and
+  acknowledgement evidence, enrichment diagnostics, and rejected-event
+  aggregates.
+- Deterministic verification passed locally: 118 hermetic tests, Ruff format,
+  Ruff lint, and strict mypy. Exact-head CI run
+  [31127740251](https://github.com/olubadan/institutional-signal-engine/actions/runs/31127740251)
+  passed all jobs on the pushed implementation head. No new live observation or
+  provider REST retry was performed; PR #4 remains draft and unmerged, trading
+  remains disabled, and orders remain 0/0.
+
+### SESSION-0020 startup-boundary correction — 20260807
+
+- The prior 600-second Phase 4 smoke started but remained alive for about
+  10m41s with a zero-byte protected log, no run ID, and no report. Because the
+  process emitted no progress or stack evidence before it was stopped, the
+  exact blocked provider operation cannot be retrospectively identified from
+  that run; no live observation was restarted.
+- Added flushed, sanitized startup stage records covering configuration,
+  database, provider authentication, discovery, enrichment, selection,
+  subscription planning, websocket connection, acknowledgements, observation,
+  persistence drain, and final report emission. Sensitive-looking fields are
+  redacted before output.
+- Added a configurable global startup budget (`PHASE4_STARTUP_TIMEOUT_SECONDS`,
+  CLI `--startup-timeout-seconds`) around Alpaca historical/pricing and paged
+  contract calls, quote enrichment, database initialization, MDDS status, and
+  subscription acknowledgement. The CLI also has an outer total-command
+  timeout, so startup cannot run indefinitely; timeout records contain only
+  stage, elapsed time, counts, and sanitized error category.
+- The signal smoke now waits for correlated ThetaData acknowledgements before
+  emitting `observation_started` or starting equity collection, so the
+  requested observation timer begins after startup succeeds. Accepted writes
+  are drained on acknowledgement timeout before the bounded failure exits.
+- No strategy, selection, spread, sweep, gate, discovery endpoint, OI endpoint,
+  threshold, or live-observation result was changed. Trading remains disabled
+  and orders remain 0/0.
+- Verification passed locally: Ruff format check, Ruff lint, strict mypy,
+  `uv lock --check`, shell syntax, structural/secret scan, and 122 hermetic
+  tests. ShellCheck was unavailable locally and remains covered by CI.
+- Implementation commit `190574d73d101d3b422178799ceb0e96d68a545f` is pushed;
+  exact-head GitHub Actions run
+  [31190825701](https://github.com/olubadan/institutional-signal-engine/actions/runs/31190825701)
+  passed every verification job. PR #4 remains draft and unmerged.
+
+### SESSION-0021 Phase 4 closure — 20260807
+
+- Validated implementation head is
+  `88763d451bf7b07033eaec999d106879ecfaa285`. Extended run
+  `9c95f8f0-ae8f-4194-9152-0c33552bd170` completed naturally from the
+  protected operational log; no further observation is required.
+- The live pilot selected 92 call contracts across 12 symbols. TRADE and QUOTE
+  subscriptions were each requested and acknowledged `92/92`, with zero
+  request rejections. Accepted trades received/processed were
+  `24,255/24,255`; synchronized inputs were `30,009`; evaluations and
+  PostgreSQL decisions were `4,125`.
+- Run-scoped PostgreSQL replay loaded `24,255` events and `193,755` consumed
+  quote records, replayed `4,125` decisions, and achieved field-by-field
+  equality. Cross-symbol mismatches were zero. The final universe manifest
+  projection records the exact engine commit, 92-contract plan, 184
+  acknowledgements, 81 bounded rejected-message aggregates, and 12
+  synchronization symbols.
+- The run formed `1,799` sweep clusters and produced zero qualifying sweeps.
+  This is an honest market observation: the pipeline synchronized, evaluated,
+  persisted, and replayed successfully, while no cluster satisfied all
+  authoritative thresholds, principally cluster premium and three-exchange
+  participation. Missing OI remained separate from observation eligibility
+  and blocked only OI-dependent complete signal fields.
+- Persistence soft-limit crossings and hard failures were zero. Trading stayed
+  disabled and orders constructed/submitted remained `0/0`.
+- ThetaData REST discovery/OI endpoints remain unavailable for future
+  cross-validation, but are not a Phase 4 closure blocker and were not retried.
+  Phase 5 must not inherit any observational relaxation automatically.
+- PR #4 is open, ready for owner review, mergeable, and unmerged. The next
+  action is owner review and merge authorization; Phase 5 begins only after
+  the owner explicitly authorizes and completes the merge.

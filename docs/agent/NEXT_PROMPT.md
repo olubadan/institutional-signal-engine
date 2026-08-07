@@ -1,28 +1,10 @@
 # Proposed Next Codex Prompt
 
 ```text
-Continue the Phase 3 owner-review handoff for `olubadan/institutional-signal-engine`.
-
-Read `AGENTS.md`, `docs/agent/CURRENT_STATE.md`,
-`docs/agent/JOURNAL_INDEX.md`, the completed SESSION-0009 record, and the full
-draft PR #3 diff. Compare them with live GitHub and Vast state before changing
-anything.
-
-SESSION-0011 added quote conflation, bounded classification windows,
-material-change evaluation, asynchronous persistence with backpressure,
-consumed-quote replay, historical indicator bootstrap/wiring, idempotent
-session-boundary handling, and the owner-authorized fixed-window sweep
-cluster/session gate with correction and freshness handling. Verify the
-pushed head on the VM and in GitHub Actions, then run a bounded smoke only if
-the regular session is open; do not claim a live qualifying sweep unless the
-feed naturally produces one. Treat ThetaData discovery as
-fixture-verified but not live-verified while HTTP 500 remains awaiting
-support.
-The final two sweep-review corrections are implemented and verified locally:
-production exchange participation uses only numeric ThetaData identifiers and
-freshness expiry is covered immediately before, at, and after the exact
-30-minute boundary with timer persistence and replay equality. Confirm the
-pushed head and CI, then await owner review. Do not infer or purchase a
-subscription. Keep `TRADING_ENABLED=false`; do not construct or submit orders,
-expose ports, reveal credentials, merge PR #3, or begin execution work.
+Phase 4 is complete on feat/phase-4-live-universe and PR #4 is ready for owner
+review and merge authorization. Confirm the final PR head, exact-head CI,
+TRADING_ENABLED=false, and orders 0/0. Do not run another Phase 4 observation,
+retry ThetaData REST/OI endpoints, modify strategy code, or begin Phase 5.
+Phase 5 begins only after the owner explicitly authorizes and completes the
+PR #4 merge.
 ```

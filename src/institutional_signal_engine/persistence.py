@@ -11,9 +11,10 @@ from .schemas import CanonicalEvent, Decision
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL, indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb, sweep_state jsonb NOT NULL DEFAULT '{}'::jsonb);
-CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
+CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, quote_ingest_order bigint NOT NULL DEFAULT 0, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
 CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS sweep_transitions (run_id uuid NOT NULL, cluster_id uuid NOT NULL, transition_order bigint NOT NULL, transition text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id, transition_order));
+CREATE TABLE IF NOT EXISTS universe_audits (run_id uuid NOT NULL, audit_order bigint GENERATED ALWAYS AS IDENTITY, symbol text NOT NULL, included boolean NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, audit_order));
 """
 
 
@@ -24,6 +25,7 @@ class InMemoryRepository:
         self.quote_consumptions: list[QuoteConsumption] = []
         self.sweeps: list[dict[str, object]] = []
         self.sweep_transitions: list[dict[str, object]] = []
+        self.universe_audits: list[dict[str, object]] = []
 
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
@@ -50,6 +52,15 @@ class InMemoryRepository:
             values = [value for value in values if value.get("run_id") == str(run_id)]
         return tuple(sorted(values, key=lambda value: int(str(value["transition_order"]))))
 
+    def record_universe(self, audit: dict[str, object]) -> None:
+        self.universe_audits.append(audit)
+
+    def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.universe_audits
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(values)
+
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         if run_id is None:
             return tuple(self.quote_consumptions)
@@ -64,6 +75,7 @@ class PostgresRepository:
         self._pending_decisions: list[Decision] = []
         self._pending_quote_consumptions: list[QuoteConsumption] = []
         self._pending_sweeps: list[dict[str, object]] = []
+        self._pending_universe: list[dict[str, object]] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -113,6 +125,7 @@ class PostgresRepository:
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS symbol text NOT NULL DEFAULT ''",
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS normalized_timestamp timestamptz NOT NULL DEFAULT now()",
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS sequence bigint NOT NULL DEFAULT 0",
+            "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS quote_ingest_order bigint NOT NULL DEFAULT 0",
         ):
             connection.execute(statement)
 
@@ -127,6 +140,7 @@ class PostgresRepository:
             and not self._pending_decisions
             and not self._pending_quote_consumptions
             and not self._pending_sweeps
+            and not self._pending_universe
         ):
             return
         connection = self._session()
@@ -191,6 +205,17 @@ class PostgresRepository:
                     ),
                 )
         self._pending_sweeps.clear()
+        for audit in self._pending_universe:
+            connection.execute(
+                "INSERT INTO universe_audits (run_id,symbol,included,payload) VALUES (%s,%s,%s,%s)",
+                (
+                    audit["run_id"],
+                    audit.get("symbol", "__MANIFEST__"),
+                    audit.get("included", bool(audit.get("subscription_plan"))),
+                    json.dumps(audit, default=str),
+                ),
+            )
+        self._pending_universe.clear()
 
     @staticmethod
     def _decision_parameters(decision: Decision) -> tuple[object, ...]:
@@ -229,6 +254,21 @@ class PostgresRepository:
         if len(self._pending_sweeps) >= 100:
             self.flush()
 
+    def record_universe(self, audit: dict[str, object]) -> None:
+        self._pending_universe.append(audit)
+        if len(self._pending_universe) >= 100:
+            self.flush()
+
+    def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM universe_audits"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY audit_order"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
+
     def replay_sweep_transitions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         self.flush()
         query = "SELECT payload FROM sweep_transitions"
@@ -242,7 +282,7 @@ class PostgresRepository:
     def _record_quote_consumption_now(self, connection: Any, consumption: QuoteConsumption) -> None:
         quote = consumption.quote
         connection.execute(
-            "INSERT INTO quote_consumptions (run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            "INSERT INTO quote_consumptions (run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,quote_ingest_order,payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
             (
                 quote.run_id,
                 consumption.consumption_order,
@@ -256,6 +296,7 @@ class PostgresRepository:
                 quote.received_timestamp,
                 quote.normalized_timestamp,
                 quote.sequence,
+                quote.ingest_order,
                 json.dumps(quote.payload, default=str),
             ),
         )
@@ -263,7 +304,7 @@ class PostgresRepository:
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         from .schemas import EventKind
 
-        query = "SELECT run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,payload FROM quote_consumptions"
+        query = "SELECT run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,quote_ingest_order,payload FROM quote_consumptions"
         params: tuple[UUID, ...] = ()
         if run_id is not None:
             query += " WHERE run_id=%s"
@@ -286,7 +327,8 @@ class PostgresRepository:
                     received_timestamp=row[9],
                     normalized_timestamp=row[10],
                     sequence=row[11],
-                    payload=row[12],
+                    ingest_order=row[12],
+                    payload=row[13],
                 ),
             )
             for row in rows
@@ -299,7 +341,10 @@ class PostgresRepository:
         if run_id is not None:
             query += " WHERE run_id = %s"
             params = (run_id,)
-        query += " ORDER BY normalized_timestamp,event_id"
+        # Replay must reconstruct live ingress order.  Event time is retained
+        # for analysis, but ordering by it can move late-arriving events ahead
+        # of inputs that the live pipeline already consumed.
+        query += " ORDER BY ingest_order,event_id"
         rows = self._session().execute(query, params).fetchall()
         from .schemas import EventKind
 
