@@ -17,7 +17,10 @@ def _ordered_consumed_inputs(
     """Reconstruct the live ingress order from persisted trades and consumed quotes."""
     unique_quotes: dict[object, CanonicalEvent] = {}
     for consumption in sorted(quote_consumptions, key=lambda value: value.consumption_order):
-        unique_quotes.setdefault(consumption.quote_event_id, consumption.quote)
+        quote = consumption.quote
+        if quote.ingest_order == 0:
+            quote = quote.model_copy(update={"ingest_order": consumption.consumption_order})
+        unique_quotes.setdefault(consumption.quote_event_id, quote)
     inputs = [*unique_quotes.values(), *events]
     return sorted(
         inputs,

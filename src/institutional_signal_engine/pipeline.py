@@ -136,6 +136,15 @@ class SignalPipeline:
         age_ms = (processing_time - event.source_timestamp).total_seconds() * 1000
         self.metrics.event_age_ms.append(age_ms)
         if event.payload.get("provider_event_kind") == "quote":
+            self._ingest_order += 1
+            event = event.model_copy(
+                update={
+                    "run_id": self.run_id if event.run_id == UUID(int=0) else event.run_id,
+                    "ingest_order": self._ingest_order
+                    if event.ingest_order == 0
+                    else event.ingest_order,
+                }
+            )
             self.quote_book.receive(event)
             self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None

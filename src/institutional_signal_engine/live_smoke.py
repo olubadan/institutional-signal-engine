@@ -40,6 +40,8 @@ async def _collect(
                 on_event(event)
     except TimeoutError:
         return events, "healthy" if events else "connected_no_events"
+    except asyncio.CancelledError:
+        return events, "stopped"
     except ProviderError as exc:
         return events, f"failed:{exc.category}"
     except (OSError, RuntimeError, ValueError) as exc:
