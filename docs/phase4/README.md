@@ -1,14 +1,26 @@
 # Phase 4: live multi-symbol universe validation
 
-Phase 4 preparation and the first regular-session observation are complete;
-the next regular-session validation must use the corrected multi-symbol head.
-The historical run `ee806be1-c9d3-4917-b0a6-8e38054cf04d` processed
-31,596/31,596 accepted trades and formed 221 clusters, but produced zero
-synchronized inputs because its smoke path requested AAPL while only BAC,
-NFLX, and NVDA were selected. OI was incomplete but was not the primary
-synchronization failure; no live strategy decision or complete signal was
-demonstrated, and replay of zero decisions was vacuous.
+Phase 4 live multi-symbol validation is complete on implementation head
+`88763d451bf7b07033eaec999d106879ecfaa285`; PR #4 is ready for owner review
+and merge authorization. The final extended run was
+`9c95f8f0-ae8f-4194-9152-0c33552bd170`.
 
+The final run selected 92 call contracts across 12 symbols, acknowledged 92
+TRADE and 92 QUOTE subscriptions, processed 24,255/24,255 trades, produced
+30,009 synchronized inputs and 4,125 persisted decisions. Replay produced
+4,125 decisions with field-by-field equality, and cross-symbol mismatches were
+zero. It formed 1,799 sweep clusters and no qualifying sweeps. Zero qualifying
+sweeps is an observed market result, not a pipeline failure: synchronization,
+gate evaluation, persistence, and replay all completed successfully, while no
+cluster satisfied every authoritative threshold. Trading remained disabled and
+orders remained 0/0.
+
+The earlier run
+`ee806be1-c9d3-4917-b0a6-8e38054cf04d` remains historical evidence only. It
+processed 31,596/31,596 accepted trades and formed 221 clusters, but produced
+zero synchronized inputs because its smoke path requested AAPL while only BAC,
+NFLX, and NVDA were selected. OI was incomplete but was not the primary
+synchronization failure; replay of zero decisions was vacuous.
 The bounded pilot symbols are defined in
 `institutional_signal_engine.universe.PILOT_SYMBOLS`. A symbol is included only
 when market capitalization is at least $10 billion, average daily dollar volume
@@ -44,13 +56,8 @@ the Terminal's gRPC bridge could not load its zstd JNI library under the
 launcher `/tmp` restrictions. Alpaca remains the primary catalog and the
 expiration-plus-strike workflow is fixture-tested only.
 
-Next-session command, only after 09:30 America/New_York and with trading still
-disabled:
-
-```sh
-cd /opt/institutional-signal-engine
-uv run python -m institutional_signal_engine.phase4_live_smoke --seconds 60
-```
-
-This command is reserved for the next regular-session validation and was not run
-during Phase 4 initialization.
+No additional Phase 4 observation is required. The next action is owner review
+and merge authorization for PR #4. Phase 5 begins only after the owner
+explicitly authorizes and completes that merge. ThetaData REST discovery and
+dated OI remain optional future cross-validation sources; they were not retried
+for closure and are not a Phase 4 observation blocker.

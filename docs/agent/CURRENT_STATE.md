@@ -5,19 +5,21 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 3 — signal-only vertical slice in progress on
-  `feat/signal-only-vertical-slice`
+- **Current phase:** Phase 4 — live multi-symbol universe validation complete;
+  PR #4 is ready for owner merge authorization
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline; Phase 2 — reproducible Vast environment verified with
   documented Ubuntu 22.04/finite-duration exception and merged in PR #2
-- **Active branch:** `feat/signal-only-vertical-slice`
+- **Active branch:** `feat/phase-4-live-universe`
+- **Validated implementation head:** `88763d451bf7b07033eaec999d106879ecfaa285`
 - **Latest authoritative main commit:** `a3b34c5166040797123e943c23f0428344198ac3`.
   Phase 2 implementation is verified through
   `1b2920ce7a6a305c9b9cfa4f395b4f06862d1a68`; the active branch head after
   session closure is the journal-close commit containing this snapshot.
-- **Pull-request state:** PRs #1 and #2 are merged into `main`; Phase 3 PR
-  [#3](https://github.com/olubadan/institutional-signal-engine/pull/3) is open,
-  draft, cleanly mergeable, and unmerged at the SESSION-0010 correction head.
+- **Pull-request state:** PRs #1, #2, and #3 are merged into `main`; Phase 4 PR
+  [#4](https://github.com/olubadan/institutional-signal-engine/pull/4) is open,
+  ready for review, cleanly mergeable, and unmerged at the validated closure
+  head. The owner must authorize the merge.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
   correlated Standard exact-contract requests, dynamic-universe selection ports,
@@ -81,8 +83,9 @@
   with field-by-field equality. This proof applies to this corrected run under
   its recorded engine, configuration and condition-mapping versions; it does
   not claim that every historical run is replayable.
-- **Next action:** Obtain independent review of PR #3. Keep it draft and
-  unmerged; dynamic ThetaData discovery remains the only provider blocker.
+- **Next action:** Owner review and merge authorization for PR #4. No additional
+  Phase 4 observation is required. Phase 5 begins only after PR #4 is merged
+  and the owner explicitly approves it.
 
 ## Final engineering review — 20260805
 
@@ -546,3 +549,35 @@
   exact-head GitHub Actions run
   [31190825701](https://github.com/olubadan/institutional-signal-engine/actions/runs/31190825701)
   passed every verification job. PR #4 remains draft and unmerged.
+
+### SESSION-0021 Phase 4 closure — 20260807
+
+- Validated implementation head is
+  `88763d451bf7b07033eaec999d106879ecfaa285`. Extended run
+  `9c95f8f0-ae8f-4194-9152-0c33552bd170` completed naturally from the
+  protected operational log; no further observation is required.
+- The live pilot selected 92 call contracts across 12 symbols. TRADE and QUOTE
+  subscriptions were each requested and acknowledged `92/92`, with zero
+  request rejections. Accepted trades received/processed were
+  `24,255/24,255`; synchronized inputs were `30,009`; evaluations and
+  PostgreSQL decisions were `4,125`.
+- Run-scoped PostgreSQL replay loaded `24,255` events and `193,755` consumed
+  quote records, replayed `4,125` decisions, and achieved field-by-field
+  equality. Cross-symbol mismatches were zero. The final universe manifest
+  projection records the exact engine commit, 92-contract plan, 184
+  acknowledgements, 81 bounded rejected-message aggregates, and 12
+  synchronization symbols.
+- The run formed `1,799` sweep clusters and produced zero qualifying sweeps.
+  This is an honest market observation: the pipeline synchronized, evaluated,
+  persisted, and replayed successfully, while no cluster satisfied all
+  authoritative thresholds, principally cluster premium and three-exchange
+  participation. Missing OI remained separate from observation eligibility
+  and blocked only OI-dependent complete signal fields.
+- Persistence soft-limit crossings and hard failures were zero. Trading stayed
+  disabled and orders constructed/submitted remained `0/0`.
+- ThetaData REST discovery/OI endpoints remain unavailable for future
+  cross-validation, but are not a Phase 4 closure blocker and were not retried.
+  Phase 5 must not inherit any observational relaxation automatically.
+- PR #4 is open, ready for owner review, mergeable, and unmerged. The next
+  action is owner review and merge authorization; Phase 5 begins only after
+  the owner explicitly authorizes and completes the merge.
