@@ -483,7 +483,7 @@ async def run(
         contract_metadata=contract_metadata,
         diagnostic_membership=diagnostic_membership,
         startup_timeout_seconds=startup_timeout,
-        stage_callback=lambda stage, fields: recorder.emit(stage, **fields),
+        stage_callback=recorder.emit_record,
     )
     report.update(signal_report)
     raw_sync_symbols = signal_report.get("synchronized_symbols", ())

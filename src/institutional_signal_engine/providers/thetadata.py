@@ -2,7 +2,7 @@
 
 import json
 from collections import Counter
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -14,6 +14,7 @@ import httpx
 import websockets
 
 from ..schemas import CanonicalEvent, EventKind
+from ..startup import StageCallback
 from .common import ProviderError, reconnecting_stream
 
 
@@ -148,7 +149,7 @@ class ThetaDataOptionsProvider:
         request_types: Iterable[str] = ("TRADE",),
         diagnostic_membership: dict[str, set[ThetaContract]] | None = None,
         diagnostic_cardinality: int = 1000,
-        stage_callback: Callable[[str], None] | None = None,
+        stage_callback: StageCallback | None = None,
     ) -> None:
         self.events_url, self.api_key, self.timeout = events_url, api_key, timeout
         self.contracts = tuple(
@@ -239,7 +240,7 @@ class ThetaDataOptionsProvider:
             ) as ws:
                 self.connected = True
                 if self.stage_callback is not None:
-                    self.stage_callback("websocket_connected")
+                    self.stage_callback({"stage": "websocket_connected"})
                 self.connection_generation += 1
                 self.subscription_acknowledged = False
                 self.acknowledged_contracts.clear()
@@ -287,7 +288,7 @@ class ThetaDataOptionsProvider:
                 if self.stage_callback is not None and len(self.acknowledged_ids) == len(
                     self.request_registry
                 ):
-                    self.stage_callback("subscriptions_acknowledged")
+                    self.stage_callback({"stage": "subscriptions_acknowledged"})
             elif response in {"ERROR", "MAX_STREAMS_REACHED", "INVALID_PERMS"}:
                 self.diagnostics.append(f"request_rejected:{response.lower()}")
                 self.rejected_request_types.append(request.req_type)

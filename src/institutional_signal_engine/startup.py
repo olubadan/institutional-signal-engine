@@ -8,7 +8,8 @@ from time import monotonic
 
 _SENSITIVE_FIELD_MARKERS = ("secret", "token", "password", "credential", "header", "api_key")
 
-StageCallback = Callable[[str, dict[str, object]], None]
+StageRecord = dict[str, object]
+StageCallback = Callable[[StageRecord], None]
 STARTUP_STAGES: tuple[str, ...] = (
     "configuration_loaded",
     "database_connected",
@@ -74,9 +75,20 @@ class StageRecorder:
             **safe_fields,
         }
         if self.callback is not None:
-            self.callback(stage, record)
+            self.callback(record)
         else:
             print(json.dumps(record, sort_keys=True), flush=True)
+
+    def emit_record(self, record: StageRecord) -> None:
+        stage = record.get("stage")
+        if not isinstance(stage, str):
+            raise TypeError("startup stage record requires a string stage")
+        fields = {
+            key: value
+            for key, value in record.items()
+            if key not in {"record_type", "stage", "timestamp_utc", "elapsed_seconds"}
+        }
+        self.emit(stage, **fields)
 
 
 async def bounded_startup[T](

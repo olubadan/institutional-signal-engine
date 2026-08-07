@@ -20,7 +20,7 @@ from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
 from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaContract, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent, EventKind
-from .startup import StageCallback, StageRecorder, StartupTimeout, bounded_startup
+from .startup import StageCallback, StageRecord, StageRecorder, StartupTimeout, bounded_startup
 
 
 def _secret(value: SecretStr | None) -> str:
@@ -137,8 +137,8 @@ async def run(
         startup_remaining(),
     )
 
-    def provider_stage(stage: str) -> None:
-        recorder.emit(stage)
+    def provider_stage(stage: StageRecord) -> None:
+        recorder.emit_record(stage)
 
     theta = ThetaDataOptionsProvider(
         settings.theta_events_url,
@@ -226,9 +226,9 @@ async def run(
     timer_task = asyncio.create_task(timer())
     theta_acknowledged = asyncio.Event()
 
-    def mark_provider_stage(stage: str) -> None:
-        recorder.emit(stage)
-        if stage == "subscriptions_acknowledged":
+    def mark_provider_stage(stage: dict[str, object]) -> None:
+        recorder.emit_record(stage)
+        if stage.get("stage") == "subscriptions_acknowledged":
             theta_acknowledged.set()
 
     theta.stage_callback = mark_provider_stage

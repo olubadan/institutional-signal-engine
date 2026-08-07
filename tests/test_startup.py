@@ -42,10 +42,17 @@ def test_canonical_startup_stage_set_is_complete():
 
 def test_all_startup_stages_emit_through_the_recorder():
     emitted: list[str] = []
-    recorder = StageRecorder(lambda stage, _record: emitted.append(stage))
+    recorder = StageRecorder(lambda record: emitted.append(str(record["stage"])))
     for stage in STARTUP_STAGES:
         recorder.emit(stage)
     assert emitted == list(STARTUP_STAGES)
+
+
+def test_stage_record_adapter_accepts_a_structured_stage_once():
+    emitted: list[str] = []
+    recorder = StageRecorder(lambda record: emitted.append(str(record["stage"])))
+    recorder.emit_record({"record_type": "phase4_stage", "stage": "websocket_connected"})
+    assert emitted == ["websocket_connected"]
 
 
 @pytest.mark.asyncio
@@ -75,7 +82,7 @@ async def test_blocking_startup_operation_times_out_with_sanitized_failure(
 @pytest.mark.asyncio
 async def test_successful_startup_precedes_observation_timer_and_drain():
     stages: list[str] = []
-    recorder = StageRecorder(lambda stage, _record: stages.append(stage))
+    recorder = StageRecorder(lambda record: stages.append(str(record["stage"])))
     await bounded_startup(asyncio.sleep(0), recorder, "alpaca_historical_bootstrap", 1)
     recorder.emit("observation_started", observation_seconds=600)
     recorder.emit("observation_completed")
