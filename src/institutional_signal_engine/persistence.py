@@ -338,7 +338,10 @@ class PostgresRepository:
         if run_id is not None:
             query += " WHERE run_id = %s"
             params = (run_id,)
-        query += " ORDER BY normalized_timestamp,event_id"
+        # Replay must reconstruct live ingress order.  Event time is retained
+        # for analysis, but ordering by it can move late-arriving events ahead
+        # of inputs that the live pipeline already consumed.
+        query += " ORDER BY ingest_order,event_id"
         rows = self._session().execute(query, params).fetchall()
         from .schemas import EventKind
 
