@@ -112,3 +112,14 @@ async def bounded_startup[T](
             error_category="startup_timeout",
         )
         raise StartupTimeout(stage, elapsed, completed, remaining) from exc
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        recorder.emit(
+            "startup_failure",
+            failed_stage=stage,
+            completed_items=completed,
+            remaining_items=remaining,
+            error_category=type(exc).__name__,
+        )
+        raise

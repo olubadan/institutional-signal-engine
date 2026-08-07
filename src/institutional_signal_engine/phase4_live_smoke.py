@@ -475,16 +475,20 @@ async def run(
         report["reason"] = "quote_observation_evidence_unavailable"
         recorder.emit("report_emitted", status=report["status"])
         return report
-    signal_report = await run_signal_smoke(
-        seconds,
-        symbols=tuple(selection.symbol for selection in selections if selection.included),
-        contracts=plan,
-        request_types=("TRADE", "QUOTE"),
-        contract_metadata=contract_metadata,
-        diagnostic_membership=diagnostic_membership,
-        startup_timeout_seconds=startup_timeout,
-        stage_callback=recorder.emit_record,
-    )
+    try:
+        signal_report = await run_signal_smoke(
+            seconds,
+            symbols=tuple(selection.symbol for selection in selections if selection.included),
+            contracts=plan,
+            request_types=("TRADE", "QUOTE"),
+            contract_metadata=contract_metadata,
+            diagnostic_membership=diagnostic_membership,
+            startup_timeout_seconds=startup_timeout,
+            stage_callback=recorder.emit_record,
+        )
+    except ProviderError as exc:
+        recorder.emit("report_emitted", status="blocked_provider", error_category=exc.category)
+        raise
     report.update(signal_report)
     raw_sync_symbols = signal_report.get("synchronized_symbols", ())
     sync_symbols = (

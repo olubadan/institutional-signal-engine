@@ -80,6 +80,22 @@ async def test_blocking_startup_operation_times_out_with_sanitized_failure(
 
 
 @pytest.mark.asyncio
+async def test_startup_provider_failure_emits_sanitized_stage_failure():
+    records: list[dict[str, object]] = []
+    recorder = StageRecorder(records.append)
+
+    async def failing() -> object:
+        raise RuntimeError("provider detail must not be logged")
+
+    with pytest.raises(RuntimeError):
+        await bounded_startup(failing(), recorder, "alpaca_historical_bootstrap", 1)
+    assert records[-1]["stage"] == "startup_failure"
+    assert records[-1]["failed_stage"] == "alpaca_historical_bootstrap"
+    assert records[-1]["error_category"] == "RuntimeError"
+    assert "provider detail" not in str(records)
+
+
+@pytest.mark.asyncio
 async def test_successful_startup_precedes_observation_timer_and_drain():
     stages: list[str] = []
     recorder = StageRecorder(lambda record: stages.append(str(record["stage"])))

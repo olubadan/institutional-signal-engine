@@ -165,9 +165,12 @@ class AlpacaEquitiesProvider:
                         while True:
                             if token is not None:
                                 params["page_token"] = token
-                            response = await client.get(
-                                "/v2/stocks/bars", headers=headers, params=params
-                            )
+                            try:
+                                response = await client.get(
+                                    "/v2/stocks/bars", headers=headers, params=params
+                                )
+                            except httpx.TimeoutException as exc:
+                                raise ProviderError("alpaca", "historical_timeout", True) from exc
                             if response.status_code != 200:
                                 raise ProviderError(
                                     "alpaca", f"historical_http_{response.status_code}", False
@@ -251,11 +254,14 @@ class AlpacaEquitiesProvider:
             "APCA-API-SECRET-KEY": self.secret_key,
         }
         async with httpx.AsyncClient(base_url=self.historical_url, timeout=self.timeout) as client:
-            response = await client.get(
-                "/v2/stocks/snapshots",
-                headers=headers,
-                params={"symbols": ",".join(requested), "feed": self.url.rsplit("/", 1)[-1]},
-            )
+            try:
+                response = await client.get(
+                    "/v2/stocks/snapshots",
+                    headers=headers,
+                    params={"symbols": ",".join(requested), "feed": self.url.rsplit("/", 1)[-1]},
+                )
+            except httpx.TimeoutException as exc:
+                raise ProviderError("alpaca", "snapshot_timeout", True) from exc
         if response.status_code != 200:
             raise ProviderError("alpaca", f"snapshot_http_{response.status_code}", False)
         body: object = response.json()
