@@ -39,7 +39,7 @@ def _ordered_consumed_inputs(
 def replay(
     events: Iterable[CanonicalEvent], symbols: Iterable[str], settings: Settings
 ) -> tuple[Decision, ...]:
-    del symbols
+    replay_symbols = tuple(symbols)
     ordered = sorted(
         events,
         key=lambda value: (
@@ -58,7 +58,11 @@ def replay(
         else uuid5(NAMESPACE_URL, "replay:" + ",".join(str(event.event_id) for event in ordered))
     )
     pipeline = SignalPipeline(
-        settings, repository=InMemoryRepository(), now=lambda: clock[0], run_id=run_id
+        settings,
+        repository=InMemoryRepository(),
+        now=lambda: clock[0],
+        run_id=run_id,
+        symbols=replay_symbols,
     )
     for event in ordered:
         clock[0] = event.normalized_timestamp
@@ -76,12 +80,16 @@ def replay_with_consumed_quotes(
     settings: Settings,
 ) -> tuple[Decision, ...]:
     """Replay only the trades and the exact quotes live processing consumed."""
-    del symbols
+    replay_symbols = tuple(symbols)
     inputs = _ordered_consumed_inputs(events, quote_consumptions)
     clock = [inputs[0].normalized_timestamp] if inputs else [datetime.min.replace(tzinfo=UTC)]
     run_id = inputs[0].run_id if inputs else UUID(int=0)
     pipeline = SignalPipeline(
-        settings, repository=InMemoryRepository(), now=lambda: clock[0], run_id=run_id
+        settings,
+        repository=InMemoryRepository(),
+        now=lambda: clock[0],
+        run_id=run_id,
+        symbols=replay_symbols,
     )
     for event in inputs:
         clock[0] = event.normalized_timestamp
