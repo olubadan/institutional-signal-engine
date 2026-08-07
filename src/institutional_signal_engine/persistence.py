@@ -11,7 +11,7 @@ from .schemas import CanonicalEvent, Decision
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL, indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb, sweep_state jsonb NOT NULL DEFAULT '{}'::jsonb);
-CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
+CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, quote_ingest_order bigint NOT NULL DEFAULT 0, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
 CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS sweep_transitions (run_id uuid NOT NULL, cluster_id uuid NOT NULL, transition_order bigint NOT NULL, transition text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id, transition_order));
 CREATE TABLE IF NOT EXISTS universe_audits (run_id uuid NOT NULL, audit_order bigint GENERATED ALWAYS AS IDENTITY, symbol text NOT NULL, included boolean NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, audit_order));
@@ -125,6 +125,7 @@ class PostgresRepository:
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS symbol text NOT NULL DEFAULT ''",
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS normalized_timestamp timestamptz NOT NULL DEFAULT now()",
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS sequence bigint NOT NULL DEFAULT 0",
+            "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS quote_ingest_order bigint NOT NULL DEFAULT 0",
         ):
             connection.execute(statement)
 
@@ -281,7 +282,7 @@ class PostgresRepository:
     def _record_quote_consumption_now(self, connection: Any, consumption: QuoteConsumption) -> None:
         quote = consumption.quote
         connection.execute(
-            "INSERT INTO quote_consumptions (run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            "INSERT INTO quote_consumptions (run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,quote_ingest_order,payload) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
             (
                 quote.run_id,
                 consumption.consumption_order,
@@ -295,6 +296,7 @@ class PostgresRepository:
                 quote.received_timestamp,
                 quote.normalized_timestamp,
                 quote.sequence,
+                quote.ingest_order,
                 json.dumps(quote.payload, default=str),
             ),
         )
@@ -302,7 +304,7 @@ class PostgresRepository:
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         from .schemas import EventKind
 
-        query = "SELECT run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,payload FROM quote_consumptions"
+        query = "SELECT run_id,consumption_order,quote_event_id,trade_event_id,quote_role,kind,symbol,source,source_timestamp,received_timestamp,normalized_timestamp,sequence,quote_ingest_order,payload FROM quote_consumptions"
         params: tuple[UUID, ...] = ()
         if run_id is not None:
             query += " WHERE run_id=%s"
@@ -325,7 +327,8 @@ class PostgresRepository:
                     received_timestamp=row[9],
                     normalized_timestamp=row[10],
                     sequence=row[11],
-                    payload=row[12],
+                    ingest_order=row[12],
+                    payload=row[13],
                 ),
             )
             for row in rows
