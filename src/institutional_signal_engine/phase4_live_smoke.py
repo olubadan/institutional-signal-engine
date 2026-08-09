@@ -9,7 +9,7 @@ from asyncio import Semaphore
 from collections import Counter
 from datetime import datetime, timedelta
 from time import monotonic
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from .config import Settings
@@ -20,6 +20,7 @@ from .impact_coverage import (
     build_coverage_plan,
     build_pilot_coverage_candidates,
 )
+from .lineage import RunUniverseFinalization, build_contract_transitions, replay_finalization
 from .liquidity import PHASE4_OBSERVATION_SPREAD_POLICY_VERSION, finalize_liquidity
 from .live_smoke import _secret
 from .live_smoke import run as run_signal_smoke
@@ -40,7 +41,7 @@ from .universe import (
     AlpacaContractSelector,
     UniverseManifest,
     UniverseSelection,
-    allocate_subscription_capacity,
+    format_subscription_plan,
 )
 
 
@@ -63,6 +64,7 @@ async def run(
     skip_oi_diagnostic: bool = False,
     startup_timeout_seconds: float | None = None,
     stage_callback: StageCallback | None = None,
+    run_id: UUID | None = None,
 ) -> dict[str, object]:
     recorder = StageRecorder(stage_callback)
     settings = _load_settings()
@@ -82,7 +84,7 @@ async def run(
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
     )
-    run_id = uuid4()
+    run_id = run_id or uuid4()
     as_of = datetime.now(ZoneInfo("America/New_York")).date()
     try:
         recorder.emit(
@@ -302,6 +304,7 @@ async def run(
         coverage_candidates,
         trade_limit=settings.phase4_trade_subscription_limit,
         quote_limit=settings.phase4_quote_subscription_limit,
+        max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
     )
     coverage_selected = {
         (candidate.symbol, candidate.expiration, candidate.strike, candidate.right)
@@ -335,14 +338,23 @@ async def run(
         )
         for selection in selections
     )
-    allocation = allocate_subscription_capacity(
-        coverage_selections,
-        prices,
+    plan = tuple(
+        ThetaContract(
+            candidate.symbol,
+            candidate.expiration,
+            candidate.strike,
+            candidate.right,
+        )
+        for candidate in coverage_plan.selected
+    )
+    allocation = format_subscription_plan(
+        plan,
         trade_limit=settings.phase4_trade_subscription_limit,
         quote_limit=settings.phase4_quote_subscription_limit,
         max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
     )
-    plan = allocation.selected
+    if allocation.selected != plan:
+        raise RuntimeError("planner_allocation_mismatch")
     recorder.emit("selection_completed", completed_items=len(plan), remaining_items=0)
     recorder.emit("subscription_planning_completed", completed_items=len(plan), remaining_items=0)
     selected_contracts = set(plan)
@@ -552,6 +564,7 @@ async def run(
             impact_baselines=(
                 historical.impact_baselines if SHADOW_IMPACT_LIVE_SCORING_ENABLED else None
             ),
+            run_id=run_id,
         )
     except ProviderError as exc:
         recorder.emit("report_emitted", status="blocked_provider", error_category=exc.category)
@@ -584,6 +597,44 @@ async def run(
         if isinstance(raw_acknowledgement, dict)
         else []
     )
+    request_records = tuple(item for item in raw_acknowledgements if isinstance(item, dict))
+    transitions = build_contract_transitions(
+        run_id,
+        mapping_results,
+        coarse_selections,
+        coarse_exclusions,
+        enrichment.records,
+        coverage_plan,
+        request_records,
+    )
+    final_allocation = tuple(
+        {
+            "root": contract.root,
+            "expiration": contract.expiration,
+            "strike": contract.strike,
+            "right": contract.right,
+        }
+        for contract in plan
+    )
+    finalization = RunUniverseFinalization(
+        run_id=run_id,
+        session_date=as_of,
+        transitions=transitions,
+        coverage_plan=coverage_plan.as_dict(),
+        final_allocation=final_allocation,
+        trade_requests=tuple(
+            item for item in request_records if item.get("request_type") == "TRADE"
+        ),
+        quote_requests=tuple(
+            item for item in request_records if item.get("request_type") == "QUOTE"
+        ),
+        acknowledgements=request_records,
+        engine_commit=engine_commit,
+        policy_versions={
+            "coverage": str(coverage_plan.as_dict().get("coverage_version", "")),
+            "universe": "phase4-universe-v1",
+        },
+    )
     final_manifest = UniverseManifest(
         run_id,
         as_of,
@@ -604,6 +655,8 @@ async def run(
         ),
         coverage_plan=coverage_plan.as_dict(),
         coverage_candidate_population_version=PILOT_COVERAGE_POPULATION_VERSION,
+        contract_transitions=transitions,
+        finalization=finalization.record(),
     )
     repository.record_universe(final_manifest.record())
     if isinstance(repository, PostgresRepository):
@@ -630,6 +683,11 @@ async def run(
                 }
             )
     report["status"] = "live_observation_complete"
+    finalization_record = finalization.record()
+    report["universe_finalization"] = finalization_record
+    report["universe_finalization_replay_equal"] = (
+        replay_finalization(finalization_record) == finalization_record
+    )
     recorder.emit("observation_completed", status=report["status"])
     recorder.emit("persistence_drained")
     recorder.emit("report_emitted", status=report["status"])

@@ -619,3 +619,23 @@
 - PR #4 is open, ready for owner review, mergeable, and unmerged. The next
   action is owner review and merge authorization; Phase 5 begins only after
   the owner explicitly authorizes and completes the merge.
+
+### SESSION-0023 Phase 4B system-integration closure — 20260809
+
+- The outer Phase 4B runner now owns one run ID, carried through discovery,
+  coverage, ordered allocation, requests, acknowledgements, and persisted
+  finalization. The planner is the sole allocator; the subscription formatter
+  only validates and serializes its ordered result.
+- Every discovered contract receives immutable transition evidence, including
+  later-expiration, duplicate-canonical, mapping, enrichment, U_X, planner,
+  capacity, request, and acknowledgement outcomes. Canonical-null records
+  carry `CANONICAL_IDENTITY_UNAVAILABLE`.
+- Finalization replay validates the persisted selection, allocation, request
+  subsets, acknowledgement lineage, and transition order. The read-only
+  `python -m institutional_signal_engine.ignition` command provides sanitized,
+  fail-closed deployment checks and never starts an observation.
+- Closure verification is hermetic: 162 tests pass, Ruff format/lint and
+  strict mypy pass. No provider ran in this session. Remaining follow-up is
+  expanded failure injection and live validation; market-wide cataloging and
+  a universal Q-delta bound remain out of scope. Trading is disabled and
+  orders remain `0/0`.

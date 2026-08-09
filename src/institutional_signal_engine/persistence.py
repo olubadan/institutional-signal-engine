@@ -86,6 +86,14 @@ class InMemoryRepository:
             values = [value for value in values if value.get("run_id") == str(run_id)]
         return tuple(values)
 
+    def replay_universe_finalization(self, run_id: UUID) -> dict[str, object] | None:
+        values = [value for value in self.universe_audits if value.get("run_id") == str(run_id)]
+        for value in reversed(values):
+            finalization = value.get("finalization")
+            if isinstance(finalization, dict) and finalization:
+                return finalization
+        return None
+
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         if run_id is None:
             return tuple(self.quote_consumptions)
@@ -344,6 +352,14 @@ class PostgresRepository:
             params = (run_id,)
         query += " ORDER BY audit_order"
         return tuple(row[0] for row in self._session().execute(query, params).fetchall())
+
+    def replay_universe_finalization(self, run_id: UUID) -> dict[str, object] | None:
+        values = tuple(self.replay_universe(run_id))
+        for value in reversed(values):
+            finalization = value.get("finalization")
+            if isinstance(finalization, dict) and finalization:
+                return finalization
+        return None
 
     def replay_sweep_transitions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         self.flush()

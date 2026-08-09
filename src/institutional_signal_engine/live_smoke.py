@@ -7,7 +7,7 @@ import os
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
@@ -110,6 +110,7 @@ async def run(
     startup_timeout_seconds: float = 120.0,
     stage_callback: StageCallback | None = None,
     impact_baselines: Mapping[tuple[str, int], ImpactBaseline] | None = None,
+    run_id: UUID | None = None,
 ) -> dict[str, object]:
     recorder = StageRecorder(stage_callback)
 
@@ -177,7 +178,7 @@ async def run(
         flush_interval=float(settings.persistence_flush_interval),
     )
     writer.start()
-    pipeline_run_id = uuid4()
+    pipeline_run_id = run_id or UUID(int=0)
     impact_engine = (
         ShadowImpactEngine(pipeline_run_id, impact_baselines)
         if impact_baselines is not None
@@ -431,6 +432,7 @@ async def run(
         "quotes_consumed": pipeline.quote_book.metrics.quotes_consumed,
         "quotes_pending_at_shutdown": pipeline.quote_book.quotes_pending_at_shutdown,
         "evaluations_triggered": pipeline.metrics.evaluations_triggered,
+        "decisions_persisted": len(pipeline.decisions),
         "evaluations_skipped": pipeline.metrics.evaluations_skipped,
         "trigger_reason_counts": dict(
             Counter(

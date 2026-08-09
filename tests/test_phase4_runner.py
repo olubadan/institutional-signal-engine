@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
@@ -36,6 +37,7 @@ async def test_assembled_phase4_runner_forwards_each_stage_once(monkeypatch: pyt
         theta_api_key=SecretStr("fixture-theta"),
         database_url=None,
     )
+    result_run_id = uuid4()
 
     class FakeEquities:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -88,6 +90,7 @@ async def test_assembled_phase4_runner_forwards_each_stage_once(monkeypatch: pyt
     async def fake_signal_smoke(*_args: object, stage_callback=None, **_kwargs: object):
         assert stage_callback is not None
         assert _kwargs["impact_baselines"] is None
+        assert _kwargs["run_id"] == result_run_id
         for stage in (
             "websocket_connected",
             "subscriptions_acknowledged",
@@ -124,6 +127,7 @@ async def test_assembled_phase4_runner_forwards_each_stage_once(monkeypatch: pyt
     monkeypatch.setattr(runner, "run_signal_smoke", fake_signal_smoke)
 
     records: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "uuid4", lambda: result_run_id)
     result = await runner.run(0.01, skip_oi_diagnostic=True, stage_callback=records.append)
 
     stages = [str(record["stage"]) for record in records]

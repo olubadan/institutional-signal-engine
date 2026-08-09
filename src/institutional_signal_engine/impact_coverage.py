@@ -35,6 +35,7 @@ class CoverageCandidate:
     missing_evidence_reasons: tuple[str, ...] = ()
     evidence_provenance: tuple[str, ...] = ()
     preprocessing_stage: str = "FINAL_LIQUIDITY_QUALIFIED"
+    distance_from_underlying: Decimal | None = None
 
     @property
     def coverage_set(self) -> str:
@@ -77,6 +78,8 @@ class CoverageCandidate:
             -self.liquidity_quality,
             -self.evidence_completeness,
             self.symbol,
+            self.distance_from_underlying is None,
+            self.distance_from_underlying or Decimal(0),
             self.expiration,
             self.strike,
             self.right,
@@ -103,6 +106,11 @@ class CoverageCandidate:
             "available_evidence_fields": list(self.available_evidence_fields),
             "liquidity_rank": self.liquidity_rank,
             "candidate_count": self.candidate_count,
+            "distance_from_underlying": (
+                str(self.distance_from_underlying)
+                if self.distance_from_underlying is not None
+                else None
+            ),
             "priority": str(self.priority),
             "coverage_version": IMPACT_COVERAGE_VERSION,
             "priority_version": IMPACT_PRIORITY_VERSION,
@@ -120,6 +128,7 @@ class CoveragePlan:
     quote_limit: int
     complete_conditional_coverage: bool
     status: str
+    max_contracts_per_symbol: int = 1_000
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -147,6 +156,7 @@ class CoveragePlan:
                 ),
             },
             "paired_stream_limit": min(self.trade_limit, self.quote_limit),
+            "max_contracts_per_symbol": self.max_contracts_per_symbol,
         }
 
     def _theoretical(self) -> tuple[CoverageCandidate, ...]:
@@ -161,6 +171,7 @@ def build_coverage_plan(
     candidates: tuple[CoverageCandidate, ...],
     trade_limit: int = 15_000,
     quote_limit: int = 10_000,
+    max_contracts_per_symbol: int = 1_000,
 ) -> CoveragePlan:
     """Allocate U* without silently truncating and preserve every exclusion."""
     theoretical = tuple(
@@ -168,20 +179,38 @@ def build_coverage_plan(
         for candidate in candidates
         if candidate.coverage_class in {"MUST_OBSERVE", "UNRESOLVED"}
     )
+    if min(trade_limit, quote_limit, max_contracts_per_symbol) < 1:
+        raise ValueError("coverage limits must be positive")
     ordered = tuple(sorted(theoretical, key=lambda candidate: candidate.key))
     capacity = min(trade_limit, quote_limit)
-    selected = ordered[:capacity]
+    selected_list: list[CoverageCandidate] = []
+    selected_per_symbol: dict[str, int] = {}
+    for candidate in ordered:
+        if len(selected_list) >= capacity:
+            break
+        count = selected_per_symbol.get(candidate.symbol, 0)
+        if count >= max_contracts_per_symbol:
+            continue
+        selected_list.append(candidate)
+        selected_per_symbol[candidate.symbol] = count + 1
+    selected = tuple(selected_list)
     capacity_excluded = tuple(
         {
             **candidate.as_dict(),
             "rank": rank,
             "binding_capacity": "TRADE_AND_QUOTE"
             if trade_limit == quote_limit
-            else ("TRADE" if len(ordered) > trade_limit else "QUOTE"),
+            else (
+                "TRADE"
+                if len(ordered) > trade_limit
+                else "QUOTE"
+                if len(ordered) > quote_limit
+                else "MAX_CONTRACTS_PER_SYMBOL"
+            ),
             "reason": "CAPACITY_CONSTRAINED_COVERAGE",
         }
         for rank, candidate in enumerate(ordered, 1)
-        if candidate not in selected
+        if candidate not in selected and candidate.coverage_class in {"MUST_OBSERVE", "UNRESOLVED"}
     )
     non_observed = tuple(
         {
@@ -194,7 +223,14 @@ def build_coverage_plan(
         if candidate.coverage_class == "PROVABLY_EXCLUDABLE"
     )
     excluded = capacity_excluded + non_observed
-    complete = len(ordered) <= trade_limit and len(ordered) <= quote_limit
+    complete = (
+        len(ordered) <= trade_limit
+        and len(ordered) <= quote_limit
+        and all(
+            sum(candidate.symbol == symbol for candidate in ordered) <= max_contracts_per_symbol
+            for symbol in {candidate.symbol for candidate in ordered}
+        )
+    )
     return CoveragePlan(
         candidates=candidates,
         selected=selected,
@@ -203,6 +239,7 @@ def build_coverage_plan(
         quote_limit=quote_limit,
         complete_conditional_coverage=complete,
         status="CONDITIONAL_ZERO_MISS" if complete else "CAPACITY_CONSTRAINED_COVERAGE",
+        max_contracts_per_symbol=max_contracts_per_symbol,
     )
 
 
@@ -280,6 +317,14 @@ def build_pilot_coverage_candidates(
                     inputs,
                     missing,
                     ("ALPACA_CONTRACT_CATALOG", "ALPACA_OPTION_SNAPSHOT"),
+                    distance_from_underlying=(
+                        abs(
+                            Decimal(contract.strike) / Decimal(1000)
+                            - Decimal(str(evidence.get("underlying_price", 0)))
+                        )
+                        if evidence.get("underlying_price") is not None
+                        else None
+                    ),
                 )
             )
     return tuple(candidates)
@@ -318,6 +363,9 @@ def _candidate_from_dict(value: dict[str, object]) -> CoverageCandidate:
         tuple(str(item) for item in missing_values),
         tuple(str(item) for item in provenance_values),
         str(value.get("preprocessing_stage", "FINAL_LIQUIDITY_QUALIFIED")),
+        Decimal(str(value["distance_from_underlying"]))
+        if value.get("distance_from_underlying") is not None
+        else None,
     )
 
 
@@ -337,4 +385,5 @@ def replay_coverage_plan(record: dict[str, object]) -> CoveragePlan:
         candidates,
         trade_limit=int(str(record["trade_limit"])),
         quote_limit=int(str(record["quote_limit"])),
+        max_contracts_per_symbol=int(str(record.get("max_contracts_per_symbol", 1000))),
     )

@@ -435,7 +435,7 @@ def test_paired_stream_ceiling_uses_ten_thousand_quote_capacity():
         CoverageCandidate("BAC", 20260814, 40000 + index, "C", None, False, 1, 1, (), "UNRESOLVED")
         for index in range(10_001)
     )
-    plan = build_coverage_plan(candidates)
+    plan = build_coverage_plan(candidates, max_contracts_per_symbol=10_001)
     assert len(plan.selected) == 10_000
     assert plan.as_dict()["paired_stream_limit"] == 10_000
     assert len(plan.excluded) == 1

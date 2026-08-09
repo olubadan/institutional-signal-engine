@@ -20,8 +20,7 @@ from institutional_signal_engine.universe import (
     PHASE4_OBSERVATION_POLICY_VERSION,
     AlpacaContractSelector,
     UniverseManifest,
-    UniverseSelection,
-    allocate_subscription_capacity,
+    format_subscription_plan,
 )
 
 RECEIVED = datetime(2026, 8, 6, 13, 0, tzinfo=UTC)
@@ -147,36 +146,24 @@ def test_observation_policy_cannot_be_repurposed_with_another_version():
         AlpacaContractSelector(policy_version="production-default")
 
 
-def test_capacity_allocator_round_robins_and_records_exclusions():
+def test_subscription_formatter_preserves_planner_order_without_reallocation():
     aapl = ThetaContract("AAPL", 20260814, 310000, "C")
     msft = ThetaContract("MSFT", 20260814, 500000, "C")
-    second_aapl = ThetaContract("AAPL", 20260814, 311000, "C")
-    selections = (
-        UniverseSelection("AAPL", True, 20260814, (aapl, second_aapl), (), (), ()),
-        UniverseSelection("MSFT", True, 20260814, (msft,), (), (), ()),
-    )
-    allocation = allocate_subscription_capacity(
-        selections, {"AAPL": Decimal(310), "MSFT": Decimal(500)}, trade_limit=2, quote_limit=2
-    )
-    assert allocation.requested == (aapl, second_aapl, msft)
+    allocation = format_subscription_plan((aapl, msft), trade_limit=2, quote_limit=2)
+    assert allocation.requested == (aapl, msft)
     assert allocation.selected == (aapl, msft)
-    assert len(allocation.capacity_excluded) == 1
-    assert allocation.capacity_excluded[0]["reason"] == "SUBSCRIPTION_CAPACITY_EXCLUDED"
+    assert allocation.capacity_excluded == ()
 
 
-def test_capacity_allocator_applies_separate_trade_quote_and_symbol_limits():
+def test_subscription_formatter_rejects_overflow_instead_of_truncating():
     contracts = tuple(ThetaContract("AAPL", 20260814, 310000 + index, "C") for index in range(3))
-    selection = UniverseSelection("AAPL", True, 20260814, contracts, (), (), ())
-    allocation = allocate_subscription_capacity(
-        (selection,),
-        {"AAPL": Decimal(310)},
-        trade_limit=3,
-        quote_limit=2,
-        max_contracts_per_symbol=3,
-    )
-    assert len(allocation.trade_plan) == 2
-    assert len(allocation.quote_plan) == 2
-    assert len(allocation.capacity_excluded) == 1
+    with pytest.raises(ValueError, match="subscription_capacity_exceeded"):
+        format_subscription_plan(
+            contracts,
+            trade_limit=3,
+            quote_limit=2,
+            max_contracts_per_symbol=3,
+        )
 
 
 def test_alpaca_selection_reports_symbols_with_no_returned_contracts():

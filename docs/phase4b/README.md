@@ -93,3 +93,15 @@ participation are unavailable at planning time, so those candidates remain
 `U_R`; this is evidence, not a defect. Market-wide cataloging, market-wide
 `U*`, a defensible universal upper-bound method, and a market-wide zero-miss
 guarantee are not implemented.
+
+## System-integration closure
+
+The Phase 4B runner creates one run ID at its outer boundary and persists the
+same lineage through discovery, coverage classification, ordered allocation,
+requests, acknowledgements, and finalization. Every discovered contract has a
+terminal transition reason. `build_coverage_plan` is the final allocator; the
+request formatter cannot remove, restore, or reorder its result. Finalization
+replay checks the persisted allocation and request subset invariants. The
+deployment ignition command is read-only and fail-closed; it does not launch
+providers. Expanded failure injection and live-market validation remain
+follow-up work, and no live mathematical footprint claim is made.
