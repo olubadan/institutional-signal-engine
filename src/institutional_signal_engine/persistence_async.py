@@ -18,6 +18,8 @@ class AuditWrite:
     decision: Decision | None = None
     quote_consumption: Any | None = None
     sweep: Any | None = None
+    impact_cluster: dict[str, object] | None = None
+    impact_session: dict[str, object] | None = None
 
 
 @dataclass
@@ -95,6 +97,10 @@ class AsyncAuditWriter:
                         recorder(record.quote_consumption)
                 if record.sweep is not None:
                     self.repository.record_sweep(record.sweep)
+                if record.impact_cluster is not None:
+                    self.repository.record_impact_cluster(record.impact_cluster)
+                if record.impact_session is not None:
+                    self.repository.record_impact_session(record.impact_session)
                 self.queue.task_done()
             flush = getattr(self.repository, "flush", None)
             if flush is not None:

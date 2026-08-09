@@ -9,6 +9,7 @@ from typing import cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .config import Settings
+from .impact import ShadowImpactEngine
 from .indicators import (
     ET,
     IndicatorCalculator,
@@ -79,6 +80,7 @@ class SignalPipeline:
         indicator_calculator: IndicatorCalculator | None = None,
         symbols: tuple[str, ...] = ("AAPL",),
         sector_by_symbol: dict[str, str] | None = None,
+        impact_engine: ShadowImpactEngine | None = None,
     ) -> None:
         self.settings = settings
         self.repository: EventRepository = repository or InMemoryRepository()
@@ -115,6 +117,8 @@ class SignalPipeline:
         self._pending_boundary_reasons: list[str] = []
         self._session_generation = 0
         self.sweeps = SweepEngine(self.run_id)
+        self.impact_engine = impact_engine
+        self.impact_results: list[dict[str, object]] = []
         self._pending_sweep_reasons: list[str] = []
         self._pending_closed_sweep_audits: list[dict[str, object]] = []
         self.incomplete_run = False
@@ -197,6 +201,8 @@ class SignalPipeline:
             self._record_timing(event, processing_time, age_at_receipt_ms, started)
             return None
         event = self._enrich_state(event)
+        if self.impact_engine is not None:
+            self.impact_engine.accept_event(event.event_id, event.payload)
         sweep_audit: dict[str, object] | None = None
         closed_sweep_audits: tuple[dict[str, object], ...] = ()
         if event.kind == EventKind.OPTIONS:
@@ -233,6 +239,23 @@ class SignalPipeline:
         for audit in sweep_update.transition_audits if event.kind == EventKind.OPTIONS else ():
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None
+        if self.impact_engine is not None and event.kind == EventKind.OPTIONS:
+            impact_audits = tuple(
+                audit
+                for audit in (
+                    sweep_audit,
+                    *closed_sweep_audits,
+                    *(sweep_update.transition_audits),
+                )
+                if audit is not None
+            )
+            for impact_audit in impact_audits:
+                impact_cluster, impact_session = self.impact_engine.process_audit(impact_audit)
+                self.impact_results.append(impact_cluster)
+                if not self._enqueue(AuditWrite(impact_cluster=impact_cluster)):
+                    return None
+                if not self._enqueue(AuditWrite(impact_session=impact_session)):
+                    return None
         for audit in self._pending_closed_sweep_audits:
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None
@@ -331,6 +354,10 @@ class SignalPipeline:
                 self.repository.record_decision(record.decision)
             if record.sweep is not None:
                 self.repository.record_sweep(record.sweep)
+            if record.impact_cluster is not None:
+                self.repository.record_impact_cluster(record.impact_cluster)
+            if record.impact_session is not None:
+                self.repository.record_impact_session(record.impact_session)
             return True
         accepted = self.writer.enqueue(record)
         if not accepted:

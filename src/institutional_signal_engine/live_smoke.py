@@ -5,13 +5,15 @@ import asyncio
 import json
 import os
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 
 from .config import Settings
+from .impact import ImpactBaseline, ShadowImpactEngine
 from .indicators import IndicatorCalculator
 from .persistence import InMemoryRepository, PostgresRepository
 from .persistence_async import AsyncAuditWriter
@@ -102,6 +104,7 @@ async def run(
     diagnostic_membership: dict[str, set[ThetaContract]] | None = None,
     startup_timeout_seconds: float = 120.0,
     stage_callback: StageCallback | None = None,
+    impact_baselines: Mapping[tuple[str, int], ImpactBaseline] | None = None,
 ) -> dict[str, object]:
     recorder = StageRecorder(stage_callback)
 
@@ -169,6 +172,12 @@ async def run(
         flush_interval=float(settings.persistence_flush_interval),
     )
     writer.start()
+    pipeline_run_id = uuid4()
+    impact_engine = (
+        ShadowImpactEngine(pipeline_run_id, impact_baselines)
+        if impact_baselines is not None
+        else None
+    )
     pipeline = SignalPipeline(
         settings,
         repository=repository,
@@ -176,6 +185,8 @@ async def run(
         indicator_calculator=IndicatorCalculator(historical),
         symbols=pilot_symbols,
         sector_by_symbol=sector_by_symbol,
+        run_id=pipeline_run_id,
+        impact_engine=impact_engine,
     )
 
     def process(event: CanonicalEvent) -> None:
@@ -474,6 +485,9 @@ async def run(
         "executable_candidates": decision.counters.executable_candidates if decision else 0,
         "orders_constructed": 0,
         "orders_submitted": 0,
+        "shadow_impact_model": "SHADOW_IMPACT_V1" if impact_engine is not None else None,
+        "shadow_impact_clusters": pipeline.impact_results,
+        "shadow_impact_sessions": impact_engine.sessions if impact_engine is not None else [],
     }
 
 

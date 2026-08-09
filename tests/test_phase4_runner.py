@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
@@ -42,6 +43,9 @@ async def test_assembled_phase4_runner_forwards_each_stage_once(monkeypatch: pyt
 
         async def current_prices(self, _symbols: tuple[str, ...]) -> dict[str, Decimal]:
             return prices
+
+        async def historical_bootstrap(self, _symbols: tuple[str, ...], _session: object):
+            return SimpleNamespace(impact_baselines={})
 
     class FakeCatalog:
         def __init__(self, *_args: object, **_kwargs: object) -> None:

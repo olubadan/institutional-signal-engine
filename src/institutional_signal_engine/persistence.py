@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption
 CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS sweep_transitions (run_id uuid NOT NULL, cluster_id uuid NOT NULL, transition_order bigint NOT NULL, transition text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id, transition_order));
 CREATE TABLE IF NOT EXISTS universe_audits (run_id uuid NOT NULL, audit_order bigint GENERATED ALWAYS AS IDENTITY, symbol text NOT NULL, included boolean NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, audit_order));
+CREATE TABLE IF NOT EXISTS impact_clusters (run_id uuid NOT NULL, cluster_id text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
+CREATE TABLE IF NOT EXISTS impact_sessions (run_id uuid NOT NULL, symbol text NOT NULL, as_of timestamptz NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, symbol, as_of));
 """
 
 
@@ -26,6 +28,8 @@ class InMemoryRepository:
         self.sweeps: list[dict[str, object]] = []
         self.sweep_transitions: list[dict[str, object]] = []
         self.universe_audits: list[dict[str, object]] = []
+        self.impact_clusters: list[dict[str, object]] = []
+        self.impact_sessions: list[dict[str, object]] = []
 
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
@@ -55,6 +59,27 @@ class InMemoryRepository:
     def record_universe(self, audit: dict[str, object]) -> None:
         self.universe_audits.append(audit)
 
+    def record_impact_cluster(self, cluster: dict[str, object]) -> None:
+        if cluster.get("cluster_id") not in {
+            value.get("cluster_id") for value in self.impact_clusters
+        }:
+            self.impact_clusters.append(cluster)
+
+    def record_impact_session(self, session: dict[str, object]) -> None:
+        self.impact_sessions.append(session)
+
+    def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.impact_clusters
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(values)
+
+    def replay_impact_sessions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.impact_sessions
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(values)
+
     def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         values = self.universe_audits
         if run_id is not None:
@@ -76,6 +101,8 @@ class PostgresRepository:
         self._pending_quote_consumptions: list[QuoteConsumption] = []
         self._pending_sweeps: list[dict[str, object]] = []
         self._pending_universe: list[dict[str, object]] = []
+        self._pending_impact_clusters: list[dict[str, object]] = []
+        self._pending_impact_sessions: list[dict[str, object]] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -141,6 +168,8 @@ class PostgresRepository:
             and not self._pending_quote_consumptions
             and not self._pending_sweeps
             and not self._pending_universe
+            and not self._pending_impact_clusters
+            and not self._pending_impact_sessions
         ):
             return
         connection = self._session()
@@ -216,6 +245,23 @@ class PostgresRepository:
                 ),
             )
         self._pending_universe.clear()
+        for cluster in self._pending_impact_clusters:
+            connection.execute(
+                "INSERT INTO impact_clusters (run_id,cluster_id,payload) VALUES (%s,%s,%s) ON CONFLICT (run_id,cluster_id) DO UPDATE SET payload=EXCLUDED.payload",
+                (cluster["run_id"], cluster["cluster_id"], json.dumps(cluster, default=str)),
+            )
+        self._pending_impact_clusters.clear()
+        for session in self._pending_impact_sessions:
+            connection.execute(
+                "INSERT INTO impact_sessions (run_id,symbol,as_of,payload) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                (
+                    session["run_id"],
+                    session["symbol"],
+                    session["as_of"],
+                    json.dumps(session, default=str),
+                ),
+            )
+        self._pending_impact_sessions.clear()
 
     @staticmethod
     def _decision_parameters(decision: Decision) -> tuple[object, ...]:
@@ -258,6 +304,36 @@ class PostgresRepository:
         self._pending_universe.append(audit)
         if len(self._pending_universe) >= 100:
             self.flush()
+
+    def record_impact_cluster(self, cluster: dict[str, object]) -> None:
+        self._pending_impact_clusters.append(cluster)
+        if len(self._pending_impact_clusters) >= 100:
+            self.flush()
+
+    def record_impact_session(self, session: dict[str, object]) -> None:
+        self._pending_impact_sessions.append(session)
+        if len(self._pending_impact_sessions) >= 100:
+            self.flush()
+
+    def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM impact_clusters"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY cluster_id"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
+
+    def replay_impact_sessions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM impact_sessions"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY as_of,symbol"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
 
     def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         self.flush()

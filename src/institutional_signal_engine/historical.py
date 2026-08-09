@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from types import MappingProxyType
 
+from .impact import ImpactBaseline
 from .indicators import HistoricalMarketDataPort, PreviousClose
 
 
@@ -16,6 +17,7 @@ class HistoricalBootstrap(HistoricalMarketDataPort):
     completed_highs: Mapping[str, Mapping[str, Decimal]]
     adjustment: str
     source_provenance: str
+    impact_baselines: Mapping[tuple[str, int], ImpactBaseline] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "previous_closes", MappingProxyType(dict(self.previous_closes)))
@@ -23,6 +25,7 @@ class HistoricalBootstrap(HistoricalMarketDataPort):
             self, "cumulative_profiles", MappingProxyType(dict(self.cumulative_profiles))
         )
         object.__setattr__(self, "completed_highs", MappingProxyType(dict(self.completed_highs)))
+        object.__setattr__(self, "impact_baselines", MappingProxyType(dict(self.impact_baselines)))
 
     def previous_close(self, symbol: str, session: str) -> PreviousClose | None:
         if session != self.session:

@@ -119,6 +119,12 @@ async def run(
             "orders_constructed": 0,
             "orders_submitted": 0,
         }
+    historical = await bounded_startup(
+        alpaca.historical_bootstrap((*PILOT_SYMBOLS, "SPY", "XLK"), as_of),
+        recorder,
+        "alpaca_historical_bootstrap",
+        startup_remaining(),
+    )
     mapping_results = tuple(
         round_trip_validate(map_alpaca_contract(contract)) for contract in discovered
     )
@@ -485,6 +491,7 @@ async def run(
             diagnostic_membership=diagnostic_membership,
             startup_timeout_seconds=startup_timeout,
             stage_callback=recorder.emit_record,
+            impact_baselines=historical.impact_baselines,
         )
     except ProviderError as exc:
         recorder.emit("report_emitted", status="blocked_provider", error_category=exc.category)
