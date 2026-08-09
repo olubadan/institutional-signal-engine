@@ -19,9 +19,13 @@ This runbook is preparation only. Do not launch it during the weekend.
    and freeze the five-minute baselines, and persist effective date, sample
    size, adjustment metadata, and provenance. Fail closed on fewer than 20
    completed sessions.
-7. Generate and persist the conditional coverage sets `U_M`, `U_X`, `U_R`,
-   independent TRADE/QUOTE capacity results, and every deterministic capacity
-   exclusion. Do not retry ThetaData REST discovery or OI endpoints.
+7. Generate and persist the conditional coverage sets `U_M`, `U_X`, `U_R`
+   through the connected pilot planner, then verify `U*=U_M∪U_R`, the
+   independent 15,000 TRADE and 10,000 QUOTE limits, the 10,000 paired-stream
+   ceiling, and every deterministic capacity exclusion. The manifest must
+   distinguish pilot candidates, theoretical U*, selected contracts, and
+   acknowledged contracts. Do not retry ThetaData REST discovery or OI
+   endpoints.
 8. Verify the single shared provider/subscription/normalization/quote/
    persistence pipeline and the ordered individual-contract plan. Live
    `SHADOW_IMPACT_V1` scoring is disabled pending optimization because the

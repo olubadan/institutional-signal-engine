@@ -19,11 +19,18 @@ from institutional_signal_engine.impact import (
     evaluate_cluster,
     session_state,
 )
-from institutional_signal_engine.impact_coverage import CoverageCandidate, build_coverage_plan
+from institutional_signal_engine.impact_coverage import (
+    CoverageCandidate,
+    build_coverage_plan,
+    build_pilot_coverage_candidates,
+    replay_coverage_plan,
+)
 from institutional_signal_engine.persistence import InMemoryRepository
 from institutional_signal_engine.persistence_async import AsyncAuditWriter, AuditWrite
 from institutional_signal_engine.pipeline import SignalPipeline
+from institutional_signal_engine.providers.thetadata import ThetaContract
 from institutional_signal_engine.schemas import CanonicalEvent, EventKind
+from institutional_signal_engine.universe import UniverseSelection
 
 NOW = datetime(2026, 8, 7, 14, 0, tzinfo=UTC)
 
@@ -349,6 +356,90 @@ def test_coverage_excludes_only_proven_hard_bound_candidates():
     plan = build_coverage_plan((excluded,))
     assert plan.selected == ()
     assert plan.complete_conditional_coverage is True
+
+
+def test_coverage_sets_preserve_um_ux_ur_and_u_star_identity():
+    candidates = (
+        CoverageCandidate(
+            "AAPL", 20260814, 310000, "C", Decimal("1.2"), True, 1, 3, (), "MUST_OBSERVE"
+        ),
+        CoverageCandidate(
+            "MSFT", 20260814, 500000, "C", Decimal("0.1"), True, 1, 3, (), "PROVABLY_EXCLUDABLE"
+        ),
+        CoverageCandidate("NVDA", 20260814, 180000, "C", None, False, 1, 3, (), "UNRESOLVED"),
+    )
+    plan = build_coverage_plan(candidates, trade_limit=10, quote_limit=10)
+    assert {item["coverage_set"] for item in plan.as_dict()["candidates"]} == {"U_M", "U_X", "U_R"}
+    assert {item["coverage_set"] for item in plan.as_dict()["theoretical_u_star"]} == {"U_M", "U_R"}
+    assert plan.as_dict()["counts"]["u_star"] == 2
+    assert all(candidate.coverage_set != "U_X" for candidate in plan.selected)
+    assert any(item["reason"] == "PROVABLY_EXCLUDABLE_U_X" for item in plan.excluded)
+
+
+def test_unknown_bound_and_baseline_remain_unresolved_in_pilot_population():
+    contract = ThetaContract("BAC", 20260814, 40000, "C")
+    selection = UniverseSelection(
+        "BAC",
+        True,
+        20260814,
+        (contract,),
+        (),
+        (),
+        (),
+        (
+            {
+                "root": "BAC",
+                "expiration": 20260814,
+                "strike": 40000,
+                "right": "C",
+                "bid_price": "1",
+                "ask_price": "1.01",
+            },
+        ),
+    )
+    candidates = build_pilot_coverage_candidates((selection,))
+    assert len(candidates) == 1
+    assert candidates[0].coverage_set == "U_R"
+    assert candidates[0].upper_z is None
+    assert (
+        "PROSPECTIVE_DELTA_EQUIVALENT_UPPER_BOUND_UNAVAILABLE"
+        in candidates[0].missing_evidence_reasons
+    )
+
+
+def test_coverage_plan_replay_is_field_by_field_equal():
+    candidates = tuple(
+        CoverageCandidate(
+            "BAC",
+            20260814,
+            40000 + index,
+            "C",
+            None,
+            False,
+            index + 1,
+            3,
+            ("quote_classification",),
+            "UNRESOLVED",
+            ({"field": "delta", "status": "UNKNOWN"},),
+            ("delta_missing",),
+            ("alpaca_catalog",),
+        )
+        for index in range(3)
+    )
+    plan = build_coverage_plan(candidates, trade_limit=2, quote_limit=2)
+    assert replay_coverage_plan(plan.as_dict()).as_dict() == plan.as_dict()
+
+
+def test_paired_stream_ceiling_uses_ten_thousand_quote_capacity():
+    candidates = tuple(
+        CoverageCandidate("BAC", 20260814, 40000 + index, "C", None, False, 1, 1, (), "UNRESOLVED")
+        for index in range(10_001)
+    )
+    plan = build_coverage_plan(candidates)
+    assert len(plan.selected) == 10_000
+    assert plan.as_dict()["paired_stream_limit"] == 10_000
+    assert len(plan.excluded) == 1
+    assert plan.excluded[0]["reason"] == "CAPACITY_CONSTRAINED_COVERAGE"
 
 
 def test_shared_engine_persists_cluster_and_session_evidence():

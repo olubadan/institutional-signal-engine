@@ -130,6 +130,11 @@ async def test_assembled_phase4_runner_forwards_each_stage_once(monkeypatch: pyt
     assert result["status"] == "live_observation_complete"
     assert result["synchronized_input_count"] == 1
     assert result["decisions_persisted"] == 1
+    coverage = result["coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["counts"]["u_star"] == 1
+    assert coverage["counts"]["u_r"] == 1
+    assert coverage["counts"]["selected"] == 1
     assert stages.count("websocket_connected") == 1
     assert stages.count("subscriptions_acknowledged") == 1
     assert stages[-3:] == ["observation_completed", "persistence_drained", "report_emitted"]

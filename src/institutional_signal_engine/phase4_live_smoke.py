@@ -15,6 +15,11 @@ from zoneinfo import ZoneInfo
 from .config import Settings
 from .contract_mapping import AlpacaOptionContract, map_alpaca_contract, round_trip_validate
 from .impact import SHADOW_IMPACT_LIVE_SCORING_ENABLED
+from .impact_coverage import (
+    PILOT_COVERAGE_POPULATION_VERSION,
+    build_coverage_plan,
+    build_pilot_coverage_candidates,
+)
 from .liquidity import PHASE4_OBSERVATION_SPREAD_POLICY_VERSION, finalize_liquidity
 from .live_smoke import _secret
 from .live_smoke import run as run_signal_smoke
@@ -34,6 +39,7 @@ from .universe import (
     PILOT_SYMBOLS,
     AlpacaContractSelector,
     UniverseManifest,
+    UniverseSelection,
     allocate_subscription_capacity,
 )
 
@@ -286,8 +292,51 @@ async def run(
         spread_policy_version=PHASE4_OBSERVATION_SPREAD_POLICY_VERSION,
     )
     selections = enrichment.selections
+    baseline_symbols = frozenset(
+        str(key[0]).upper()
+        for key in historical.impact_baselines
+        if isinstance(key, tuple) and len(key) == 2
+    )
+    coverage_candidates = build_pilot_coverage_candidates(selections, baseline_symbols)
+    coverage_plan = build_coverage_plan(
+        coverage_candidates,
+        trade_limit=settings.phase4_trade_subscription_limit,
+        quote_limit=settings.phase4_quote_subscription_limit,
+    )
+    coverage_selected = {
+        (candidate.symbol, candidate.expiration, candidate.strike, candidate.right)
+        for candidate in coverage_plan.selected
+    }
+    coverage_selections = tuple(
+        UniverseSelection(
+            selection.symbol,
+            bool(
+                selection.included
+                and any(
+                    (contract.root, contract.expiration, contract.strike, contract.right)
+                    in coverage_selected
+                    for contract in selection.contracts
+                )
+            ),
+            selection.expiration,
+            tuple(
+                contract
+                for contract in selection.contracts
+                if (contract.root, contract.expiration, contract.strike, contract.right)
+                in coverage_selected
+            ),
+            selection.rejection_reasons,
+            (*selection.provenance, "coverage_plan"),
+            selection.provider_responses,
+            selection.contract_evidence,
+            selection.symbol_liquidity_evidence_source,
+            selection.symbol_liquidity_verified,
+            selection.policy_version,
+        )
+        for selection in selections
+    )
     allocation = allocate_subscription_capacity(
-        selections,
+        coverage_selections,
         prices,
         trade_limit=settings.phase4_trade_subscription_limit,
         quote_limit=settings.phase4_quote_subscription_limit,
@@ -355,6 +404,8 @@ async def run(
         synchronization_symbols=tuple(
             selection.symbol for selection in selections if selection.included
         ),
+        coverage_plan=coverage_plan.as_dict(),
+        coverage_candidate_population_version=PILOT_COVERAGE_POPULATION_VERSION,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -388,6 +439,7 @@ async def run(
         "alpaca_contracts_received": len(discovered),
         "contracts_accepted": sum(1 for result in mapping_results if result.accepted),
         "contracts_rejected": sum(1 for result in mapping_results if not result.accepted),
+        "coverage": coverage_plan.as_dict(),
         "mapping_failures": [
             {"field": field, "reason": reason, "count": count}
             for (field, reason), count in sorted(
@@ -485,7 +537,9 @@ async def run(
     try:
         signal_report = await run_signal_smoke(
             seconds,
-            symbols=tuple(selection.symbol for selection in selections if selection.included),
+            symbols=tuple(
+                selection.symbol for selection in coverage_selections if selection.included
+            ),
             contracts=plan,
             request_types=("TRADE", "QUOTE"),
             contract_metadata=contract_metadata,
@@ -548,6 +602,8 @@ async def run(
         rejected_event_diagnostics=tuple(
             item for item in raw_rejected_diagnostics if isinstance(item, dict)
         ),
+        coverage_plan=coverage_plan.as_dict(),
+        coverage_candidate_population_version=PILOT_COVERAGE_POPULATION_VERSION,
     )
     repository.record_universe(final_manifest.record())
     if isinstance(repository, PostgresRepository):

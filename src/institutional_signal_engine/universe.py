@@ -146,6 +146,8 @@ class UniverseManifest:
     synchronization_symbols: tuple[str, ...] = ()
     incomplete_state_reasons: dict[str, tuple[str, ...]] | None = None
     rejected_event_diagnostics: tuple[dict[str, object], ...] = ()
+    coverage_plan: dict[str, object] | None = None
+    coverage_candidate_population_version: str | None = None
 
     def record(self) -> dict[str, object]:
         return {
@@ -181,6 +183,8 @@ class UniverseManifest:
                 for symbol, reasons in (self.incomplete_state_reasons or {}).items()
             },
             "rejected_event_diagnostics": list(self.rejected_event_diagnostics),
+            "coverage_plan": self.coverage_plan or {},
+            "coverage_candidate_population_version": self.coverage_candidate_population_version,
         }
 
 
@@ -570,7 +574,7 @@ def allocate_subscription_capacity(
     selections: tuple[UniverseSelection, ...],
     underlying_prices: dict[str, Decimal],
     trade_limit: int = 15_000,
-    quote_limit: int = 15_000,
+    quote_limit: int = 10_000,
     max_contracts_per_symbol: int = 1_000,
 ) -> CapacityAllocation:
     """Allocate Standard subscriptions deterministically without truncation."""

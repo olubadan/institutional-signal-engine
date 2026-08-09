@@ -39,10 +39,14 @@ CONTROL_FAIL_SHADOW_FAIL.
 ## Coverage
 
 Conditional coverage uses `U_M`, `U_X`, and `U_R` and keeps unresolved upper
-bounds in the theoretical required set. TRADE capacity is 15,000 and QUOTE
-capacity is 10,000; they are enforced independently. When capacity binds the
-status is `CAPACITY_CONSTRAINED_COVERAGE`. The deterministic priority factors
-are bounded impact capability, existing Phase 4 liquidity rank quality, and
+bounds in the theoretical required set. The planner is now connected to the
+bounded 20-symbol pilot runner: every quote-liquid pilot candidate receives a
+versioned coverage decision, and only capacity-selected members of
+`U*=U_M∪U_R` reach the paired TRADE/QUOTE subscription plan. TRADE capacity
+is 15,000 and QUOTE capacity is 10,000, so paired observation is capped at
+10,000; they are enforced independently. When capacity binds the status is
+`CAPACITY_CONSTRAINED_COVERAGE`. The deterministic priority factors are
+bounded impact capability, existing Phase 4 liquidity rank quality, and
 evidence completeness, with versions and exclusion evidence persisted. No
 historical maximum is treated as a hard future bound.
 
@@ -80,3 +84,12 @@ p50 (21.425 ms p95, 22.881 ms max), and incremental shadow scoring was
 shared feature and sweep evidence remain the single persisted live path, and
 live `SHADOW_IMPACT_V1` scoring is disabled pending optimization; shadow and
 `CONTROL_V1` are calculated only in deterministic post-session replay.
+
+The pilot coverage manifest distinguishes the Alpaca-discovered 20-symbol
+candidate population, theoretical `U*`, the capacity-selected observation
+subset, and the provider-acknowledged subset. In the current implementation,
+the prospective `Q̄_j^Δ` upper bound, delta provenance, and exchange
+participation are unavailable at planning time, so those candidates remain
+`U_R`; this is evidence, not a defect. Market-wide cataloging, market-wide
+`U*`, a defensible universal upper-bound method, and a market-wide zero-miss
+guarantee are not implemented.

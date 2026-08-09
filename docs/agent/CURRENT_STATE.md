@@ -98,8 +98,12 @@
   reasons and retain raw evidence.
 - Conditional coverage uses `U_M`, `U_X`, and `U_R`, separate 15,000 TRADE and
   10,000 QUOTE capacities, versioned bounded priority factors, and persisted
-  capacity exclusions. No universal zero-miss claim is made.
-- Fixture verification: 152 hermetic tests pass, including shared-pipeline
+  capacity exclusions. The planner is now connected to the bounded 20-symbol
+  pilot runner; only capacity-selected U* members reach paired subscription.
+  Pilot prospective delta-demand bounds remain unavailable, so the current
+  pilot evidence is honestly classified as U_R rather than U_X. No universal
+  zero-miss claim is made.
+- Fixture verification: 156 hermetic tests pass, including shared-pipeline
   shadow persistence, Decimal boundary arithmetic, session decay/expiry,
   baseline provenance, conditional capacity, and async audit draining. Ruff
   format/lint and strict mypy pass. No live market/provider session was run.

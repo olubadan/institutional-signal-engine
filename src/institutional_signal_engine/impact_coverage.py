@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, cast
 
 from .impact import (
     IMPACT_COVERAGE_VERSION,
@@ -12,8 +12,11 @@ from .impact import (
     IMPACT_REQUIRED_EVIDENCE_FIELDS,
     IMPACT_REQUIRED_EVIDENCE_VERSION,
 )
+from .universe import UniverseSelection
 
 CoverageClass = Literal["MUST_OBSERVE", "PROVABLY_EXCLUDABLE", "UNRESOLVED"]
+PILOT_COVERAGE_POPULATION_VERSION = "phase4b-pilot-coverage-population-v1"
+UNKNOWN_EVIDENCE_POLICY_VERSION = "phase4b-unresolved-priority-v1"
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,18 @@ class CoverageCandidate:
     candidate_count: int
     available_evidence_fields: tuple[str, ...]
     coverage_class: CoverageClass
+    epistemic_inputs: tuple[dict[str, str], ...] = ()
+    missing_evidence_reasons: tuple[str, ...] = ()
+    evidence_provenance: tuple[str, ...] = ()
+    preprocessing_stage: str = "FINAL_LIQUIDITY_QUALIFIED"
+
+    @property
+    def coverage_set(self) -> str:
+        return {
+            "MUST_OBSERVE": "U_M",
+            "PROVABLY_EXCLUDABLE": "U_X",
+            "UNRESOLVED": "U_R",
+        }[self.coverage_class]
 
     @property
     def impact_capability(self) -> Decimal:
@@ -76,9 +91,18 @@ class CoverageCandidate:
             "upper_z": str(self.upper_z) if self.upper_z is not None else None,
             "hard_upper_bound": self.hard_upper_bound,
             "coverage_class": self.coverage_class,
+            "coverage_set": self.coverage_set,
+            "epistemic_inputs": [dict(value) for value in self.epistemic_inputs],
+            "missing_evidence_reasons": list(self.missing_evidence_reasons),
+            "evidence_provenance": list(self.evidence_provenance),
+            "preprocessing_stage": self.preprocessing_stage,
+            "unresolved_priority_policy_version": UNKNOWN_EVIDENCE_POLICY_VERSION,
             "impact_capability": str(self.impact_capability),
             "liquidity_quality": str(self.liquidity_quality),
             "evidence_completeness": str(self.evidence_completeness),
+            "available_evidence_fields": list(self.available_evidence_fields),
+            "liquidity_rank": self.liquidity_rank,
+            "candidate_count": self.candidate_count,
             "priority": str(self.priority),
             "coverage_version": IMPACT_COVERAGE_VERSION,
             "priority_version": IMPACT_PRIORITY_VERSION,
@@ -107,7 +131,30 @@ class CoveragePlan:
             "excluded": list(self.excluded),
             "complete_conditional_coverage": self.complete_conditional_coverage,
             "status": self.status,
+            "candidate_population_version": PILOT_COVERAGE_POPULATION_VERSION,
+            "candidate_population": "ALPACA_DISCOVERED_20_SYMBOL_PHASE4_PILOT_AFTER_LIQUIDITY",
+            "theoretical_u_star": [candidate.as_dict() for candidate in self._theoretical()],
+            "counts": {
+                "candidates": len(self.candidates),
+                "u_m": sum(candidate.coverage_set == "U_M" for candidate in self.candidates),
+                "u_x": sum(candidate.coverage_set == "U_X" for candidate in self.candidates),
+                "u_r": sum(candidate.coverage_set == "U_R" for candidate in self.candidates),
+                "u_star": len(self._theoretical()),
+                "selected": len(self.selected),
+                "capacity_excluded": sum(
+                    value.get("reason") == "CAPACITY_CONSTRAINED_COVERAGE"
+                    for value in self.excluded
+                ),
+            },
+            "paired_stream_limit": min(self.trade_limit, self.quote_limit),
         }
+
+    def _theoretical(self) -> tuple[CoverageCandidate, ...]:
+        return tuple(
+            candidate
+            for candidate in self.candidates
+            if candidate.coverage_class in {"MUST_OBSERVE", "UNRESOLVED"}
+        )
 
 
 def build_coverage_plan(
@@ -124,7 +171,7 @@ def build_coverage_plan(
     ordered = tuple(sorted(theoretical, key=lambda candidate: candidate.key))
     capacity = min(trade_limit, quote_limit)
     selected = ordered[:capacity]
-    excluded = tuple(
+    capacity_excluded = tuple(
         {
             **candidate.as_dict(),
             "rank": rank,
@@ -136,6 +183,17 @@ def build_coverage_plan(
         for rank, candidate in enumerate(ordered, 1)
         if candidate not in selected
     )
+    non_observed = tuple(
+        {
+            **candidate.as_dict(),
+            "rank": None,
+            "binding_capacity": None,
+            "reason": "PROVABLY_EXCLUDABLE_U_X",
+        }
+        for candidate in candidates
+        if candidate.coverage_class == "PROVABLY_EXCLUDABLE"
+    )
+    excluded = capacity_excluded + non_observed
     complete = len(ordered) <= trade_limit and len(ordered) <= quote_limit
     return CoveragePlan(
         candidates=candidates,
@@ -145,4 +203,138 @@ def build_coverage_plan(
         quote_limit=quote_limit,
         complete_conditional_coverage=complete,
         status="CONDITIONAL_ZERO_MISS" if complete else "CAPACITY_CONSTRAINED_COVERAGE",
+    )
+
+
+def build_pilot_coverage_candidates(
+    selections: tuple[UniverseSelection, ...],
+    baseline_symbols: frozenset[str] = frozenset(),
+) -> tuple[CoverageCandidate, ...]:
+    """Build replayable U_M/U_X/U_R candidates from the bounded pilot output.
+
+    Prospective delta-equivalent demand bounds are not available from the
+    current provider evidence, so these candidates remain U_R. This helper
+    never turns missing evidence into a hard exclusion or an impact claim.
+    """
+    candidates: list[CoverageCandidate] = []
+    for selection in selections:
+        evidence_by_key = {
+            (
+                int(str(value.get("expiration", 0))),
+                int(str(value.get("strike", 0))),
+                str(value.get("right", "")),
+            ): value
+            for value in selection.contract_evidence
+        }
+        ordered = tuple(
+            sorted(
+                set(selection.contracts),
+                key=lambda contract: (contract.expiration, contract.strike, contract.right),
+            )
+        )
+        for rank, contract in enumerate(ordered, 1):
+            evidence = evidence_by_key.get(
+                (contract.expiration, contract.strike, contract.right), {}
+            )
+            has_quote = bool(evidence.get("bid_price") and evidence.get("ask_price"))
+            has_baseline = selection.symbol.upper() in baseline_symbols
+            inputs = (
+                {"field": "prospective_delta_equivalent_upper_bound", "status": "UNKNOWN"},
+                {
+                    "field": "quote_classification",
+                    "status": "OBSERVED" if has_quote else "UNKNOWN",
+                },
+                {
+                    "field": "volume_baseline",
+                    "status": "OBSERVED" if has_baseline else "UNKNOWN",
+                },
+                {
+                    "field": "volatility_baseline",
+                    "status": "OBSERVED" if has_baseline else "UNKNOWN",
+                },
+                {"field": "delta", "status": "UNKNOWN"},
+                {"field": "exchange_identity", "status": "UNKNOWN"},
+            )
+            missing = (
+                "PROSPECTIVE_DELTA_EQUIVALENT_UPPER_BOUND_UNAVAILABLE",
+                "DELTA_PROVENANCE_UNAVAILABLE",
+                "EXCHANGE_PARTICIPATION_UNAVAILABLE",
+            )
+            candidates.append(
+                CoverageCandidate(
+                    selection.symbol,
+                    contract.expiration,
+                    contract.strike,
+                    contract.right,
+                    None,
+                    False,
+                    rank,
+                    len(ordered),
+                    tuple(
+                        value["field"]
+                        for value in inputs
+                        if value["status"] == "OBSERVED"
+                        and value["field"] in IMPACT_REQUIRED_EVIDENCE_FIELDS
+                    ),
+                    "UNRESOLVED",
+                    inputs,
+                    missing,
+                    ("ALPACA_CONTRACT_CATALOG", "ALPACA_OPTION_SNAPSHOT"),
+                )
+            )
+    return tuple(candidates)
+
+
+def _candidate_from_dict(value: dict[str, object]) -> CoverageCandidate:
+    raw_class = str(value.get("coverage_class", "UNRESOLVED"))
+    if raw_class not in {"MUST_OBSERVE", "PROVABLY_EXCLUDABLE", "UNRESOLVED"}:
+        raise ValueError("invalid_coverage_class")
+    raw_inputs = value.get("epistemic_inputs", [])
+    input_values = raw_inputs if isinstance(raw_inputs, (list, tuple)) else ()
+    inputs = tuple(
+        {"field": str(item.get("field")), "status": str(item.get("status"))}
+        for item in input_values
+        if isinstance(item, dict) and "field" in item and "status" in item
+    )
+    required_fields = value.get("available_evidence_fields", [])
+    missing_reasons = value.get("missing_evidence_reasons", [])
+    provenance = value.get("evidence_provenance", [])
+    required_values = required_fields if isinstance(required_fields, (list, tuple)) else ()
+    missing_values = missing_reasons if isinstance(missing_reasons, (list, tuple)) else ()
+    provenance_values = provenance if isinstance(provenance, (list, tuple)) else ()
+    raw_upper = value.get("upper_z")
+    return CoverageCandidate(
+        str(value["symbol"]),
+        int(str(value["expiration"])),
+        int(str(value["strike"])),
+        str(value["right"]),
+        Decimal(str(raw_upper)) if raw_upper is not None else None,
+        bool(value.get("hard_upper_bound", False)),
+        int(str(value.get("liquidity_rank", 1))),
+        int(str(value.get("candidate_count", 1))),
+        tuple(str(item) for item in required_values),
+        raw_class,  # type: ignore[arg-type]
+        inputs,
+        tuple(str(item) for item in missing_values),
+        tuple(str(item) for item in provenance_values),
+        str(value.get("preprocessing_stage", "FINAL_LIQUIDITY_QUALIFIED")),
+    )
+
+
+def replay_coverage_plan(record: dict[str, object]) -> CoveragePlan:
+    """Reconstruct a coverage plan using only its persisted candidate evidence."""
+    raw_candidates = record.get("candidates", [])
+    candidates = (
+        tuple(
+            _candidate_from_dict(value)
+            for value in cast(list[object] | tuple[object, ...], raw_candidates)
+            if isinstance(value, dict)
+        )
+        if isinstance(raw_candidates, (list, tuple))
+        else ()
+    )
+    return build_coverage_plan(
+        candidates,
+        trade_limit=int(str(record["trade_limit"])),
+        quote_limit=int(str(record["quote_limit"])),
     )
