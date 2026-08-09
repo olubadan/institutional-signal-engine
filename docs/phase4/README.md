@@ -1,5 +1,10 @@
 # Phase 4: live multi-symbol universe validation
 
+Phase 4 is merged at main commit `b62d017dc572fd4dfbef99afccfc3f01b4399840`.
+Phase 4B mathematical footprint validation is prepared separately on
+`feat/phase-4b-impact-shadow`; see [`../phase4b/README.md`](../phase4b/README.md)
+and the [Monday runbook](../phase4b/MONDAY_RUNBOOK.md). Phase 5 has not started.
+
 Phase 4 live multi-symbol validation is complete on implementation head
 `88763d451bf7b07033eaec999d106879ecfaa285`; PR #4 is ready for owner review
 and merge authorization. The final extended run was

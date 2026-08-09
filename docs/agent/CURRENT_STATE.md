@@ -5,21 +5,17 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 4 — live multi-symbol universe validation complete;
-  PR #4 is ready for owner merge authorization
+- **Current phase:** Phase 4 merged; Phase 4B mathematical footprint validation
+  is in weekend preparation on a draft branch; Phase 5 has not started
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline; Phase 2 — reproducible Vast environment verified with
   documented Ubuntu 22.04/finite-duration exception and merged in PR #2
-- **Active branch:** `feat/phase-4-live-universe`
-- **Validated implementation head:** `88763d451bf7b07033eaec999d106879ecfaa285`
-- **Latest authoritative main commit:** `a3b34c5166040797123e943c23f0428344198ac3`.
-  Phase 2 implementation is verified through
-  `1b2920ce7a6a305c9b9cfa4f395b4f06862d1a68`; the active branch head after
-  session closure is the journal-close commit containing this snapshot.
-- **Pull-request state:** PRs #1, #2, and #3 are merged into `main`; Phase 4 PR
-  [#4](https://github.com/olubadan/institutional-signal-engine/pull/4) is open,
-  ready for review, cleanly mergeable, and unmerged at the validated closure
-  head. The owner must authorize the merge.
+- **Active branch:** `feat/phase-4b-impact-shadow`
+- **Phase 4 merge:** PR #4 is merged into `main` at
+  `b62d017dc572fd4dfbef99afccfc3f01b4399840`; resulting-main CI run
+  `31209185798` passed.
+- **Pull-request state:** Phase 4B draft PR is to be opened from
+  `feat/phase-4b-impact-shadow`; Phase 4 PR #4 is closed and merged.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
   correlated Standard exact-contract requests, dynamic-universe selection ports,
@@ -83,9 +79,35 @@
   with field-by-field equality. This proof applies to this corrected run under
   its recorded engine, configuration and condition-mapping versions; it does
   not claim that every historical run is replayable.
-- **Next action:** Owner review and merge authorization for PR #4. No additional
-  Phase 4 observation is required. Phase 5 begins only after PR #4 is merged
-  and the owner explicitly approves it.
+- **Next action:** Complete weekend Phase 4B verification and exact-head CI;
+  Monday requires only deployment preflight and explicit live-observation
+  authorization. Phase 5 begins only after Phase 4B scope is complete and the
+  owner explicitly approves it.
+
+## Phase 4B weekend preparation — SESSION-0022
+
+- `SHADOW_IMPACT_V1` is a research-only mathematical detector attached to the
+  existing shared normalized-event, quote-classification, sweep, and audit
+  pipeline. It does not run a second live engine and cannot alter `CONTROL_V1`.
+- The implemented formulas use Decimal premium, signed/gross delta-equivalent
+  demand, coherence, five-minute Alpaca historical baselines, `Y=1` from
+  `RESEARCH_ASSUMPTION_V1`, `pi=0.0025`, one-second clusters, and 30-minute
+  decayed session demand. Missing delta or fewer than 20 completed baseline
+  sessions fail closed with explicit reasons.
+- Conditional coverage uses `U_M`, `U_X`, and `U_R`, separate 15,000 TRADE and
+  10,000 QUOTE capacities, versioned bounded priority factors, and persisted
+  capacity exclusions. No universal zero-miss claim is made.
+- Fixture verification: 144 hermetic tests pass, including shared-pipeline
+  shadow persistence, Decimal boundary arithmetic, session decay/expiry,
+  baseline provenance, conditional capacity, and async audit draining. Ruff
+  format/lint and strict mypy pass. No live market/provider session was run.
+- No genuine mathematical footprint has been validated yet. The existing
+  Phase 4 observation remains unchanged: zero qualifying fixed-dollar sweeps
+  was an observed market result, not a pipeline failure. Trading is disabled;
+  orders remain `0/0`.
+- RAID: `docs/governance/RAID.md`; Monday runbook:
+  `docs/phase4b/MONDAY_RUNBOOK.md`; design:
+  `docs/phase4b/README.md`.
 
 ## Final engineering review — 20260805
 
