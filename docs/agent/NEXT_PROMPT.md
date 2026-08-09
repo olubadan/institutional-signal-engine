@@ -8,4 +8,8 @@ branch, and verify exact-head CI. Do not run a live provider session this
 weekend, retry ThetaData REST/OI endpoints, construct orders, merge the draft
 PR, or begin Phase 5. Monday requires only preflight and explicit owner
 authorization for live observation.
+
+The published draft is PR #5 at head
+cdc51fd48a6b4873a45915ae5d3d935a6c771f69; exact-head CI runs 31290155862 and
+31290161829 passed. Monday runbook: docs/phase4b/MONDAY_RUNBOOK.md.
 ```
