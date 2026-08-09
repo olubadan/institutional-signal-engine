@@ -6,7 +6,12 @@ import pytest
 
 from institutional_signal_engine.config import Settings
 from institutional_signal_engine.impact import (
+    DELTA_PROVENANCE_VERSION,
+    IMPACT_COEFFICIENT,
+    IMPACT_COEFFICIENT_SOURCE,
     IMPACT_DECAY_MINUTES,
+    IMPACT_TARGET_MOVE,
+    IMPACT_TARGET_MOVE_SOURCE,
     ImpactBaseline,
     ShadowImpactEngine,
     calculate_five_minute_baseline,
@@ -70,7 +75,7 @@ def events_for(
             "classification_confidence": 1,
             "trade_size": 4,
             "delta": delta,
-            "delta_provenance": "PROVIDER_EVIDENCE_V1" if delta is not None else None,
+            "delta_provenance": "ALPACA_PROVIDER_DELTA_V1" if delta is not None else None,
         }
         for _ in item["constituent_trade_ids"]  # type: ignore[union-attr]
     ]
@@ -83,14 +88,14 @@ def test_signed_and_gross_delta_equivalent_demand_and_cancellation():
                 "trade_classification": "ask",
                 "classification_confidence": 1,
                 "delta": "0.5",
-                "delta_provenance": "v",
+                "delta_provenance": "ALPACA_PROVIDER_DELTA_V1",
                 "trade_size": 10,
             },
             {
                 "trade_classification": "bid",
                 "classification_confidence": 1,
                 "delta": "0.5",
-                "delta_provenance": "v",
+                "delta_provenance": "ALPACA_PROVIDER_DELTA_V1",
                 "trade_size": 4,
             },
         ]
@@ -107,7 +112,7 @@ def test_unknown_is_not_force_classified_and_zero_denominator_is_explicit():
             {
                 "trade_classification": "unknown",
                 "delta": "0.5",
-                "delta_provenance": "v",
+                "delta_provenance": "ALPACA_PROVIDER_DELTA_V1",
                 "trade_size": 1,
             }
         ]
@@ -123,6 +128,86 @@ def test_missing_delta_is_fail_closed():
     )
     assert signed is gross is coherence is None
     assert reasons == ("IMPACT_DELTA_UNAVAILABLE",)
+
+
+def test_impact_constants_and_serialized_baseline_fields_are_separate():
+    item = audit()
+    result = evaluate_cluster(item, events_for(item), baseline())
+    serialized = result.as_dict()
+    assert IMPACT_COEFFICIENT == Decimal(1)
+    assert IMPACT_COEFFICIENT_SOURCE == "RESEARCH_ASSUMPTION_V1"
+    assert IMPACT_TARGET_MOVE == Decimal("0.0025")
+    assert IMPACT_TARGET_MOVE_SOURCE == "OWNER_SELECTED_TARGET_UNDERLYING_MOVE"
+    assert result.impact_coefficient == Decimal(1)
+    assert result.impact_coefficient_source == "RESEARCH_ASSUMPTION_V1"
+    assert result.target_move == Decimal("0.0025")
+    assert result.target_move_source == "OWNER_SELECTED_TARGET_UNDERLYING_MOVE"
+    assert result.expected_volatility == Decimal("0.01")
+    assert result.expected_volume == Decimal(19200)
+    assert serialized["impact_coefficient"] == "1"
+    assert serialized["expected_volatility"] == "0.01"
+    assert serialized["expected_volume"] == "19200"
+    assert serialized["delta_provenance_version"] == DELTA_PROVENANCE_VERSION
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    ["ALPACA_PROVIDER_DELTA_V1", "THETADATA_PROVIDER_DELTA_V1", "DETERMINISTIC_OPTION_DELTA_V1"],
+)
+def test_delta_provenance_allowlist_accepts_provider_and_versioned_calculation(provenance: str):
+    signed, gross, coherence, reasons = delta_equivalent(
+        [
+            {
+                "trade_classification": "ask",
+                "delta": "0.5",
+                "delta_provenance": provenance,
+                "trade_size": 1,
+            }
+        ]
+    )
+    assert signed == gross == Decimal(50)
+    assert coherence == Decimal(1)
+    assert reasons == ()
+
+
+@pytest.mark.parametrize(
+    ("event", "reason"),
+    [
+        (
+            {"trade_classification": "ask", "delta": "0.5", "trade_size": 1},
+            "IMPACT_DELTA_PROVENANCE_UNAVAILABLE",
+        ),
+        (
+            {
+                "trade_classification": "ask",
+                "delta": "0.5",
+                "delta_provenance": "UNSUPPORTED",
+                "trade_size": 1,
+            },
+            "IMPACT_DELTA_PROVENANCE_UNAVAILABLE",
+        ),
+        ({"trade_classification": "ask", "trade_size": 1}, "IMPACT_DELTA_UNAVAILABLE"),
+    ],
+)
+def test_numeric_delta_without_supported_provenance_fails_closed(
+    event: dict[str, object], reason: str
+):
+    signed, gross, coherence, reasons = delta_equivalent([event])
+    assert signed is gross is coherence is None
+    assert reasons == (reason,)
+
+
+def test_mixed_delta_provenance_preserves_raw_evidence_and_blocks_cluster():
+    item = audit()
+    events = events_for(item)
+    events[1] = {**events[1], "delta_provenance": "UNSUPPORTED"}
+    result = evaluate_cluster(item, events, baseline())
+    assert result.shadow_qualified is False
+    assert "IMPACT_DELTA_PROVENANCE_UNAVAILABLE" in result.failed_reasons
+    assert result.delta_evidence[1]["supplied_value"] == "1"
+    assert result.delta_evidence[1]["provenance_state"] == "UNSUPPORTED"
+    replayed = result.as_dict()
+    assert replayed["delta_evidence"] == list(result.delta_evidence)
 
 
 @pytest.mark.parametrize(
@@ -274,6 +359,12 @@ def test_shared_engine_persists_cluster_and_session_evidence():
         engine.accept_event(UUID(str(event_id)), payload)
     cluster, session = engine.process_audit(item)
     assert cluster["model_version"] == "SHADOW_IMPACT_V1"
+    assert cluster["impact_coefficient"] == "1"
+    assert cluster["impact_coefficient_source"] == "RESEARCH_ASSUMPTION_V1"
+    assert cluster["target_move"] == "0.0025"
+    assert cluster["target_move_source"] == "OWNER_SELECTED_TARGET_UNDERLYING_MOVE"
+    assert cluster["expected_volume"] == str(baseline().expected_volume)
+    assert cluster["expected_volatility"] == str(baseline().expected_volatility)
     assert session["run_id"] == str(run_id)
     replay = ShadowImpactEngine.replay(run_id, (item,), engine.events, {"BAC": baseline()})
     assert replay == (cluster,)
@@ -323,7 +414,7 @@ def test_shadow_is_attached_to_shared_pipeline_and_not_a_second_ingress_path():
                 "trade_size": 5,
                 "exchange": exchange,
                 "delta": Decimal("0.5"),
-                "delta_provenance": "PROVIDER_EVIDENCE_V1",
+                "delta_provenance": "ALPACA_PROVIDER_DELTA_V1",
                 "quote_context": {
                     "bid": Decimal(99),
                     "ask": Decimal(100),

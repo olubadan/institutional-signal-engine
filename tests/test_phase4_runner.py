@@ -87,6 +87,7 @@ async def test_assembled_phase4_runner_forwards_each_stage_once(monkeypatch: pyt
 
     async def fake_signal_smoke(*_args: object, stage_callback=None, **_kwargs: object):
         assert stage_callback is not None
+        assert _kwargs["impact_baselines"] is None
         for stage in (
             "websocket_connected",
             "subscriptions_acknowledged",

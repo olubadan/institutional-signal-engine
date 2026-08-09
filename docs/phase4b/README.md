@@ -20,8 +20,11 @@ Alpaca historical bars, excluding the current session and requiring at least
 effective date, sample size, adjustment metadata, and provenance. Missing or
 insufficient history produces `IMPACT_BASELINE_INSUFFICIENT`.
 
-The model uses `pi=0.0025`, `Y=1` with source `RESEARCH_ASSUMPTION_V1`, and
-calculates `I=Y*sigma*sqrt(abs(Q_signed_delta)/V)` and `Z=I/pi`. Cluster
+The model persists `Y=1` as `impact_coefficient` with source
+`RESEARCH_ASSUMPTION_V1`, and `pi=0.0025` as `target_move` with source
+`OWNER_SELECTED_TARGET_UNDERLYING_MOVE`. Expected volatility and expected
+volume remain separate frozen baseline values. It calculates
+`I=Y*sigma*sqrt(abs(Q_signed_delta)/V)` and `Z=I/pi`. Cluster
 qualification requires `Z>=1`, coherence `>=0.65`, three valid versioned
 exchanges, ask percentage `>=65`, UNKNOWN premium percentage `<=50`, and the
 one-second window. Session state uses fresh qualifying clusters and 30-minute
@@ -56,3 +59,24 @@ fixture-only; no live provider session is authorized here. The bounded
 experiment requires at least five complete regular sessions and 30 shadow
 footprints before reporting one of `RETAIN CONTROL`, `REVISE IMPACT MODEL`,
 `PROMOTE IMPACT MODEL`, or `NO FOOTPRINT DEMONSTRATED`.
+
+## Weekend benchmark and Monday execution mode
+
+Delta values are usable only with the versioned allowlist
+`impact-delta-provenance-v1`: `ALPACA_PROVIDER_DELTA_V1`,
+`THETADATA_PROVIDER_DELTA_V1`, or `DETERMINISTIC_OPTION_DELTA_V1`. Missing
+delta records `IMPACT_DELTA_UNAVAILABLE`; numeric delta without recognized
+provenance records `IMPACT_DELTA_PROVENANCE_UNAVAILABLE`. Raw values and
+provenance state are retained for replay.
+
+The deterministic benchmark command is
+`uv run python scripts/benchmark_phase4b_impact.py`. It used 256 clusters,
+three constituents per cluster, three warmup samples, and 15 measured
+samples on local hermetic Python 3.12. Shared/control feature processing was
+6.746 ms p50 (7.874 ms p95, 8.207 ms max), combined processing was 18.255 ms
+p50 (21.425 ms p95, 22.881 ms max), and incremental shadow scoring was
+11.425 ms p50 (15.033 ms p95, 16.174 ms max). Measured p50 overhead was
+169.36%, above the 5% budget. The approved fallback therefore applies:
+shared feature and sweep evidence remain the single persisted live path, and
+live `SHADOW_IMPACT_V1` scoring is disabled pending optimization; shadow and
+`CONTROL_V1` are calculated only in deterministic post-session replay.

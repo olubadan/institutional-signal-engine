@@ -13,7 +13,12 @@ from zoneinfo import ZoneInfo
 from pydantic import SecretStr
 
 from .config import Settings
-from .impact import ImpactBaseline, ShadowImpactEngine
+from .impact import (
+    IMPACT_MODEL_VERSION,
+    SHADOW_IMPACT_LIVE_SCORING_STATUS,
+    ImpactBaseline,
+    ShadowImpactEngine,
+)
 from .indicators import IndicatorCalculator
 from .persistence import InMemoryRepository, PostgresRepository
 from .persistence_async import AsyncAuditWriter
@@ -486,6 +491,10 @@ async def run(
         "orders_constructed": 0,
         "orders_submitted": 0,
         "shadow_impact_model": "SHADOW_IMPACT_V1" if impact_engine is not None else None,
+        "shadow_impact_live_scoring": (
+            "ENABLED" if impact_engine is not None else SHADOW_IMPACT_LIVE_SCORING_STATUS
+        ),
+        "shadow_impact_offline_replay_model": IMPACT_MODEL_VERSION,
         "shadow_impact_clusters": pipeline.impact_results,
         "shadow_impact_sessions": impact_engine.sessions if impact_engine is not None else [],
     }

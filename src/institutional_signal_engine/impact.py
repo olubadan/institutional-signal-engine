@@ -23,9 +23,22 @@ IMPACT_BASELINE_VERSION = "impact-baseline-5m-v1"
 IMPACT_COVERAGE_VERSION = "impact-coverage-v1"
 IMPACT_PRIORITY_VERSION = "impact-priority-v1"
 IMPACT_REQUIRED_EVIDENCE_VERSION = "impact-evidence-fields-v1"
-IMPACT_PI = Decimal("0.0025")
-IMPACT_TARGET_MOVE = Decimal(1)
-IMPACT_TARGET_MOVE_SOURCE = "RESEARCH_ASSUMPTION_V1"
+IMPACT_COEFFICIENT = Decimal("1")  # noqa: FURB157 - exact owner-specified literal
+IMPACT_COEFFICIENT_SOURCE = "RESEARCH_ASSUMPTION_V1"
+IMPACT_TARGET_MOVE = Decimal("0.0025")
+IMPACT_TARGET_MOVE_SOURCE = "OWNER_SELECTED_TARGET_UNDERLYING_MOVE"
+SHADOW_IMPACT_LIVE_SCORING_ENABLED = False
+SHADOW_IMPACT_LIVE_SCORING_STATUS = "DISABLED_PENDING_OPTIMIZATION"
+# Compatibility alias for callers that named the denominator pi.
+IMPACT_PI = IMPACT_TARGET_MOVE
+DELTA_PROVENANCE_VERSION = "impact-delta-provenance-v1"
+VALID_DELTA_PROVENANCE = frozenset(
+    {
+        "ALPACA_PROVIDER_DELTA_V1",
+        "THETADATA_PROVIDER_DELTA_V1",
+        "DETERMINISTIC_OPTION_DELTA_V1",
+    }
+)
 IMPACT_HORIZON_MINUTES = 5
 IMPACT_DECAY_MINUTES = 30
 IMPACT_MIN_COHERENCE = Decimal("0.65")
@@ -81,7 +94,10 @@ class ImpactClusterResult:
     gross_delta_activity: Decimal | None
     coherence: Decimal | None
     baseline: ImpactBaseline | None
-    impact_coefficient: Decimal | None
+    impact_coefficient: Decimal
+    impact_coefficient_source: str
+    expected_volume: Decimal | None
+    expected_volatility: Decimal | None
     target_move: Decimal
     estimated_impact: Decimal | None
     z_score: Decimal | None
@@ -91,6 +107,7 @@ class ImpactClusterResult:
     thresholds: Mapping[str, bool]
     failed_reasons: tuple[str, ...]
     comparison: str
+    delta_evidence: tuple[dict[str, object], ...] = ()
     model_version: str = IMPACT_MODEL_VERSION
     target_move_source: str = IMPACT_TARGET_MOVE_SOURCE
 
@@ -130,8 +147,13 @@ class ImpactClusterResult:
             ),
             "coherence": str(self.coherence) if self.coherence is not None else None,
             "baseline": baseline,
-            "impact_coefficient": (
-                str(self.impact_coefficient) if self.impact_coefficient is not None else None
+            "impact_coefficient": (str(self.impact_coefficient)),
+            "impact_coefficient_source": self.impact_coefficient_source,
+            "expected_volume": (
+                str(self.expected_volume) if self.expected_volume is not None else None
+            ),
+            "expected_volatility": (
+                str(self.expected_volatility) if self.expected_volatility is not None else None
             ),
             "target_move": str(self.target_move),
             "target_move_source": self.target_move_source,
@@ -145,6 +167,8 @@ class ImpactClusterResult:
             "thresholds": dict(self.thresholds),
             "failed_reasons": list(self.failed_reasons),
             "comparison": self.comparison,
+            "delta_evidence": [dict(value) for value in self.delta_evidence],
+            "delta_provenance_version": DELTA_PROVENANCE_VERSION,
             "model_version": self.model_version,
         }
 
@@ -331,8 +355,12 @@ def delta_equivalent(
     any_delta = False
     for event in events:
         delta = _decimal(event.get("delta", event.get("option_delta")))
-        if delta is None or not event.get("delta_provenance", event.get("option_delta_provenance")):
+        provenance = event.get("delta_provenance", event.get("option_delta_provenance"))
+        if delta is None:
             reasons.append("IMPACT_DELTA_UNAVAILABLE")
+            continue
+        if provenance not in VALID_DELTA_PROVENANCE:
+            reasons.append("IMPACT_DELTA_PROVENANCE_UNAVAILABLE")
             continue
         any_delta = True
         side = str(event.get("trade_classification", "unknown")).lower()
@@ -350,6 +378,30 @@ def delta_equivalent(
     return signed, gross, coherence, tuple(dict.fromkeys(reasons))
 
 
+def _delta_evidence(events: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], ...]:
+    evidence: list[dict[str, object]] = []
+    for event in events:
+        raw = event.get("delta", event.get("option_delta"))
+        provenance = event.get("delta_provenance", event.get("option_delta_provenance"))
+        numeric = _decimal(raw)
+        state = (
+            "MISSING"
+            if numeric is None
+            else "VALID"
+            if provenance in VALID_DELTA_PROVENANCE
+            else "UNSUPPORTED"
+        )
+        evidence.append(
+            {
+                "supplied_value": str(raw) if raw is not None else None,
+                "provenance": str(provenance) if provenance is not None else None,
+                "provenance_state": state,
+                "provenance_version": DELTA_PROVENANCE_VERSION,
+            }
+        )
+    return tuple(evidence)
+
+
 def evaluate_cluster(
     audit: Mapping[str, object],
     events: Sequence[Mapping[str, object]],
@@ -359,18 +411,19 @@ def evaluate_cluster(
     contract = _contract_from_audit(audit)
     control = bool(audit.get("qualification_state"))
     signed, gross, coherence, delta_reasons = delta_equivalent(events)
-    coefficient: Decimal | None = None
+    coefficient = IMPACT_COEFFICIENT
     estimated: Decimal | None = None
     z_score: Decimal | None = None
     failed = list(delta_reasons)
     if baseline is None or not baseline.sufficient:
         failed.append("IMPACT_BASELINE_INSUFFICIENT")
     elif signed is not None and baseline.expected_volume > 0:
-        coefficient = baseline.expected_volatility
         estimated = (
-            coefficient * IMPACT_TARGET_MOVE * (abs(signed) / baseline.expected_volume).sqrt()
+            IMPACT_COEFFICIENT
+            * baseline.expected_volatility
+            * (abs(signed) / baseline.expected_volume).sqrt()
         )
-        z_score = estimated / IMPACT_PI
+        z_score = estimated / IMPACT_TARGET_MOVE
     elif signed is None:
         failed.append("IMPACT_DELTA_UNAVAILABLE")
     ask = _decimal(audit.get("ask_side_percentage"))
@@ -393,7 +446,13 @@ def evaluate_cluster(
         if not passed:
             failed.append(f"IMPACT_THRESHOLD_{name.upper()}_FAILED")
     shadow = all(thresholds.values()) and not any(
-        reason in {"IMPACT_BASELINE_INSUFFICIENT", "IMPACT_DELTA_UNAVAILABLE"} for reason in failed
+        reason
+        in {
+            "IMPACT_BASELINE_INSUFFICIENT",
+            "IMPACT_DELTA_UNAVAILABLE",
+            "IMPACT_DELTA_PROVENANCE_UNAVAILABLE",
+        }
+        for reason in failed
     )
     return ImpactClusterResult(
         cluster_id=str(audit["cluster_id"]),
@@ -408,6 +467,9 @@ def evaluate_cluster(
         coherence=coherence,
         baseline=baseline,
         impact_coefficient=coefficient,
+        impact_coefficient_source=IMPACT_COEFFICIENT_SOURCE,
+        expected_volume=baseline.expected_volume if baseline is not None else None,
+        expected_volatility=baseline.expected_volatility if baseline is not None else None,
         target_move=IMPACT_TARGET_MOVE,
         estimated_impact=estimated,
         z_score=z_score,
@@ -417,6 +479,7 @@ def evaluate_cluster(
         thresholds=thresholds,
         failed_reasons=tuple(dict.fromkeys(failed)),
         comparison=_comparison(control, shadow),
+        delta_evidence=_delta_evidence(events),
     )
 
 

@@ -14,7 +14,7 @@
 - **Phase 4 merge:** PR #4 is merged into `main` at
   `b62d017dc572fd4dfbef99afccfc3f01b4399840`; resulting-main CI run
   `31209185798` passed.
-- **Pull-request state:** Phase 4B draft PR is to be opened from
+- **Pull-request state:** Phase 4B draft PR #5 is open from
   `feat/phase-4b-impact-shadow`; Phase 4 PR #4 is closed and merged.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
@@ -90,17 +90,26 @@
   existing shared normalized-event, quote-classification, sweep, and audit
   pipeline. It does not run a second live engine and cannot alter `CONTROL_V1`.
 - The implemented formulas use Decimal premium, signed/gross delta-equivalent
-  demand, coherence, five-minute Alpaca historical baselines, `Y=1` from
-  `RESEARCH_ASSUMPTION_V1`, `pi=0.0025`, one-second clusters, and 30-minute
-  decayed session demand. Missing delta or fewer than 20 completed baseline
-  sessions fail closed with explicit reasons.
+  demand, coherence, five-minute Alpaca historical baselines, separate
+  `impact_coefficient=1` (`RESEARCH_ASSUMPTION_V1`) and
+  `target_move=0.0025` (`OWNER_SELECTED_TARGET_UNDERLYING_MOVE`), one-second
+  clusters, and 30-minute decayed session demand. Missing delta or numeric
+  delta without recognized versioned provenance fail closed with explicit
+  reasons and retain raw evidence.
 - Conditional coverage uses `U_M`, `U_X`, and `U_R`, separate 15,000 TRADE and
   10,000 QUOTE capacities, versioned bounded priority factors, and persisted
   capacity exclusions. No universal zero-miss claim is made.
-- Fixture verification: 144 hermetic tests pass, including shared-pipeline
+- Fixture verification: 152 hermetic tests pass, including shared-pipeline
   shadow persistence, Decimal boundary arithmetic, session decay/expiry,
   baseline provenance, conditional capacity, and async audit draining. Ruff
   format/lint and strict mypy pass. No live market/provider session was run.
+- The deterministic benchmark used 256 clusters, three warmup samples, and 15
+  measured samples. Shared/control processing was 6.746 ms p50 and combined
+  processing was 18.255 ms p50, for 169.36% incremental p50 overhead. This
+  exceeds the approved 5% budget, so the approved fallback is active: the
+  shared feature vector and sweep evidence are persisted, while live shadow
+  scoring is disabled pending optimization; shadow and CONTROL_V1 scoring are
+  post-session replay work only.
 - No genuine mathematical footprint has been validated yet. The existing
   Phase 4 observation remains unchanged: zero qualifying fixed-dollar sweeps
   was an observed market result, not a pipeline failure. Trading is disabled;

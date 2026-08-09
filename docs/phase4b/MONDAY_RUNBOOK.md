@@ -23,7 +23,10 @@ This runbook is preparation only. Do not launch it during the weekend.
    independent TRADE/QUOTE capacity results, and every deterministic capacity
    exclusion. Do not retry ThetaData REST discovery or OI endpoints.
 8. Verify the single shared provider/subscription/normalization/quote/
-   persistence pipeline and the ordered individual-contract plan.
+   persistence pipeline and the ordered individual-contract plan. Live
+   `SHADOW_IMPACT_V1` scoring is disabled pending optimization because the
+   weekend benchmark measured 169.36% p50 incremental overhead; retain the
+   shared feature/sweep evidence for offline scoring.
 9. Subscribe individual ThetaData Standard TRADE and QUOTE streams; correlate
    only `REQ_RESPONSE.header.req_id` and validate incoming identities against
    the acknowledged registry. Never use `STREAM_BULK`.

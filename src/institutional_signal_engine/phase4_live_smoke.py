@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .contract_mapping import AlpacaOptionContract, map_alpaca_contract, round_trip_validate
+from .impact import SHADOW_IMPACT_LIVE_SCORING_ENABLED
 from .liquidity import PHASE4_OBSERVATION_SPREAD_POLICY_VERSION, finalize_liquidity
 from .live_smoke import _secret
 from .live_smoke import run as run_signal_smoke
@@ -491,7 +492,12 @@ async def run(
             diagnostic_membership=diagnostic_membership,
             startup_timeout_seconds=startup_timeout,
             stage_callback=recorder.emit_record,
-            impact_baselines=historical.impact_baselines,
+            # The deterministic benchmark exceeded the approved 5% live
+            # budget. Shared evidence remains persisted for post-session
+            # impact/control replay; live shadow scoring is explicitly off.
+            impact_baselines=(
+                historical.impact_baselines if SHADOW_IMPACT_LIVE_SCORING_ENABLED else None
+            ),
         )
     except ProviderError as exc:
         recorder.emit("report_emitted", status="blocked_provider", error_category=exc.category)
