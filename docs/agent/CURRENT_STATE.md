@@ -109,9 +109,8 @@
   `docs/phase4b/MONDAY_RUNBOOK.md`; design:
   `docs/phase4b/README.md`.
 - Published draft PR [#5](https://github.com/olubadan/institutional-signal-engine/pull/5)
-  at final preparation head `cdc51fd48a6b4873a45915ae5d3d935a6c771f69`.
-  Exact-head push CI run `31290155862` and pull-request CI run `31290161829`
-  both passed every verification step.
+  at the current branch tip. Exact-head push and pull-request CI both pass;
+  the final run IDs are recorded on GitHub and in the closing PR evidence.
 
 ## Final engineering review — 20260805
 
