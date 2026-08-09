@@ -56,4 +56,3 @@ fixture-only; no live provider session is authorized here. The bounded
 experiment requires at least five complete regular sessions and 30 shadow
 footprints before reporting one of `RETAIN CONTROL`, `REVISE IMPACT MODEL`,
 `PROMOTE IMPACT MODEL`, or `NO FOOTPRINT DEMONSTRATED`.
-

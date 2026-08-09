@@ -24,4 +24,3 @@
 | D-4B-05 | Dependency | Redis. | 4B | Phase 4 dependency healthy. | Runtime dependency. | Health check. | Owner | Monday preflight | Open | PR #5 / SESSION-0022 |
 | D-4B-06 | Dependency | GitHub Actions. | 4B | Main CI run 31209185798 passed. | Required publication gate. | Require exact-head CI. | Owner | Before Monday run | Open | PR #5 / SESSION-0022 |
 | D-4B-07 | Dependency | Regular-session availability. | 4B | Weekend preparation only. | No live evidence before Monday. | Do not launch off-hours. | Owner | Monday | Open | PR #5 / SESSION-0022 |
-

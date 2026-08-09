@@ -55,4 +55,3 @@ chmod 600 "${LOG}"
    no cross-symbol contamination; complete manifest; all accepted trades
    retained; and orders `0/0`. A zero footprint result is reported honestly,
    not treated as a pipeline failure.
-
