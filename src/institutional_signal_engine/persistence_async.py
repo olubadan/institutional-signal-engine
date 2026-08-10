@@ -20,6 +20,7 @@ class AuditWrite:
     sweep: Any | None = None
     impact_cluster: dict[str, object] | None = None
     impact_session: dict[str, object] | None = None
+    probe_id: str | None = None
 
 
 @dataclass
@@ -30,6 +31,7 @@ class WriteQueueMetrics:
     soft_limit_crossings: int = 0
     hard_limit_failures: int = 0
     time_above_soft_limit: float = 0.0
+    probe_failures: int = 0
 
 
 class AsyncAuditWriter:
@@ -101,6 +103,10 @@ class AsyncAuditWriter:
                     self.repository.record_impact_cluster(record.impact_cluster)
                 if record.impact_session is not None:
                     self.repository.record_impact_session(record.impact_session)
+                if record.probe_id is not None:
+                    probe = getattr(self.repository, "write_drain_probe", None)
+                    if probe is None or not probe(record.probe_id):
+                        self.metrics.probe_failures += 1
                 self.queue.task_done()
             flush = getattr(self.repository, "flush", None)
             if flush is not None:

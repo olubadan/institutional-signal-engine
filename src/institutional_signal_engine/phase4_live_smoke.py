@@ -8,6 +8,7 @@ import subprocess
 from asyncio import Semaphore
 from collections import Counter
 from datetime import datetime, timedelta
+from pathlib import Path
 from time import monotonic
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -65,6 +66,9 @@ async def run(
     startup_timeout_seconds: float | None = None,
     stage_callback: StageCallback | None = None,
     run_id: UUID | None = None,
+    prepare_only: bool = False,
+    plan_output: Path | None = None,
+    prepared_plan: Path | None = None,
 ) -> dict[str, object]:
     recorder = StageRecorder(stage_callback)
     settings = _load_settings()
@@ -355,6 +359,20 @@ async def run(
     )
     if allocation.selected != plan:
         raise RuntimeError("planner_allocation_mismatch")
+    if prepared_plan is not None:
+        expected = json.loads(prepared_plan.read_text(encoding="utf-8"))
+        expected_plan = expected.get("selected_plan", [])
+        actual_plan = [
+            {
+                "root": item.root,
+                "expiration": item.expiration,
+                "strike": item.strike,
+                "right": item.right,
+            }
+            for item in plan
+        ]
+        if expected_plan != actual_plan:
+            raise RuntimeError("prepared_plan_mismatch")
     recorder.emit("selection_completed", completed_items=len(plan), remaining_items=0)
     recorder.emit("subscription_planning_completed", completed_items=len(plan), remaining_items=0)
     selected_contracts = set(plan)
@@ -541,6 +559,41 @@ async def run(
         "orders_constructed": 0,
         "orders_submitted": 0,
     }
+    if plan_output is not None:
+        plan_output.parent.mkdir(parents=True, exist_ok=True)
+        plan_output.write_text(
+            json.dumps(
+                {
+                    "run_id": str(run_id),
+                    "selected_plan": [
+                        {
+                            "root": item.root,
+                            "expiration": item.expiration,
+                            "strike": item.strike,
+                            "right": item.right,
+                        }
+                        for item in plan
+                    ],
+                    "coverage": coverage_plan.as_dict(),
+                    "subscription_counts": {
+                        "trade_submitted": len(allocation.trade_plan),
+                        "quote_submitted": len(allocation.quote_plan),
+                        "selected": len(allocation.selected),
+                    },
+                    "manifest": manifest.record(),
+                },
+                sort_keys=True,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(plan_output, 0o600)
+        report["prepared_plan"] = str(plan_output)
+    if prepare_only:
+        report["status"] = "preflight_plan_ready" if plan else "blocked_no_contracts_selected"
+        report["observation_started"] = False
+        recorder.emit("report_emitted", status=report["status"])
+        return report
     if not plan:
         report["status"] = "blocked_no_contracts_selected"
         report["reason"] = "quote_observation_evidence_unavailable"
@@ -699,6 +752,9 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--skip-oi-diagnostic", action="store_true")
     parser.add_argument("--startup-timeout-seconds", type=float, default=None)
+    parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--plan-output", type=Path)
+    parser.add_argument("--prepared-plan", type=Path)
     arguments = parser.parse_args()
     try:
         result = asyncio.run(
@@ -707,6 +763,9 @@ def main() -> None:
                     arguments.seconds,
                     arguments.skip_oi_diagnostic,
                     arguments.startup_timeout_seconds,
+                    prepare_only=arguments.prepare_only,
+                    plan_output=arguments.plan_output,
+                    prepared_plan=arguments.prepared_plan,
                 ),
                 timeout=(arguments.seconds + 2 * (arguments.startup_timeout_seconds or 120) + 30),
             )

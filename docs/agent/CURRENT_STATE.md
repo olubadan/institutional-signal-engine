@@ -125,6 +125,21 @@
   at the current branch tip. Exact-head push and pull-request CI both pass;
   the final run IDs are recorded on GitHub and in the closing PR evidence.
 
+## Ignition harness correction — SESSION-0024
+
+- The first Monday Phase 4B launch was fail-closed. The five reported failures
+  were probe/composition mismatches: host `pg_isready` did not address the
+  containerized application DSN, Alpaca ignition bypassed the typed provider,
+  persistence was inferred rather than enqueued and drained, and the plan
+  checks did not run the production discovery/enrichment/planner path.
+- The correction uses the application `Settings` and `PostgresRepository`,
+  `AlpacaEquitiesProvider.current_prices()`, the typed MDDS status adapter, and
+  a reversible `AsyncAuditWriter` probe. The live runner now supports a
+  prepare-only planner pass and exact prepared-plan validation before stream
+  consumption. Trading remains disabled and orders remain `0/0`.
+- Hermetic verification is in progress before exact-head CI and VM redeploy;
+  no provider observation has been started by SESSION-0024 yet.
+
 ## Final engineering review — 20260805
 
 - Implementation head `b991f95091fee78397adfadf4125dda4671f2094` is pushed on

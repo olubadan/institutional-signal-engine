@@ -30,6 +30,11 @@ class InMemoryRepository:
         self.universe_audits: list[dict[str, object]] = []
         self.impact_clusters: list[dict[str, object]] = []
         self.impact_sessions: list[dict[str, object]] = []
+        self.probes: list[str] = []
+
+    def write_drain_probe(self, probe_id: str) -> bool:
+        self.probes.append(probe_id)
+        return True
 
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
@@ -163,6 +168,35 @@ class PostgresRepository:
             "ALTER TABLE quote_consumptions ADD COLUMN IF NOT EXISTS quote_ingest_order bigint NOT NULL DEFAULT 0",
         ):
             connection.execute(statement)
+
+    def healthcheck(self) -> bool:
+        """Verify the same configured connection path used by live writes."""
+        try:
+            self._session().execute("SELECT 1").fetchone()
+            return True
+        except Exception:  # noqa: BLE001 - health probes return sanitized booleans
+            return False
+
+    def write_drain_probe(self, probe_id: str) -> bool:
+        """Exercise a reversible write/read/delete probe on the application connection."""
+        try:
+            connection = self._session()
+            connection.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS ignition_write_probe "
+                "(probe_id text PRIMARY KEY, value integer NOT NULL)"
+            )
+            connection.execute("DELETE FROM ignition_write_probe WHERE probe_id=%s", (probe_id,))
+            connection.execute(
+                "INSERT INTO ignition_write_probe (probe_id,value) VALUES (%s,%s)",
+                (probe_id, 1),
+            )
+            row = connection.execute(
+                "SELECT value FROM ignition_write_probe WHERE probe_id=%s", (probe_id,)
+            ).fetchone()
+            connection.execute("DELETE FROM ignition_write_probe WHERE probe_id=%s", (probe_id,))
+            return row is not None and int(row[0]) == 1
+        except Exception:  # noqa: BLE001 - health probes return sanitized booleans
+            return False
 
     def record_event(self, event: CanonicalEvent) -> None:
         self._pending_events.append(event)
