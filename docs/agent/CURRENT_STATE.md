@@ -664,3 +664,19 @@
   expanded failure injection and live validation; market-wide cataloging and
   a universal Q-delta bound remain out of scope. Trading is disabled and
   orders remain `0/0`.
+
+### SESSION-0025 Phase 4B deterministic certification harness — 20260810
+
+- Work Package 1 adds the versioned `PHASE4B_CERT_V1` contract, JSON Schema,
+  deterministic accelerated-RTH scenario, offline certificate runner, focused
+  tests, and concise certification boundary document.
+- Command: `uv run python -m institutional_signal_engine.phase4b_certify`.
+  The expected current result is nonzero `FAIL`; the certificate identifies
+  planner epoch immutability, exact planner-epoch consumption, and duplicate
+  discovery/enrichment as failed production integration invariants.
+- The harness exercises production impact scoring, coverage allocation, async
+  in-memory persistence, and replay without running live providers. Trading is
+  disabled and orders remain `0/0`.
+- Verification: Ruff, strict mypy, and 168 hermetic tests passed; focused
+  schema/structural checks, secret scan, and diff check passed. `jsonschema`
+  was not installed; dependency-free certificate schema validation passed.

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "PHASE4B_CERT_V1",
+  "type": "object",
+  "required": ["certification_version", "git_commit", "worktree_dirty", "scenario_version", "scenario_sha256", "configuration_versions", "run_id", "universe", "events", "persistence", "replay_equality", "comparison_matrix", "delta_provenance", "finalization", "orders", "invariants", "failed_invariants", "overall"],
+  "properties": {
+    "certification_version": {"const": "PHASE4B_CERT_V1"},
+    "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "worktree_dirty": {"type": "boolean"},
+    "scenario_version": {"const": "PHASE4B_ACCELERATED_RTH_V1"},
+    "scenario_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "configuration_versions": {"type": "object", "minProperties": 1},
+    "run_id": {"type": "string", "format": "uuid"},
+    "universe": {"type": "object", "required": ["epoch_count", "contracts_evaluated", "contracts_admitted", "contracts_removed", "paired_capacity", "acknowledgements"]},
+    "events": {"type": "object"},
+    "persistence": {"type": "object", "required": ["enqueued", "drained"]},
+    "replay_equality": {"type": "boolean"},
+    "comparison_matrix": {"type": "array", "minItems": 1},
+    "delta_provenance": {"type": "object"},
+    "finalization": {"type": "object"},
+    "orders": {"type": "object", "properties": {"trading_enabled": {"const": false}, "constructed": {"const": 0}, "submitted": {"const": 0}}},
+    "invariants": {"type": "object", "additionalProperties": {"type": "boolean"}},
+    "failed_invariants": {"type": "array", "items": {"type": "object", "required": ["code", "message"]}},
+    "overall": {"enum": ["PASS", "FAIL"]}
+  },
+  "additionalProperties": true
+}

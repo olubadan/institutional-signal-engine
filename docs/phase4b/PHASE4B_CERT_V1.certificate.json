@@ -1,0 +1,118 @@
+{
+  "certification_version": "PHASE4B_CERT_V1",
+  "comparison_matrix": [
+    {
+      "cluster_id": "control-and-shadow",
+      "comparison": "CONTROL_PASS_SHADOW_PASS",
+      "control": true,
+      "shadow": true
+    },
+    {
+      "cluster_id": "control-only",
+      "comparison": "CONTROL_PASS_SHADOW_FAIL",
+      "control": true,
+      "shadow": false
+    },
+    {
+      "cluster_id": "shadow-only",
+      "comparison": "CONTROL_FAIL_SHADOW_PASS",
+      "control": false,
+      "shadow": true
+    }
+  ],
+  "configuration_versions": {
+    "control_model": "CONTROL_V1",
+    "coverage": "impact-coverage-v1",
+    "delta_provenance": "impact-delta-provenance-v1",
+    "shadow_model": "SHADOW_IMPACT_V1"
+  },
+  "delta_provenance": {
+    "missing_or_unsupported": 1,
+    "recognized": 2,
+    "unscoreable_reasons": [
+      "IMPACT_DELTA_PROVENANCE_UNAVAILABLE",
+      "IMPACT_DELTA_UNAVAILABLE"
+    ]
+  },
+  "events": {
+    "classifications": {
+      "invalid": 1,
+      "unknown": 1,
+      "valid": 2
+    },
+    "clusters": 3,
+    "decisions": 3,
+    "events": 6,
+    "quotes": 4
+  },
+  "failed_invariants": [
+    {
+      "code": "EPOCH_IMMUTABILITY",
+      "message": "production epoch handoff remains integration-unverified"
+    },
+    {
+      "code": "PLANNER_EPOCH_CONSUMPTION",
+      "message": "production runner does not yet consume one authoritative planner epoch across RTH"
+    },
+    {
+      "code": "NO_DUPLICATE_DISCOVERY",
+      "message": "production recovery can repeat discovery/enrichment and diverge"
+    }
+  ],
+  "finalization": {
+    "intake_stop": "16:00 ET",
+    "post_close_drain": true,
+    "status": "FINALIZED"
+  },
+  "git_commit": "deda2d2f76875dbf8f421062551051fbf9db6ab4",
+  "invariants": {
+    "capacity_quote_at_most_10000": true,
+    "capacity_trade_at_most_15000": true,
+    "dynamic_admission": true,
+    "dynamic_removal": true,
+    "epoch_immutability": false,
+    "exact_planner_epoch_consumed": false,
+    "finalization_complete": true,
+    "missing_delta_provenance_unscoreable": true,
+    "no_duplicate_discovery_or_enrichment": false,
+    "offline_shadow_comparison": true,
+    "one_run_id": true,
+    "orders_constructed_zero": true,
+    "orders_submitted_zero": true,
+    "paired_trade_quote": true,
+    "persistence_enqueue_equals_drain": true,
+    "replay_equality": true,
+    "trading_disabled": true,
+    "unacknowledged_events_rejected": true
+  },
+  "orders": {
+    "constructed": 0,
+    "submitted": 0,
+    "trading_enabled": false
+  },
+  "overall": "FAIL",
+  "persistence": {
+    "drained": 3,
+    "enqueued": 3,
+    "queue_depth_final": 0
+  },
+  "replay_equality": true,
+  "run_id": "4b000000-0000-4000-8000-000000000001",
+  "scenario_sha256": "ec4fd3f08642833d283724f3429d7ca2379b0f9134ee0eadabf50e26a8a2e259",
+  "scenario_version": "PHASE4B_ACCELERATED_RTH_V1",
+  "universe": {
+    "acknowledgements": {
+      "accepted": 4,
+      "duplicate_or_unmatched_rejected": 2
+    },
+    "contracts_admitted": 1,
+    "contracts_evaluated": 3,
+    "contracts_removed": 1,
+    "epoch_count": 3,
+    "paired_capacity": {
+      "quote": 10000,
+      "trade": 15000
+    }
+  },
+  "worktree_dirty": true
+}
