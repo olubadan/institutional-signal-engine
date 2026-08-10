@@ -137,8 +137,18 @@
   a reversible `AsyncAuditWriter` probe. The live runner now supports a
   prepare-only planner pass and exact prepared-plan validation before stream
   consumption. Trading remains disabled and orders remain `0/0`.
-- Hermetic verification is in progress before exact-head CI and VM redeploy;
-  no provider observation has been started by SESSION-0024 yet.
+- Exact-head CI passed on correction head `a9a7bace1c991776eafeaa65b85f3036dcaef21a`;
+  ignition passed on the VM and produced a protected 40-contract plan
+  (`U_M=0`, `U_X=0`, `U_R=40`, `U*=40`). The recovery command then failed
+  before WebSocket connection because the repeated discovery/enrichment pass
+  did not reproduce the prepared plan (`911` versus `912` completed quote
+  results), yielding the runner's `prepared_plan_mismatch` failure point.
+- Run `0950e1c9-0e67-42b2-9f55-98d545650e52` is the ignition/preflight run,
+  not a live observation: its scope has zero events, decisions, quotes,
+  clusters, and finalization. No live Phase 4B session counts toward the
+  five-session/30-footprint requirement. Trading remains disabled and orders
+  remain `0/0`; Tuesday is blocked pending an authoritative prepared-plan
+  handoff correction.
 
 ## Final engineering review — 20260805
 
