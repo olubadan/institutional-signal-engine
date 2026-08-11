@@ -5,17 +5,18 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 4 merged; Phase 4B mathematical footprint validation
-  is in weekend preparation on a draft branch; Phase 5 has not started
+- **Current phase:** Phase 4 merged; Phase 4B causal-journal recovery is active
+  on stacked draft PR #6; Phase 5 has not started
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline; Phase 2 — reproducible Vast environment verified with
   documented Ubuntu 22.04/finite-duration exception and merged in PR #2
-- **Active branch:** `feat/phase-4b-impact-shadow`
+- **Active branch:** `feat/rth-orchestration-recovery`
 - **Phase 4 merge:** PR #4 is merged into `main` at
   `b62d017dc572fd4dfbef99afccfc3f01b4399840`; resulting-main CI run
   `31209185798` passed.
-- **Pull-request state:** Phase 4B draft PR #5 is open from
-  `feat/phase-4b-impact-shadow`; Phase 4 PR #4 is closed and merged.
+- **Pull-request state:** Recovery draft PR #6 is open from
+  `feat/rth-orchestration-recovery`, stacked on open draft PR #5; Phase 4 PR #4
+  is closed and merged.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
   correlated Standard exact-contract requests, dynamic-universe selection ports,
@@ -79,10 +80,9 @@
   with field-by-field equality. This proof applies to this corrected run under
   its recorded engine, configuration and condition-mapping versions; it does
   not claim that every historical run is replayable.
-- **Next action:** Complete weekend Phase 4B verification and exact-head CI;
-  Monday requires only deployment preflight and explicit live-observation
-  authorization. Phase 5 begins only after Phase 4B scope is complete and the
-  owner explicitly approves it.
+- **Next action:** Obtain final independent validation of the exact-head causal
+  journal correction on draft PR #6. Phase 5 begins only after Phase 4B scope is
+  complete and the owner explicitly approves it.
 
 ## Phase 4B weekend preparation — SESSION-0022
 
@@ -702,3 +702,195 @@
 - Verification: Ruff, strict mypy, and 168 hermetic tests passed; focused
   schema/structural checks, secret scan, and diff check passed. `jsonschema`
   was not installed; dependency-free certificate schema validation passed.
+
+### SESSION-0027 final causal-journal correction — 20260811
+
+- Draft PR #6 now uses one `OrchestrationShell` for production and deterministic
+  execution. A driver selects market events, scheduled clock boundaries,
+  disconnects, and intake stop as independent inputs.
+- The runtime certificate accepts one sealed `VerifiedJournal` and reads no Git,
+  worktree, shell, repository, environment, scenario helper, or expected-result
+  object. Build-envelope evidence is separate.
+- Journal verification recalculates payload and complete-record digests, the
+  ordered chain, parent constraints, run and sequence consistency, and the seal;
+  semantic verification enforces discovery/enrichment, epoch, paired command and
+  acknowledgement, activation, event, restoration, clock, and terminal lifecycle
+  causality.
+- Canonical journal persistence is reconstructed through the repository boundary;
+  the replayed journal is reverified and projects an exactly equal certificate.
+  The deterministic trace proves E1 `{A}`, E2 `{A,B}`, E3 `{B}`, clock-only
+  reevaluations, recovery, removed-A rejection, active-B acceptance, stop, drain,
+  finalization, persistence, and replay.
+- The focused positive and corruption suite has 25 tests; the complete hermetic
+  suite has 239 tests. Implementation commit
+  `4cfdd92c51e627d37d117f176e60a558ca5071b5` and both implementation-head CI
+  triggers passed. Trading is disabled and orders remain `0/0`; artifact digests
+  and the journal-close state are recorded in SESSION-0027.
+
+### SESSION-0028 final evidence-bundle correction — 20260811
+
+- The circular post-finalization journal proof is removed. Runtime evidence now
+  follows `J = seal(compose(E_det, Sigma))`, `P = persist(J)`, `R = replay(P)`,
+  `Omega = (J, P, R)`, and `Certificate = pi_CDelta(Omega)`.
+- J ends at `session.finalized` and contains no persistence or replay success
+  claim. P and R are separate immutable, recalculably digested receipts. P uses
+  a content-addressed repository identity; replay reconstructs from that object
+  and compares exact bytes, counts, roots, and observed projection digests.
+- Immutable `PHASE4B_ACCEPTANCE_CONTRACT_V3` owns expected values and rules.
+  J/P/R own observations. The certificate visibly separates the two and contains
+  no Git, worktree, CI, PR, shell, or environment evidence.
+- Exact operation, cause-operation, and correlation identities plus a closed
+  material vocabulary reject coherent fabrications, wrong same-kind parents,
+  duplicates, contradictions, misplaced records, wrong epochs/restorations/
+  boundaries, forged receipts, cross-run or cross-version evidence, and
+  post-finalization records.
+- Local verification passes: Ruff format/lint, strict mypy, dependency lock,
+  structural and secret checks, 258 hermetic tests, and 44 focused production-
+  path positive/adversarial tests. Three executions produced byte-identical
+  artifacts. J/P/R/certificate SHA-256 values are respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `01dbcdcaca2e367aeac5db63bd9b3b4a1818e357d428215b4af9ec1111e40784`.
+- No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
+  unchanged; PR #6 remains draft and unmerged. The exact journal-closing commit
+  and exact-head CI are recorded in GitHub PR evidence and the terminal handoff.
+
+### SESSION-0029 repository-authority correction — 20260811
+
+- Runtime certification now follows `J = seal(compose(E_det, Sigma))`,
+  `P = persist(J)`, `R = replay(P)`,
+  `Omega_verified = verify_repository_backed(CDelta, J, P, R, repository)`, and
+  `Certificate = pi_CDelta(Omega_verified)`.
+- The production verifier receives the persistence repository, loads P's exact
+  content-addressed object, deserializes and fully verifies a distinct journal,
+  enforces exact canonical-byte equality with J, derives replay facts from that
+  reconstruction, and compares caller-supplied R rather than trusting it.
+- The verified evidence package is an opaque capability issued only by that
+  repository-backed path. Projection rejects direct construction and unverified
+  objects. Missing objects fail as `PERSISTED_JOURNAL_MISSING`; stored-byte
+  divergence and invented replay facts have stable specific codes.
+- Local verification passes: Ruff format/lint, strict mypy, dependency lock,
+  structural and secret checks, Bash syntax, 267 hermetic tests, and 53 focused
+  production-path positive/adversarial tests. Local ShellCheck was unavailable;
+  exact-head GitHub CI installs and runs it. Two executions produced byte-identical
+  artifacts. J/P/R/certificate SHA-256 values remain respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `01dbcdcaca2e367aeac5db63bd9b3b4a1818e357d428215b4af9ec1111e40784`.
+- No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
+  unchanged; PR #6 remains draft and unmerged. Exact-head publication and CI are
+  confirmed externally after the single correction commit is pushed.
+
+### SESSION-0030 fused certification boundary correction — 20260811
+
+- Authoritative issuance now has exactly one production construction function:
+  `Certificate = certify_repository_backed(CDelta, J, P, R, repository)`.
+  `VerifiedEvidencePackage`, `_issue`, the repository-verification authority,
+  authority checks, the standalone projection, and the repository-free artifact
+  constructor are removed.
+- Every certification invocation independently validates sealed J, validates P
+  only as a claim, loads P's exact repository object, compares canonical bytes,
+  reconstructs and fully verifies a distinct journal, derives observations and
+  all replay facts from verified local objects, compares caller R, and constructs
+  the certificate immediately. Certificate observations use the repository
+  reconstruction and locally derived P/R facts, never caller fields directly.
+- `validate_certificate_schema` is explicitly shape-only and cannot authorize
+  issuance. Public-API and AST inspection prove the removed names are absent and
+  only `certify_repository_backed` contains an `overall: PASS` construction.
+- Adversarial production-boundary coverage includes former-capability lookalikes,
+  low-level object mutation, copied evidence, forged authority identity, empty,
+  wrong, altered, cross-run and cross-contract repository evidence, invented R,
+  schema-valid manual fields, residual projection API absence, and mandatory
+  repository loading with stable failure codes.
+- Local verification passes: Ruff format/lint, strict mypy, dependency lock,
+  structural and secret checks, Bash syntax, 271 hermetic tests, and 57 focused
+  certification tests. Local ShellCheck was unavailable; exact-head GitHub CI
+  installs and runs it. Two executions produced byte-identical artifacts.
+  J/P/R/certificate SHA-256 values remain respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `01dbcdcaca2e367aeac5db63bd9b3b4a1818e357d428215b4af9ec1111e40784`.
+- No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
+  unchanged; PR #6 remains draft and unmerged. Exact-head publication and CI are
+  confirmed externally after the single correction commit is pushed.
+
+### SESSION-0031 complete certification-authority closure — 20260811
+
+- The sole authoritative interface is now
+  `generate_phase4b_certification(output_paths) -> CertificationArtifacts`.
+  Its only input contains four presentation destinations. It accepts no
+  contract, J/P/R, repository, factory, scenario, event, expectation, callback,
+  cached value, capability, certificate, or result.
+- One call reads the exact fixed package contract bytes and verifies pinned
+  SHA-256
+  `a68e3d894bd29e1ace5dd84dfefab87fe8609c2adae93e9c640c105426e23c9a`,
+  fully validates the contract, verifies the checked-in scenario digest
+  `05ac756c035d8aca12fe8ff5d9016024ef814b512166c8ceecaed40a318b593f`,
+  constructs the scenario and owned repository, runs the real orchestration,
+  seals/verifies J, saves/reloads P, reconstructs and independently verifies R,
+  immediately projects the certificate, then stages and publishes J/P/R before
+  publishing the certificate last.
+- The certificate visibly binds the contract and scenario identities, run,
+  journal root/bytes/count/seal, persistence identity/receipt, replay receipt,
+  reconstructed root/bytes/count/projections/equality, observed projection,
+  schema version, and canonical certificate commitment. Build-envelope facts
+  remain outside runtime evidence.
+- Former caller-driven certify/composition/replay/load/write paths are absent.
+  Journal/contract/receipt constructors, deserializers, hashing, and low-level
+  verifiers are explicitly non-authoritative and have no certificate consumer.
+  `validate_certificate_schema` remains shape-only; no production artifact
+  reader relabels a manual document authoritative.
+- The final focused suite has 65 tests and the complete hermetic suite has 279.
+  Two fresh post-implementation construction-graph enumerations found no new
+  bypass. Two independent executions produced byte-identical J/P/R/certificate
+  hashes respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `e5e1286264614184c7a80cbe23426eff4b0ae7616fb57a2588230679d36ce5e8`.
+- No provider ran. Trading remains disabled; orders remain `0/0`; PR #5 remains
+  unchanged; PR #6 remains draft and unmerged; Phase 5 has not started.
+
+### SESSION-0032 live observational path closure — 20260811
+
+- Added a separate live observational evidence subsystem in
+  `live_session.py`. It requires a fresh output directory, configured durable
+  journal storage, a durable application repository, a protected authority key,
+  exact Git head, and disabled trading before provider connection.
+- One unified session port now owns discovery-adjacent subscription commands,
+  correlated paired acknowledgements, inbound events, clock boundaries,
+  disconnect/reconnect restoration, 16:00 ET intake stop, drain, finalization,
+  terminal journal seal, durable persistence, replay, and manifest-last staged
+  publication. Incomplete or partially written runs remain distinguishable and
+  cannot publish a certificate.
+- The live manifest binds commit, application/config/schema/rules identities,
+  configuration snapshot, session boundaries, provider identities, journal
+  count/root/seal, connection/recovery history, event and epoch evidence,
+  persistence/replay receipts, host-clock observations, impact fallback, and
+  disabled trading/order state. An HMAC authority binding rejects coherent
+  rehashing without the trusted deployment key.
+- Added offline `inspect`, `replay`, and `certify` commands. The live certificate
+  states that one persisted observational session was validated offline and
+  explicitly records that the deterministic hermetic scenario did not run.
+  The accepted `phase4b_certify` subsystem and its authority boundary remain
+  unchanged.
+- Added a deterministic virtual-clock harness using the same live composition;
+  it covers `{A} -> {A,B} -> {B}`, paired acknowledgements, events, removal,
+  disconnect/reconnect restoration, 16:00 stop, durable persistence, replay,
+  and live certification. Two executions produced byte-identical deterministic
+  bundle, replay, and certificate artifacts.
+- Verification currently passes: Ruff format/lint, strict mypy, lockfile check,
+  Bash syntax, structural/secret/diff checks, and 287 hermetic tests including
+  9 focused live-session adversarial tests. No provider ran; trading remains
+  disabled; orders remain `0/0`; PR #5 is unchanged; PR #6 remains draft and
+  unmerged; Phase 5 has not started.
+- Implementation commit `1205afcafe612958d37789965f01f3bf704da7b9` is pushed to
+  PR #6's branch. Exact-head CI jobs
+  `31480520321` and `31480517224` passed. PR #6 remains open, draft, mergeable,
+  and unmerged; PR #5 remains unchanged, open, and draft at
+  `4a3afe8dd70fecc1b629ff7ef5614a652a572529`. The live path build is complete
+  and awaits independent validation; this is not a provider or host readiness
+  claim.

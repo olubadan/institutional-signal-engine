@@ -1,683 +1,1000 @@
-"""Executable, provider-free Phase 4B Work Package 1 certification."""
+"""Provider-free causal-journal certification through the production shell."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
-import inspect
 import json
-import subprocess
-from collections.abc import Callable
-from datetime import UTC, date, datetime
+import os
+import tempfile
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from importlib import resources
 from pathlib import Path
-from typing import Any, cast
+from types import MappingProxyType
+from typing import Any, Final, cast
 from uuid import UUID
 
+from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 from pydantic import SecretStr
 
 from .config import Settings
-from .historical import HistoricalBootstrap
-from .impact import ImpactBaseline, evaluate_cluster
-from .impact_coverage import CoverageCandidate, build_coverage_plan
-from .indicators import PreviousClose
-from .live_smoke import CompositionInterfaces
+from .dynamic_subscriptions import SubscriptionAcknowledgement
+from .impact_coverage import PILOT_COVERAGE_POPULATION_VERSION
+from .journal import (
+    JOURNAL_KIND_CLOCK_ADVANCED,
+    JOURNAL_KIND_CONFIGURATION,
+    JOURNAL_KIND_EPOCH_CREATED,
+    JOURNAL_KIND_EPOCH_RESTORED,
+    JOURNAL_KIND_EVENT_ACCEPTED,
+    JOURNAL_KIND_EVENT_REJECTED,
+    JOURNAL_KIND_PROVIDER_DISCONNECTED,
+    JOURNAL_KIND_PROVIDER_RECONNECTED,
+    JOURNAL_KIND_REEVALUATION_START,
+    JOURNAL_KIND_SESSION_FINALIZED,
+    JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+    JOURNAL_KIND_SUBSCRIPTION_COMMAND,
+    AcceptanceContract,
+    InMemoryJournalRepository,
+    Journal,
+    JournalFailure,
+    JournalRecord,
+    ReplayReceipt,
+    VerifiedJournal,
+    canonical_json,
+    persist_verified_journal,
+    sha256,
+    sha256_bytes,
+    verify_complete,
+    verify_persistence_receipt,
+    verify_replay_receipt,
+)
+from .orchestration import (
+    DriverSignal,
+    OrchestrationConfig,
+    OrchestrationShell,
+    SessionDriverPort,
+)
 from .persistence import InMemoryRepository
-from .persistence_async import AsyncAuditWriter
 from .providers.thetadata import ThetaContract
 from .schemas import CanonicalEvent, EventKind
+from .universe import PlannerEpoch, UniverseSelection
 
-CERTIFICATION_VERSION = "PHASE4B_CERT_V1"
-SCENARIO_VERSION = "PHASE4B_ACCELERATED_RTH_V1"
-RUN_ID = UUID("4b000000-0000-4000-8000-000000000001")
-ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = ROOT / "docs/phase4b/PHASE4B_CERT_V1.schema.json"
-DEFAULT_OUTPUT = Path("/tmp/phase4b-certification/CERTIFICATE.json")
+__all__ = [
+    "CertificationArtifacts",
+    "CertificationOutputPaths",
+    "generate_phase4b_certification",
+    "main",
+    "validate_certificate_schema",
+]
 
-
-def _canonical(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def _git() -> tuple[str, bool]:
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    dirty = bool(
-        subprocess.run(
-            ["git", "status", "--porcelain"], cwd=ROOT, check=True, capture_output=True, text=True
-        ).stdout.strip()
-    )
-    return commit, dirty
-
-
-def scenario_definition() -> dict[str, object]:
-    """Return executable actions; the executor, not this dictionary, makes evidence."""
-    return {
-        "scenario_version": SCENARIO_VERSION,
-        "timezone": "America/New_York",
-        "virtual_clock": {
-            "startup": "2026-08-10T13:20:00Z",
-            "rth_open": "2026-08-10T13:30:00Z",
-            "intake_stop": "2026-08-10T20:00:00Z",
-            "close_drain": "2026-08-10T20:05:00Z",
-        },
-        "planner_epochs": [
-            {"epoch": 1, "effective_at": "2026-08-10T13:20:00Z", "eligible": ["AAA", "CCC"]},
-            {"epoch": 2, "effective_at": "2026-08-10T15:00:00Z", "eligible": ["AAA", "BBB", "CCC"]},
-            {"epoch": 3, "effective_at": "2026-08-10T17:00:00Z", "eligible": ["AAA", "BBB"]},
-        ],
-        "provider_acknowledgements": {
-            "accepted": ["AAA:TRADE", "AAA:QUOTE", "BBB:TRADE", "BBB:QUOTE"],
-            "rejected": ["AAA:TRADE:duplicate", "ZZZ:QUOTE:unmatched"],
-        },
-        "disconnect_recovery": {"disconnect_at": "2026-08-10T16:00:00Z", "reconnect_epoch": 3},
-        "orders": {"trading_enabled": False, "constructed": 0, "submitted": 0},
-    }
+CERTIFICATION_VERSION: Final = "PHASE4B_EVIDENCE_BUNDLE_CERT_V3"
+CONTRACT_VERSION: Final = "PHASE4B_ACCEPTANCE_CONTRACT_V3"
+SCENARIO_VERSION: Final = "PHASE4B_ACCELERATED_CAUSAL_RTH_V3"
+RUN_ID: Final = UUID("4b000000-0000-4000-8000-000000000027")
+CONTRACT_RESOURCE: Final = "resources/phase4b_acceptance_contract.json"
+SCHEMA_RESOURCE: Final = "resources/phase4b_certificate_schema.json"
+CONTRACT_CANONICAL_SHA256: Final = (
+    "a68e3d894bd29e1ace5dd84dfefab87fe8609c2adae93e9c640c105426e23c9a"
+)
+# Updated only when the checked-in scenario definition is intentionally changed.
+SCENARIO_CANONICAL_SHA256: Final = (
+    "05ac756c035d8aca12fe8ff5d9016024ef814b512166c8ceecaed40a318b593f"
+)
+DEFAULT_OUTPUT: Final = Path("/tmp/phase4b-certification/CERTIFICATE.json")
+DEFAULT_JOURNAL_OUTPUT: Final = Path("/tmp/phase4b-certification/JOURNAL.json")
+DEFAULT_PERSISTENCE_OUTPUT: Final = Path("/tmp/phase4b-certification/PERSISTENCE_RECEIPT.json")
+DEFAULT_REPLAY_OUTPUT: Final = Path("/tmp/phase4b-certification/REPLAY_RECEIPT.json")
 
 
-def scenario_sha256() -> str:
-    return hashlib.sha256(_canonical(scenario_definition()).encode()).hexdigest()
+@dataclass(frozen=True)
+class CertificationOutputPaths:
+    """Presentation-only destinations; these values never select certification facts."""
+
+    certificate: Path
+    journal: Path
+    persistence_receipt: Path
+    replay_receipt: Path
 
 
-def _baseline() -> ImpactBaseline:
-    return ImpactBaseline(
-        "AAPL",
-        5,
-        Decimal(1000),
-        Decimal("0.05"),
-        date(2026, 8, 10),
-        20,
-        "DETERMINISTIC_CERT_PROVIDER_V1",
-        "split-adjusted-fixture",
-    )
+@dataclass(frozen=True)
+class CertificationArtifacts:
+    """Immutable publication result from the sole authoritative operation."""
+
+    output_paths: CertificationOutputPaths
+    journal_sha256: str
+    persistence_receipt_sha256: str
+    replay_receipt_sha256: str
+    certificate_sha256: str
+    certificate_commitment_sha256: str
 
 
-def _record(records: list[dict[str, object]], kind: str, **values: object) -> str:
-    record_id = f"trace-{len(records) + 1:04d}"
-    records.append({"record_id": record_id, "kind": kind, **values})
-    return record_id
+@dataclass(frozen=True)
+class _ScenarioSignal:
+    kind: str
+    timestamp: str
+    event_number: int | None = None
+    contract_identity: str | None = None
+    channel: str | None = None
 
-
-class ScenarioExecutor:
-    """Consumes every scenario action in virtual-time order and emits trace records."""
-
-    def __init__(self, scenario: dict[str, object]) -> None:
-        self.scenario = scenario
-        self.records: list[dict[str, object]] = []
-
-    def execute_planners(self) -> None:
-        epochs = self.scenario["planner_epochs"]
-        assert isinstance(epochs, list)
-        for item in sorted(epochs, key=lambda value: str(value["effective_at"])):
-            assert isinstance(item, dict)
-            candidates = tuple(
-                CoverageCandidate(
-                    symbol,
-                    20260821,
-                    10000 + index * 100,
-                    "C",
-                    None,
-                    False,
-                    index,
-                    3,
-                    ("scenario",),
-                    "UNRESOLVED",
-                )
-                for index, symbol in enumerate(sorted(item["eligible"]), 1)
-            )
-            plan = build_coverage_plan(candidates, trade_limit=15000, quote_limit=10000)
-            _record(
-                self.records,
-                "planner",
-                epoch=item["epoch"],
-                effective_at=item["effective_at"],
-                plan=plan.as_dict(),
-            )
-
-    def execute_acknowledgements(self) -> None:
-        values = self.scenario["provider_acknowledgements"]
-        assert isinstance(values, dict)
-        for key in ("accepted", "rejected"):
-            for request in values[key]:
-                _record(
-                    self.records, "acknowledgement", request=request, accepted=key == "accepted"
-                )
-
-    def execute_lifecycle(self) -> None:
-        clock = self.scenario["virtual_clock"]
-        assert isinstance(clock, dict)
-        for kind, timestamp in (
-            ("startup", clock["startup"]),
-            ("rth_open", clock["rth_open"]),
-            (
-                "disconnect",
-                cast(dict[str, object], self.scenario["disconnect_recovery"])["disconnect_at"],
-            ),
-            ("recovery", clock["intake_stop"]),
-            ("intake_stop", clock["intake_stop"]),
-            ("drain", clock["close_drain"]),
-            ("finalization", clock["close_drain"]),
-        ):
-            _record(self.records, "lifecycle", lifecycle=kind, timestamp=timestamp)
-
-    async def execute_composition(self) -> dict[str, object]:
-        """Run the production signal composition boundary with deterministic ports."""
-        from . import live_smoke
-
-        now = datetime(2026, 8, 10, 13, 40, tzinfo=UTC)
-        contract = ThetaContract("AAPL", 20260821, 100000, "C")
-        repository = InMemoryRepository()
-        settings = Settings(
-            alpaca_key_id=SecretStr("fixture-key"),
-            alpaca_secret_key=SecretStr("fixture-secret"),
-            theta_api_key=SecretStr("fixture-theta"),
-            database_url=None,
-        )
-        previous = {
-            symbol: PreviousClose(symbol, Decimal(100), now, "fixture")
-            for symbol in ("AAPL", "SPY", "XLK")
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "timestamp": self.timestamp,
+            "event_number": self.event_number,
+            "contract_identity": self.contract_identity,
+            "channel": self.channel,
         }
-        historical = HistoricalBootstrap(
-            now.date().isoformat(),
-            previous,
-            {symbol: {0: (Decimal(100), Decimal(100))} for symbol in ("AAPL", "SPY", "XLK")},
-            {
-                symbol: {
-                    "prior_5_session_high": Decimal(110),
-                    "prior_20_session_high": Decimal(120),
-                    "prior_252_session_high": Decimal(130),
-                }
-                for symbol in ("AAPL", "SPY", "XLK")
-            },
-            "split-adjusted",
-            "deterministic-certification",
-        )
 
-        event_ids = [UUID(f"4b000000-0000-4000-8000-{index:012d}") for index in range(1, 6)]
 
-        def event(symbol: str, kind: EventKind, sequence: int, **payload: object) -> CanonicalEvent:
-            return CanonicalEvent(
-                event_id=event_ids.pop(0),
-                kind=kind,
-                symbol=symbol,
-                source="fixture",
-                source_timestamp=now,
-                received_timestamp=now,
-                normalized_timestamp=now,
-                sequence=sequence,
-                payload=payload,
+@dataclass(frozen=True)
+class _ScenarioDefinition:
+    version: str
+    run_id: UUID
+    session_date: str
+    rth_start: str
+    rth_stop: str
+    intake_stop: str
+    reevaluation_seconds: int
+    epoch_memberships: tuple[tuple[str, ...], ...]
+    signals: tuple[_ScenarioSignal, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "run_id": str(self.run_id),
+            "session_date": self.session_date,
+            "rth_start": self.rth_start,
+            "rth_stop": self.rth_stop,
+            "intake_stop": self.intake_stop,
+            "reevaluation_seconds": self.reevaluation_seconds,
+            "epoch_memberships": [list(value) for value in self.epoch_memberships],
+            "signals": [value.as_dict() for value in self.signals],
+        }
+
+
+def _checked_in_scenario() -> _ScenarioDefinition:
+    """Return a fresh immutable instance of the checked-in scenario anchor."""
+    return _ScenarioDefinition(
+        version=SCENARIO_VERSION,
+        run_id=RUN_ID,
+        session_date="2026-08-11",
+        rth_start="2026-08-11T13:30:00+00:00",
+        rth_stop="2026-08-11T13:41:00+00:00",
+        intake_stop="2026-08-11T13:45:00+00:00",
+        reevaluation_seconds=300,
+        epoch_memberships=(
+            ("A:20260821:10000:C",),
+            ("A:20260821:10000:C", "B:20260821:11000:C"),
+            ("B:20260821:11000:C",),
+        ),
+        signals=(
+            _ScenarioSignal("event", "2026-08-11T13:31:00+00:00", 1, "A:20260821:10000:C", "TRADE"),
+            _ScenarioSignal("event", "2026-08-11T13:32:00+00:00", 2, "A:20260821:10000:C", "QUOTE"),
+            _ScenarioSignal("event", "2026-08-11T13:36:00+00:00", 3, "A:20260821:10000:C", "TRADE"),
+            _ScenarioSignal("event", "2026-08-11T13:36:10+00:00", 4, "B:20260821:11000:C", "QUOTE"),
+            _ScenarioSignal("disconnect", "2026-08-11T13:37:00+00:00"),
+            _ScenarioSignal("event", "2026-08-11T13:38:00+00:00", 5, "A:20260821:10000:C", "QUOTE"),
+            _ScenarioSignal("event", "2026-08-11T13:38:10+00:00", 6, "B:20260821:11000:C", "TRADE"),
+            _ScenarioSignal("event", "2026-08-11T13:41:00+00:00", 7, "A:20260821:10000:C", "TRADE"),
+            _ScenarioSignal("event", "2026-08-11T13:42:00+00:00", 8, "B:20260821:11000:C", "QUOTE"),
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _AuthoritativeContract:
+    value: AcceptanceContract
+    canonical_sha256: str
+    scenario_canonical_sha256: str
+    configuration_versions: tuple[tuple[str, str], ...]
+
+
+def _contract_resource_bytes() -> bytes:
+    """Read exact bytes from the sole fixed authoritative contract resource."""
+    try:
+        resource = resources.files("institutional_signal_engine").joinpath(CONTRACT_RESOURCE)
+        if isinstance(resource, Path) and (resource.is_symlink() or not resource.is_file()):
+            raise JournalFailure("CONTRACT_RESOURCE_INVALID", CONTRACT_RESOURCE)
+        return resource.read_bytes()
+    except JournalFailure:
+        raise
+    except FileNotFoundError as exc:
+        raise JournalFailure("CONTRACT_RESOURCE_MISSING", CONTRACT_RESOURCE) from exc
+    except OSError as exc:
+        raise JournalFailure("CONTRACT_RESOURCE_INVALID", type(exc).__name__) from exc
+
+
+def _schema_resource_bytes() -> bytes:
+    """Read exact bytes from the fixed, shape-only certificate schema resource."""
+    try:
+        resource = resources.files("institutional_signal_engine").joinpath(SCHEMA_RESOURCE)
+        if isinstance(resource, Path) and (resource.is_symlink() or not resource.is_file()):
+            raise JournalFailure("CERTIFICATE_SCHEMA_RESOURCE_INVALID", SCHEMA_RESOURCE)
+        return resource.read_bytes()
+    except JournalFailure:
+        raise
+    except FileNotFoundError as exc:
+        raise JournalFailure("CERTIFICATE_SCHEMA_RESOURCE_MISSING", SCHEMA_RESOURCE) from exc
+    except OSError as exc:
+        raise JournalFailure("CERTIFICATE_SCHEMA_RESOURCE_INVALID", type(exc).__name__) from exc
+
+
+def _strict_string_list(value: object, field: str) -> list[str]:
+    if not isinstance(value, list) or any(type(item) is not str for item in value):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", field)
+    return cast(list[str], value)
+
+
+def _load_authoritative_contract() -> _AuthoritativeContract:
+    """Load, digest-pin, deserialize, and fully validate the sole contract anchor."""
+    raw_bytes = _contract_resource_bytes()
+    digest = __import__("hashlib").sha256(raw_bytes).hexdigest()
+    if digest != CONTRACT_CANONICAL_SHA256:
+        raise JournalFailure("CONTRACT_DIGEST_MISMATCH", digest)
+    try:
+        decoded = raw_bytes.decode("utf-8", errors="strict")
+        raw_object = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise JournalFailure("CONTRACT_DESERIALIZATION_FAILED", type(exc).__name__) from exc
+    if not isinstance(raw_object, dict):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "root")
+    raw = cast(dict[str, object], raw_object)
+    required_root = {
+        "contract_version",
+        "certificate_version",
+        "purpose",
+        "expected",
+        "allowed_record_kinds",
+        "allowed_lifecycle_order",
+        "required_invariants",
+        "external_build_envelope_excluded",
+        "safety",
+    }
+    if set(raw) != required_root:
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "root_fields")
+    if (
+        raw["contract_version"] != CONTRACT_VERSION
+        or raw["certificate_version"] != CERTIFICATION_VERSION
+    ):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "versions")
+    if type(raw["purpose"]) is not str:
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "purpose")
+    expected_object = raw["expected"]
+    if not isinstance(expected_object, dict):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "expected")
+    expected = cast(dict[str, object], expected_object)
+    expected_fields = {
+        "run_id",
+        "scenario_canonical_sha256",
+        "configuration_versions",
+        "rth_start",
+        "rth_stop",
+        "intake_stop",
+        "epoch_memberships",
+        "clock_boundaries",
+        "accepted_events",
+        "rejected_events",
+        "restoration_membership",
+    }
+    if set(expected) != expected_fields:
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "expected_fields")
+    configuration_object = expected["configuration_versions"]
+    expected_configuration_fields = {"scenario", "control_model", "shadow_model", "coverage"}
+    if (
+        not isinstance(configuration_object, dict)
+        or set(configuration_object) != expected_configuration_fields
+        or any(type(value) is not str for value in configuration_object.values())
+        or type(expected["scenario_canonical_sha256"]) is not str
+    ):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "configuration_versions")
+    configuration_versions = tuple(sorted(cast(dict[str, str], configuration_object).items()))
+    event_fields = {"event_id", "epoch_sequence", "contract_identity", "channel"}
+
+    def events(field: str) -> tuple[tuple[str, int, str, str], ...]:
+        items = expected[field]
+        if not isinstance(items, list):
+            raise JournalFailure("CONTRACT_VALIDATION_FAILED", field)
+        result: list[tuple[str, int, str, str]] = []
+        for item in items:
+            if not isinstance(item, dict) or set(item) != event_fields:
+                raise JournalFailure("CONTRACT_VALIDATION_FAILED", field)
+            typed = cast(dict[str, object], item)
+            if (
+                type(typed["event_id"]) is not str
+                or type(typed["epoch_sequence"]) is not int
+                or type(typed["contract_identity"]) is not str
+                or type(typed["channel"]) is not str
+            ):
+                raise JournalFailure("CONTRACT_VALIDATION_FAILED", field)
+            try:
+                UUID(typed["event_id"])
+            except ValueError as exc:
+                raise JournalFailure("CONTRACT_VALIDATION_FAILED", field) from exc
+            result.append(
+                (
+                    typed["event_id"],
+                    typed["epoch_sequence"],
+                    typed["contract_identity"],
+                    typed["channel"],
+                )
             )
+        if len(set(result)) != len(result):
+            raise JournalFailure("CONTRACT_VALIDATION_FAILED", f"{field}_duplicate")
+        return tuple(result)
 
-        class Equities:
-            authenticated = True
+    epoch_values = expected["epoch_memberships"]
+    if not isinstance(epoch_values, list):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "epoch_memberships")
+    epoch_memberships = tuple(
+        tuple(_strict_string_list(value, "epoch_memberships")) for value in epoch_values
+    )
+    for field in ("run_id", "rth_start", "rth_stop", "intake_stop"):
+        if type(expected[field]) is not str:
+            raise JournalFailure("CONTRACT_VALIDATION_FAILED", field)
+    try:
+        run_id = UUID(cast(str, expected["run_id"]))
+        for field in ("rth_start", "rth_stop", "intake_stop"):
+            parsed = datetime.fromisoformat(cast(str, expected[field]))
+            if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+                raise ValueError(field)
+    except ValueError as exc:
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "identity_or_time") from exc
+    safety = raw["safety"]
+    if safety != {
+        "trading_enabled": False,
+        "orders_constructed": 0,
+        "orders_submitted": 0,
+        "live_providers": False,
+    }:
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "safety")
+    required_invariants = _strict_string_list(raw["required_invariants"], "required_invariants")
+    lifecycle_order = _strict_string_list(raw["allowed_lifecycle_order"], "allowed_lifecycle_order")
+    if not required_invariants or len(set(required_invariants)) != len(required_invariants):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "required_invariants")
+    if not lifecycle_order or len(set(lifecycle_order)) != len(lifecycle_order):
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "allowed_lifecycle_order")
+    if len(epoch_memberships) != 3:
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "epoch_memberships")
+    clock_boundaries = _strict_string_list(expected["clock_boundaries"], "clock_boundaries")
+    if len(clock_boundaries) != 2:
+        raise JournalFailure("CONTRACT_VALIDATION_FAILED", "clock_boundaries")
+    contract = AcceptanceContract(
+        contract_version=raw["contract_version"],
+        certificate_version=raw["certificate_version"],
+        expected_run_id=run_id,
+        allowed_record_kinds=frozenset(
+            _strict_string_list(raw["allowed_record_kinds"], "allowed_record_kinds")
+        ),
+        expected_epoch_memberships=epoch_memberships,
+        expected_clock_boundaries=tuple(clock_boundaries),
+        expected_rth_start=cast(str, expected["rth_start"]),
+        expected_rth_stop=cast(str, expected["rth_stop"]),
+        expected_intake_stop=cast(str, expected["intake_stop"]),
+        expected_accepted_events=events("accepted_events"),
+        expected_rejected_events=events("rejected_events"),
+        expected_restoration_membership=tuple(
+            _strict_string_list(expected["restoration_membership"], "restoration_membership")
+        ),
+        required_invariants=tuple(required_invariants),
+        allowed_lifecycle_order=tuple(lifecycle_order),
+    )
+    _strict_string_list(raw["external_build_envelope_excluded"], "external_build_envelope_excluded")
+    return _AuthoritativeContract(
+        contract,
+        digest,
+        expected["scenario_canonical_sha256"],
+        configuration_versions,
+    )
 
-            async def historical_bootstrap(
-                self, _symbols: object, _date: object
-            ) -> HistoricalBootstrap:
-                return historical
 
-            async def events(self, _symbols: object) -> Any:
-                for symbol in ("AAPL", "SPY", "XLK"):
-                    yield event(
-                        symbol, EventKind.EQUITY, 1, price=100, volume=100_000, conditions=("@",)
-                    )
+class _MutableClock:
+    def __init__(self, start: datetime) -> None:
+        self._now = start
 
-        class Theta:
-            connected = True
-            authenticated = True
-            stream_status = "healthy"
-            subscription_acknowledged = True
+    def __call__(self) -> datetime:
+        return self._now
 
-            def __init__(
-                self,
-                *,
-                stage_callback: Callable[[dict[str, object]], None] | None = None,
-                **_: object,
-            ) -> None:
-                self.contracts = (contract,)
-                self.request_types = ("TRADE", "QUOTE")
-                self.request_registry: dict[int, object] = {}
-                self.acknowledged_ids = {1, 2}
-                self.diagnostics: list[str] = []
-                self.rejected_event_diagnostics: list[str] = []
-                self.rejected_event_overflow = 0
-                self.rejected_request_types: list[str] = []
-                self.acknowledged_contracts = {contract}
-                self.stage_callback = stage_callback
+    def set(self, value: datetime) -> None:
+        if value < self._now:
+            raise ValueError("clock_cannot_move_backwards")
+        self._now = value
 
-            async def events(self, _symbols: object) -> Any:
-                if self.stage_callback is not None:
-                    self.stage_callback(
-                        {"record_type": "phase4_stage", "stage": "websocket_connected"}
-                    )
-                    self.stage_callback(
-                        {"record_type": "phase4_stage", "stage": "subscriptions_acknowledged"}
-                    )
-                yield event(
-                    "AAPL",
-                    EventKind.OPTIONS,
-                    1,
-                    provider_event_kind="quote",
-                    price=3.10,
-                    volume=0,
-                    contract=contract.__dict__,
-                    quote_context={"bid": 3.09, "ask": 3.10},
-                    conditions=("@",),
-                )
-                yield event(
-                    "AAPL",
-                    EventKind.OPTIONS,
-                    2,
-                    provider_event_kind="trade",
-                    price=3.10,
-                    volume=1000,
-                    contract=contract.__dict__,
-                    quote_context={"bid": 3.09, "ask": 3.10},
-                    conditions=("@",),
-                )
 
-        composition = CompositionInterfaces(
-            settings=settings,
-            clock=lambda: now,
-            alpaca=Equities(),
-            theta_factory=lambda **kwargs: Theta(**kwargs),
-            repository=repository,
-            writer_factory=lambda repo: AsyncAuditWriter(
-                repo, soft_limit=8, hard_limit=16, batch_size=2
+_CONTRACT_A = ThetaContract("A", 20260821, 10000, "C")
+_CONTRACT_B = ThetaContract("B", 20260821, 11000, "C")
+_CONTRACTS_BY_ID = MappingProxyType(
+    {"A:20260821:10000:C": _CONTRACT_A, "B:20260821:11000:C": _CONTRACT_B}
+)
+
+
+class _DeterministicPlanner:
+    def plan(
+        self,
+        selections: tuple[UniverseSelection, ...] = (),
+        sequence: int = 1,
+        effective_at: datetime | None = None,
+        previous_contracts: tuple[ThetaContract, ...] = (),
+        baseline_symbols: frozenset[str] = frozenset(),
+    ) -> PlannerEpoch:
+        del selections, baseline_symbols
+        return PlannerEpoch.create(
+            sequence=sequence,
+            effective_at=effective_at or datetime(2026, 8, 11, tzinfo=UTC),
+            candidate_population_version=PILOT_COVERAGE_POPULATION_VERSION,
+            selected_contracts=tuple(
+                _CONTRACTS_BY_ID[value]
+                for value in _checked_in_scenario().epoch_memberships[sequence - 1]
             ),
+            previous_contracts=previous_contracts,
+            provenance="deterministic-causal-certification-v2",
         )
-        stage_records: list[dict[str, object]] = []
-        result = await live_smoke.run(
-            0.01,
-            symbols=("AAPL",),
-            contracts=(contract,),
-            request_types=("TRADE", "QUOTE"),
-            impact_baselines={("AAPL", 20260821): _baseline()},
-            run_id=RUN_ID,
-            composition=composition,
-            stage_callback=lambda record: stage_records.append(
-                {"stage": record.get("stage"), "record_type": record.get("record_type")}
-            ),
+
+
+class _DeterministicAdapter:
+    request_types = ("TRADE", "QUOTE")
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.connection_generation = 0
+        self._next_id = 1
+        self._active: set[ThetaContract] = set()
+
+    async def connect(self) -> None:
+        self.connected = True
+        self.connection_generation += 1
+
+    async def add_subscriptions(self, contracts: tuple[ThetaContract, ...]) -> tuple[int, ...]:
+        result = tuple(range(self._next_id, self._next_id + 2 * len(contracts)))
+        self._next_id += len(result)
+        self._active.update(contracts)
+        return result
+
+    async def remove_subscriptions(self, contracts: tuple[ThetaContract, ...]) -> tuple[int, ...]:
+        result = tuple(range(self._next_id, self._next_id + 2 * len(contracts)))
+        self._next_id += len(result)
+        self._active.difference_update(contracts)
+        return result
+
+    async def acknowledge(
+        self, expected_request_ids: tuple[int, ...], timeout: float | None = None
+    ) -> SubscriptionAcknowledgement:
+        del timeout
+        return SubscriptionAcknowledgement(
+            acknowledged=expected_request_ids,
+            rejected=(),
+            timed_out=(),
+            partially_acknowledged=False,
+            accepted=True,
+            diagnostic="deterministic_exact_acknowledgement",
         )
-        for stage in stage_records:
-            _record(self.records, "composition_stage", **stage)
-        option_events = [item for item in repository.events if item.kind == EventKind.OPTIONS]
-        impact = evaluate_cluster(
-            {
-                "cluster_id": "executed-cluster-1",
-                "run_id": str(RUN_ID),
-                "root": "AAPL",
-                "expiration": 20260821,
-                "strike": 100000,
-                "right": "C",
-                "constituent_trade_ids": [str(item.event_id) for item in option_events],
-                "first_constituent_timestamp": now.isoformat(),
-                "last_constituent_timestamp": now.isoformat(),
-                "aggregate_eligible_premium": "100000",
-                "ask_side_percentage": "100",
-                "unknown_premium_percentage": "0",
-                "exchange_set": ["CBOE"],
-                "qualification_state": True,
+
+    def is_event_accepted(self, contract: ThetaContract) -> bool:
+        return contract in self._active
+
+    async def restore_epoch(self, desired: tuple[ThetaContract, ...]) -> None:
+        self.connected = True
+        self.connection_generation += 1
+        self._active = set(desired)
+
+    def diagnostics(self) -> dict[str, object]:
+        return {
+            "connected": self.connected,
+            "connection_generation": self.connection_generation,
+            "active_contract_count": len(self._active),
+        }
+
+
+class _EmptyEventStream:
+    def events(self) -> Any:
+        async def values() -> Any:
+            if False:
+                yield None
+
+        return values()
+
+    async def health(self) -> dict[str, object]:
+        return {"status": "healthy"}
+
+
+class _DeterministicDiscovery:
+    async def discover(self, symbols: tuple[str, ...], as_of: datetime) -> tuple[object, ...]:
+        return tuple(symbols)
+
+    async def prices(self, symbols: tuple[str, ...]) -> dict[str, Decimal]:
+        return {symbol: Decimal(100) for symbol in symbols}
+
+
+class _DeterministicEnrichment:
+    async def enrich(
+        self,
+        discovered: tuple[object, ...],
+        prices: dict[str, Decimal],
+        as_of: datetime,
+    ) -> tuple[UniverseSelection, ...]:
+        del discovered, prices, as_of
+        return ()
+
+
+def _make_event(number: int, contract: ThetaContract, channel: str, at: datetime) -> CanonicalEvent:
+    return CanonicalEvent(
+        event_id=UUID(f"4b000000-0000-4000-8000-{number:012d}"),
+        kind=EventKind.OPTIONS,
+        symbol=contract.root,
+        source="deterministic-driver",
+        source_timestamp=at,
+        received_timestamp=at,
+        normalized_timestamp=at,
+        sequence=number,
+        payload={
+            "provider_event_kind": channel.lower(),
+            "price": 3.1,
+            "volume": 100,
+            "contract": {
+                "root": contract.root,
+                "expiration": contract.expiration,
+                "strike": contract.strike,
+                "right": contract.right,
             },
-            [
+            "quote_context": {"bid": 3.0, "ask": 3.1},
+            "conditions": ("@",),
+        },
+    )
+
+
+class _DeterministicSessionDriver(SessionDriverPort):
+    """Timestamp-ordered inputs; timers are selected independently by the shell."""
+
+    def __init__(self, clock: _MutableClock, signals: list[DriverSignal]) -> None:
+        self._clock = clock
+        self._signals = signals
+        self._index = 0
+
+    async def next_signal(
+        self, next_reevaluation: datetime | None, intake_stop: datetime
+    ) -> DriverSignal:
+        next_external = self._signals[self._index] if self._index < len(self._signals) else None
+        candidates = [intake_stop]
+        if next_reevaluation is not None:
+            candidates.append(next_reevaluation)
+        boundary = min(candidates)
+        if next_external is None or boundary <= next_external.timestamp:
+            self._clock.set(boundary)
+            return DriverSignal("stop" if boundary == intake_stop else "clock", boundary)
+        self._index += 1
+        self._clock.set(next_external.timestamp)
+        return next_external
+
+
+def generate_phase4b_certification(
+    output_paths: CertificationOutputPaths,
+) -> CertificationArtifacts:
+    """Run and publish the sole authoritative Phase 4B certification lifecycle."""
+    if type(output_paths) is not CertificationOutputPaths:
+        raise JournalFailure("OUTPUT_PATHS_INVALID")
+    requested_destinations = (
+        output_paths.journal,
+        output_paths.persistence_receipt,
+        output_paths.replay_receipt,
+        output_paths.certificate,
+    )
+    if any(not isinstance(path, Path) for path in requested_destinations):
+        raise JournalFailure("OUTPUT_PATHS_INVALID")
+    destinations = tuple(
+        path.parent.resolve(strict=False) / path.name for path in requested_destinations
+    )
+    if len(set(destinations)) != len(destinations):
+        raise JournalFailure("OUTPUT_PATHS_NOT_DISTINCT")
+    parents = {path.parent for path in destinations}
+    if len(parents) != 1:
+        raise JournalFailure("OUTPUT_PATHS_INVALID", "common_parent_required")
+    output_parent = parents.pop()
+    output_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if output_parent.is_symlink() or not output_parent.is_dir():
+        raise JournalFailure("OUTPUT_PATHS_INVALID", "parent")
+    if any(path.exists() or path.is_symlink() for path in destinations):
+        raise JournalFailure("OUTPUT_TARGET_EXISTS")
+
+    authority = _load_authoritative_contract()
+    contract = authority.value
+    scenario = _checked_in_scenario()
+    scenario_digest = sha256(scenario.as_dict())
+    if scenario_digest != SCENARIO_CANONICAL_SHA256:
+        raise JournalFailure("SCENARIO_DIGEST_MISMATCH", scenario_digest)
+    if (
+        scenario.version != SCENARIO_VERSION
+        or scenario_digest != authority.scenario_canonical_sha256
+        or scenario.run_id != contract.expected_run_id
+        or scenario.rth_start != contract.expected_rth_start
+        or scenario.rth_stop != contract.expected_rth_stop
+        or scenario.intake_stop != contract.expected_intake_stop
+        or scenario.epoch_memberships != contract.expected_epoch_memberships
+    ):
+        raise JournalFailure("SCENARIO_CONTRACT_MISMATCH")
+
+    async def compose_owned_scenario() -> VerifiedJournal:
+        start = datetime.fromisoformat(scenario.rth_start)
+        clock = _MutableClock(start)
+        signals: list[DriverSignal] = []
+        for signal in scenario.signals:
+            timestamp = datetime.fromisoformat(signal.timestamp)
+            if signal.kind == "disconnect":
+                signals.append(DriverSignal("disconnect", timestamp))
+                continue
+            if (
+                signal.kind != "event"
+                or signal.event_number is None
+                or signal.contract_identity is None
+                or signal.channel is None
+            ):
+                raise JournalFailure("SCENARIO_DEFINITION_INVALID")
+            signals.append(
+                DriverSignal(
+                    "event",
+                    timestamp,
+                    _make_event(
+                        signal.event_number,
+                        _CONTRACTS_BY_ID[signal.contract_identity],
+                        signal.channel,
+                        start,
+                    ),
+                )
+            )
+        shell = OrchestrationShell(
+            config=OrchestrationConfig(
+                run_id=scenario.run_id,
+                session_date=scenario.session_date,
+                rth_start=start,
+                rth_stop=datetime.fromisoformat(scenario.rth_stop),
+                intake_stop=datetime.fromisoformat(scenario.intake_stop),
+                reevaluation_interval=timedelta(seconds=scenario.reevaluation_seconds),
+                scenario_version=scenario.version,
+                acceptance_contract_version=contract.contract_version,
+            ),
+            settings=Settings(
+                alpaca_key_id=SecretStr("fixture-key"),
+                alpaca_secret_key=SecretStr("fixture-secret"),
+                theta_api_key=SecretStr("fixture-theta"),
+                database_url=None,
+            ),
+            clock=clock,
+            discovery=_DeterministicDiscovery(),
+            enrichment=_DeterministicEnrichment(),
+            planner=_DeterministicPlanner(),
+            subscription_adapter=cast(Any, _DeterministicAdapter()),
+            event_stream=cast(Any, _EmptyEventStream()),
+            repository=InMemoryRepository(),
+            session_driver=_DeterministicSessionDriver(clock, signals),
+        )
+        result = await shell.run()
+        if result.status != "live_observation_complete":
+            raise JournalFailure("COMPOSITION_FAILED", result.status)
+        return verify_complete(shell.journal, contract)
+
+    try:
+        original = asyncio.run(compose_owned_scenario())
+    except RuntimeError as exc:
+        if "asyncio.run() cannot be called" in str(exc):
+            raise JournalFailure("CERTIFICATION_EVENT_LOOP_ACTIVE") from exc
+        raise
+    journal_repository = InMemoryJournalRepository()
+    persistence = persist_verified_journal(contract, original, journal_repository)
+    try:
+        loaded = journal_repository.load(persistence.persistence_identity)
+    except JournalFailure:
+        raise
+    except Exception as exc:
+        raise JournalFailure("PERSISTED_JOURNAL_MISSING", type(exc).__name__) from exc
+    if loaded != original.canonical_serialization:
+        raise JournalFailure("PERSISTED_JOURNAL_BYTES_MISMATCH")
+    reconstructed = verify_complete(Journal.deserialize(loaded), contract)
+    if reconstructed is original:
+        raise JournalFailure("REPLAY_RECONSTRUCTION_NOT_DISTINCT")
+    verify_persistence_receipt(contract, original, persistence)
+
+    def observed_projection(value: VerifiedJournal) -> dict[str, object]:
+        records = value.records
+
+        def by_kind(kind: str) -> tuple[JournalRecord, ...]:
+            return tuple(record for record in records if record.kind == kind)
+
+        configuration = by_kind(JOURNAL_KIND_CONFIGURATION)[0]
+        epochs = by_kind(JOURNAL_KIND_EPOCH_CREATED)
+        commands = by_kind(JOURNAL_KIND_SUBSCRIPTION_COMMAND)
+        acknowledgements = {
+            record.command_id: record
+            for record in by_kind(JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)
+        }
+        finalized = by_kind(JOURNAL_KIND_SESSION_FINALIZED)[0]
+        return {
+            "run_id": str(value.run_id),
+            "configuration_versions": {
+                "scenario": configuration.payload["scenario_version"],
+                "control_model": configuration.payload["control_model_version"],
+                "shadow_model": configuration.payload["shadow_model_version"],
+                "coverage": configuration.payload["coverage_version"],
+            },
+            "epochs": [
                 {
-                    "trade_classification": "ask",
-                    "classification_confidence": 1,
-                    "trade_size": int(item.payload.get("volume", 0)),
-                    "delta": None,
-                    "delta_provenance": None,
+                    "sequence": record.epoch_sequence,
+                    "epoch_id": record.epoch_id,
+                    "membership": list(cast(list[object], record.payload["membership"])),
+                    "operation_id": record.operation_id,
                 }
-                for item in option_events
+                for record in epochs
             ],
-            _baseline(),
-        ).as_dict()
-        repository.record_impact_cluster(impact)
-        _record(
-            self.records,
-            "impact_evaluation",
-            cluster_id=impact["cluster_id"],
-            delta_provenance=impact.get("delta_provenance"),
-            qualified=impact.get("shadow_qualified"),
-        )
-        for event_item in repository.events:
-            _record(
-                self.records,
-                "normalized_event",
-                event_id=str(event_item.event_id),
-                event_kind=event_item.kind.value,
-                provider_event_kind=event_item.payload.get("provider_event_kind"),
-            )
-        for decision_index, _decision in enumerate(repository.decisions, 1):
-            _record(self.records, "decision", decision_order=decision_index)
-        _record(
-            self.records,
-            "composition_result",
-            trading_enabled=result.get("trading_enabled"),
-            orders_constructed=result.get("orders_constructed"),
-            orders_submitted=result.get("orders_submitted"),
-            decisions_persisted=result.get("decisions_persisted"),
-        )
-        return {"result": result, "repository": repository}
-
-    async def run(self) -> dict[str, object]:
-        self.execute_planners()
-        self.execute_acknowledgements()
-        self.execute_lifecycle()
-        composition = await self.execute_composition()
-        return {"records": self.records, **composition}
-
-
-def _observed_invariant(
-    records: list[dict[str, object]], name: str, observed: object, expected: object, *, source: str
-) -> dict[str, object]:
-    ids = [str(record["record_id"]) for record in records if record["kind"] == source]
-    return {
-        "status": "PASS" if observed == expected else "FAIL",
-        "evidence_source": source,
-        "record_ids": ids,
-        "expected": expected,
-        "observed": observed,
-    }
-
-
-def _production_boundary_probe() -> dict[str, object]:
-    from . import phase4_live_smoke
-
-    supported = "composition" in inspect.signature(phase4_live_smoke.run).parameters
-    return {
-        "supported": supported,
-        "probe_result": "supported" if supported else "missing composition dependency interface",
-    }
-
-
-def _certificate() -> dict[str, object]:
-    commit, dirty = _git()
-    scenario = ScenarioExecutor(scenario_definition())
-    execution = cast(dict[str, Any], asyncio.run(scenario.run()))
-    records = execution["records"]
-    repository = execution["repository"]
-    result = execution["result"]
-    planner_records = [record for record in records if record["kind"] == "planner"]
-    ack_records = [record for record in records if record["kind"] == "acknowledgement"]
-    event_records = [record for record in records if record["kind"] == "normalized_event"]
-    lifecycle_records = [record for record in records if record["kind"] == "lifecycle"]
-    impact_records = [record for record in records if record["kind"] == "impact_evaluation"]
-    plans = [record["plan"] for record in planner_records]
-    selected = [item for plan in plans for item in plan["selected"]]
-    trade_count = len(selected)
-    quote_count = len(selected)
-    persisted = len(repository.events) + len(repository.decisions)
-    finalization_observed = any(
-        record.get("lifecycle") == "finalization" for record in lifecycle_records
-    )
-    boundary = _production_boundary_probe()
-    replay = [record.model_dump(mode="json") for record in repository.replay_events(RUN_ID)]
-    replay_equal = len(replay) == len(repository.events) and all(
-        left == right.model_dump(mode="json")
-        for left, right in zip(replay, repository.events, strict=True)
-    )
-    replay_decisions = tuple(repository.replay_decisions(RUN_ID))
-    replay_equal = (
-        replay_equal
-        and len(replay_decisions) == len(repository.decisions)
-        and all(
-            left.model_dump(mode="json") == right.model_dump(mode="json")
-            for left, right in zip(replay_decisions, repository.decisions, strict=True)
-        )
-    )
-    epoch_selected = [_canonical(record["plan"]["selected"]) for record in planner_records]
-    missing_delta = sum(record.get("delta_provenance") is None for record in impact_records)
-    invariants = {
-        "exact_head_clean": _observed_invariant(
-            records, "exact_head_clean", not dirty, True, source="composition_result"
-        ),
-        "production_composition_interface": _observed_invariant(
-            records,
-            "production_composition_interface",
-            boundary["supported"],
-            True,
-            source="composition_result",
-        ),
-        "planner_executed": _observed_invariant(
-            records, "planner_executed", len(planner_records), 3, source="planner"
-        ),
-        "dynamic_removal": _observed_invariant(
-            records,
-            "dynamic_removal",
-            epoch_selected[0] != epoch_selected[-1],
-            True,
-            source="planner",
-        ),
-        "epoch_immutability": _observed_invariant(
-            records, "epoch_immutability", boundary["supported"], True, source="composition_result"
-        ),
-        "exact_planner_epoch_consumed": _observed_invariant(
-            records,
-            "exact_planner_epoch_consumed",
-            boundary["supported"],
-            True,
-            source="composition_result",
-        ),
-        "no_duplicate_discovery_or_enrichment": _observed_invariant(
-            records,
-            "no_duplicate_discovery_or_enrichment",
-            boundary["supported"],
-            True,
-            source="composition_result",
-        ),
-        "dynamic_admission": _observed_invariant(
-            records,
-            "dynamic_admission",
-            len({_canonical(record["plan"]["selected"]) for record in planner_records}),
-            3,
-            source="planner",
-        ),
-        "paired_trade_quote": _observed_invariant(
-            records, "paired_trade_quote", trade_count == quote_count, True, source="planner"
-        ),
-        "capacity_trade_at_most_15000": _observed_invariant(
-            records, "capacity_trade_at_most_15000", trade_count <= 15000, True, source="planner"
-        ),
-        "capacity_quote_at_most_10000": _observed_invariant(
-            records, "capacity_quote_at_most_10000", quote_count <= 10000, True, source="planner"
-        ),
-        "acknowledgements_observed": _observed_invariant(
-            records, "acknowledgements_observed", len(ack_records), 6, source="acknowledgement"
-        ),
-        "unacknowledged_events_rejected": _observed_invariant(
-            records,
-            "unacknowledged_events_rejected",
-            sum(not bool(record["accepted"]) for record in ack_records),
-            2,
-            source="acknowledgement",
-        ),
-        "events_executed": _observed_invariant(
-            records,
-            "events_executed",
-            len(event_records),
-            len(repository.events),
-            source="normalized_event",
-        ),
-        "missing_delta_provenance_unscoreable": _observed_invariant(
-            records,
-            "missing_delta_provenance_unscoreable",
-            missing_delta > 0,
-            True,
-            source="impact_evaluation",
-        ),
-        "persistence_enqueue_equals_drain": _observed_invariant(
-            records,
-            "persistence_enqueue_equals_drain",
-            int(result.get("decisions_persisted", 0)) == len(repository.decisions),
-            True,
-            source="composition_result",
-        ),
-        "finalization_complete": _observed_invariant(
-            records, "finalization_complete", finalization_observed, True, source="lifecycle"
-        ),
-        "replay_equality": _observed_invariant(
-            records, "replay_equality", replay_equal, True, source="normalized_event"
-        ),
-        "trading_disabled": _observed_invariant(
-            records,
-            "trading_disabled",
-            result.get("trading_enabled"),
-            False,
-            source="composition_result",
-        ),
-        "orders_constructed_zero": _observed_invariant(
-            records,
-            "orders_constructed_zero",
-            result.get("orders_constructed"),
-            0,
-            source="composition_result",
-        ),
-        "orders_submitted_zero": _observed_invariant(
-            records,
-            "orders_submitted_zero",
-            result.get("orders_submitted"),
-            0,
-            source="composition_result",
-        ),
-    }
-    failures = [
-        {"code": name.upper(), "message": str(value["observed"])}
-        for name, value in invariants.items()
-        if value["status"] == "FAIL"
-    ]
-    return {
-        "certification_version": CERTIFICATION_VERSION,
-        "git_commit": commit,
-        "worktree_dirty": dirty,
-        "evidence_kind": "RUNTIME_CERTIFICATE",
-        "scenario_version": SCENARIO_VERSION,
-        "scenario_sha256": scenario_sha256(),
-        "configuration_versions": {
-            "control_model": "CONTROL_V1",
-            "shadow_model": "SHADOW_IMPACT_V1",
-            "coverage": "impact-coverage-v1",
-        },
-        "run_id": str(RUN_ID),
-        "trace": records,
-        "universe": {
-            "epoch_count": len(planner_records),
-            "contracts_evaluated": sum(
-                len(record["plan"]["candidates"]) for record in planner_records
-            ),
-            "contracts_admitted": len(selected),
-            "contracts_removed": 0,
-            "paired_capacity": {"trade": trade_count, "quote": quote_count},
-            "acknowledgements": {
-                "accepted": sum(bool(record["accepted"]) for record in ack_records),
-                "duplicate_or_unmatched_rejected": sum(
-                    not bool(record["accepted"]) for record in ack_records
-                ),
+            "subscriptions": [
+                {
+                    "command_id": command.command_id,
+                    "epoch_sequence": command.epoch_sequence,
+                    "contract_identity": command.contract_identity,
+                    "action": command.payload["action"],
+                    "channel": command.payload["channel"],
+                    "ack_id": acknowledgements[command.command_id].ack_id,
+                    "acknowledged": acknowledgements[command.command_id].payload["accepted"],
+                    "command_sequence": command.sequence,
+                    "ack_sequence": acknowledgements[command.command_id].sequence,
+                }
+                for command in commands
+            ],
+            "events": {
+                kind.split(".", 1)[1]: [
+                    {
+                        "event_id": record.payload["event_id"],
+                        "epoch_sequence": record.epoch_sequence,
+                        "contract_identity": record.contract_identity,
+                        "channel": record.payload["event_kind"],
+                    }
+                    for record in by_kind(kind)
+                ]
+                for kind in (JOURNAL_KIND_EVENT_ACCEPTED, JOURNAL_KIND_EVENT_REJECTED)
             },
+            "clock": {
+                "boundaries": [
+                    record.payload["boundary"] for record in by_kind(JOURNAL_KIND_CLOCK_ADVANCED)
+                ],
+                "reevaluations": len(by_kind(JOURNAL_KIND_REEVALUATION_START)),
+            },
+            "recovery": {
+                "disconnects": len(by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED)),
+                "reconnects": len(by_kind(JOURNAL_KIND_PROVIDER_RECONNECTED)),
+                "restorations": [
+                    {
+                        "cycle_id": record.correlation_id,
+                        "epoch_sequence": record.epoch_sequence,
+                        "membership": list(cast(list[object], record.payload["membership"])),
+                    }
+                    for record in by_kind(JOURNAL_KIND_EPOCH_RESTORED)
+                ],
+            },
+            "lifecycle": [
+                record.kind
+                for record in records
+                if record.kind
+                in {
+                    "session.start",
+                    "configuration.loaded",
+                    "provider.ready",
+                    "intake.stopped",
+                    "persistence.drained",
+                    "session.finalized",
+                }
+            ],
+            "orders": {
+                "trading_enabled": finalized.payload["trading_enabled"],
+                "constructed": finalized.payload["orders_constructed"],
+                "submitted": finalized.payload["orders_submitted"],
+            },
+        }
+
+    original_observed = observed_projection(original)
+    observed = observed_projection(reconstructed)
+    original_projection_digest = sha256(original_observed)
+    replayed_projection_digest = sha256(observed)
+    original_byte_digest = sha256_bytes(original.canonical_serialization)
+    reconstructed_byte_digest = sha256_bytes(reconstructed.canonical_serialization)
+    replay = ReplayReceipt.from_values(
+        contract_version=contract.contract_version,
+        run_id=reconstructed.run_id,
+        persistence_identity=persistence.persistence_identity,
+        original_root_digest=original.root_digest,
+        reconstructed_root_digest=reconstructed.root_digest,
+        original_byte_sha256=original_byte_digest,
+        reconstructed_byte_sha256=reconstructed_byte_digest,
+        original_record_count=original.seal.record_count,
+        reconstructed_record_count=reconstructed.seal.record_count,
+        original_projection_digest=original_projection_digest,
+        replayed_projection_digest=replayed_projection_digest,
+        exact_equality=(
+            loaded == original.canonical_serialization
+            and reconstructed.canonical_serialization == original.canonical_serialization
+            and reconstructed.root_digest == original.root_digest
+            and reconstructed.seal.record_count == original.seal.record_count
+            and original_projection_digest == replayed_projection_digest
+        ),
+    )
+    verify_replay_receipt(contract, original, persistence, replay)
+
+    observed_epochs = tuple(
+        tuple(map(str, cast(list[object], item["membership"])))
+        for item in cast(list[dict[str, object]], observed["epochs"])
+    )
+    clock = cast(dict[str, object], observed["clock"])
+    subscriptions = cast(list[dict[str, object]], observed["subscriptions"])
+    recovery = cast(dict[str, object], observed["recovery"])
+    orders = cast(dict[str, object], observed["orders"])
+    lifecycle = tuple(map(str, cast(list[object], observed["lifecycle"])))
+    invariants = {
+        "run_binding": observed["run_id"] == str(contract.expected_run_id),
+        "scenario_binding": scenario_digest == authority.scenario_canonical_sha256,
+        "configuration_versions_exact": cast(dict[str, object], observed["configuration_versions"])
+        == dict(authority.configuration_versions),
+        "epochs_exact": observed_epochs == contract.expected_epoch_memberships,
+        "paired_commands_acknowledged": all(
+            item["acknowledged"] is True
+            and cast(int, item["command_sequence"]) < cast(int, item["ack_sequence"])
+            for item in subscriptions
+        ),
+        "clock_boundaries_exact": tuple(map(str, cast(list[object], clock["boundaries"])))
+        == contract.expected_clock_boundaries,
+        "disconnect_reconnect_restore": recovery["disconnects"] == 1
+        and recovery["reconnects"] == 1
+        and len(cast(list[object], recovery["restorations"])) == 1,
+        "lifecycle_complete": lifecycle == contract.allowed_lifecycle_order,
+        "journal_sealed_finalization_terminal": reconstructed.records[-1].kind
+        == JOURNAL_KIND_SESSION_FINALIZED,
+        "persistence_complete": persistence.persistence_completed is True,
+        "replay_exact": replay.exact_equality is True,
+        "trading_disabled": orders["trading_enabled"] is False,
+        "orders_zero": orders["constructed"] == 0 and orders["submitted"] == 0,
+    }
+    unknown = set(contract.required_invariants) - set(invariants)
+    if unknown:
+        raise JournalFailure("CONTRACT_REQUIRED_INVARIANT_UNKNOWN", min(unknown))
+    failures = [name for name in contract.required_invariants if not invariants[name]]
+    if failures:
+        raise JournalFailure("CERTIFICATION_INVARIANT_FAILED", failures[0])
+    certificate: dict[str, object] = {
+        "certificate_version": contract.certificate_version,
+        "evidence_kind": "RUNTIME_EVIDENCE_BUNDLE_CERTIFICATE",
+        "acceptance_contract": {
+            "contract_version": contract.contract_version,
+            "canonical_sha256": authority.canonical_sha256,
+            "expected_run_id": str(contract.expected_run_id),
+            "expected_epoch_memberships": [
+                list(membership) for membership in contract.expected_epoch_memberships
+            ],
+            "expected_clock_boundaries": list(contract.expected_clock_boundaries),
+            "required_invariants": list(contract.required_invariants),
         },
-        "events": {
-            "events": len(event_records),
-            "quotes": sum(record.get("provider_event_kind") == "quote" for record in records),
-            "clusters": len(repository.impact_clusters),
-            "decisions": len(repository.decisions),
+        "deterministic_scenario": {
+            "version": scenario.version,
+            "canonical_sha256": scenario_digest,
         },
-        "persistence": {"enqueued": persisted, "drained": persisted, "queue_depth_final": 0},
-        "replay_equality": replay_equal,
-        "comparison_matrix": [
-            {
-                "cluster_id": value["cluster_id"],
-                "control": value["control_qualified"],
-                "shadow": value["shadow_qualified"],
-                "comparison": value["comparison"],
-            }
-            for value in repository.impact_clusters
-        ],
-        "delta_provenance": {
-            "recognized": 0,
-            "missing_or_unsupported": missing_delta,
-            "unscoreable_reasons": ["IMPACT_DELTA_PROVENANCE_UNAVAILABLE"] if missing_delta else [],
-        },
-        "finalization": {"status": "FINALIZED" if finalization_observed else "INCOMPLETE"},
-        "orders": {
-            "trading_enabled": bool(result.get("trading_enabled")),
-            "constructed": int(result.get("orders_constructed", -1)),
-            "submitted": int(result.get("orders_submitted", -1)),
+        "observed_projection_sha256": replayed_projection_digest,
+        "observed": {
+            **observed,
+            "journal": {
+                "record_count": reconstructed.seal.record_count,
+                "terminal_sequence": reconstructed.seal.terminal_sequence,
+                "root_digest": reconstructed.root_digest,
+                "seal_digest": reconstructed.seal.seal_digest,
+                "canonical_byte_sha256": reconstructed_byte_digest,
+            },
+            "persistence": persistence.as_dict(),
+            "replay": replay.as_dict(),
         },
         "invariants": invariants,
-        "failed_invariants": failures,
-        "overall": "PASS" if not failures else "FAIL",
+        "failed_invariants": [],
+        "overall": "PASS",
     }
+    certificate_commitment_sha256 = sha256(certificate)
+    certificate["certificate_canonical_sha256"] = certificate_commitment_sha256
+    schema_errors = validate_certificate_schema(certificate)
+    if schema_errors:
+        raise JournalFailure("CERTIFICATE_SCHEMA_INVALID", ";".join(schema_errors))
 
-
-def validate_certificate(value: dict[str, object]) -> list[str]:
-    errors: list[str] = []
+    serialized = (
+        original.canonical_serialization,
+        persistence.serialize(),
+        replay.serialize(),
+        canonical_json(certificate),
+    )
+    temporary_paths: list[Path] = []
+    published_paths: list[Path] = []
     try:
-        import jsonschema  # type: ignore[import-untyped]
+        for path, content in zip(destinations, serialized, strict=True):
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=output_parent
+            )
+            temporary = Path(temporary_name)
+            temporary_paths.append(temporary)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+        for path, temporary in zip(destinations, temporary_paths, strict=True):
+            if path.exists() or path.is_symlink():
+                raise JournalFailure("OUTPUT_TARGET_EXISTS", str(path))
+            temporary.replace(path)
+            published_paths.append(path)
+        temporary_paths.clear()
+    except JournalFailure:
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
+        for path in published_paths:
+            path.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
+        for path in published_paths:
+            path.unlink(missing_ok=True)
+        raise JournalFailure("ARTIFACT_PUBLICATION_FAILED", type(exc).__name__) from exc
+    return CertificationArtifacts(
+        output_paths=output_paths,
+        journal_sha256=sha256_bytes(serialized[0]),
+        persistence_receipt_sha256=sha256_bytes(serialized[1]),
+        replay_receipt_sha256=sha256_bytes(serialized[2]),
+        certificate_sha256=sha256_bytes(serialized[3]),
+        certificate_commitment_sha256=certificate_commitment_sha256,
+    )
 
-        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-        errors.extend(
-            error.message
-            for error in jsonschema.Draft202012Validator(
-                schema, format_checker=jsonschema.FormatChecker()
-            ).iter_errors(value)
-        )
-    except ImportError:
-        return ["missing-development-dependency:jsonschema"]
-    if errors:
-        return errors
-    invariants = value.get("invariants")
-    if isinstance(invariants, dict):
-        for name, item in invariants.items():
-            if not isinstance(item, dict):
-                continue
-            expected = item.get("expected")
-            observed = item.get("observed")
-            status = item.get("status")
-            if status != ("PASS" if observed == expected else "FAIL"):
-                errors.append(f"invariant-status-mismatch:{name}")
-            if not item.get("record_ids"):
-                errors.append(f"invariant-without-evidence:{name}")
-    trace = value.get("trace")
-    if isinstance(trace, list):
-        normalized = [
-            item.get("event_id")
-            for item in trace
-            if isinstance(item, dict) and item.get("kind") == "normalized_event"
-        ]
-        if len(normalized) != len(set(normalized)):
-            errors.append("duplicate-normalized-event")
-        planner = [
-            item for item in trace if isinstance(item, dict) and item.get("kind") == "planner"
-        ]
-        for item in planner:
-            plan = item.get("plan")
-            if isinstance(plan, dict):
-                selected = plan.get("selected", [])
-                if not isinstance(selected, list) or len(selected) > 10_000:
-                    errors.append("planner-capacity-exceeded")
-    return errors
+
+def validate_certificate_schema(value: dict[str, object]) -> list[str]:
+    """Validate certificate shape only; this is never operational verification."""
+    raw_schema = _schema_resource_bytes()
+    try:
+        schema = json.loads(raw_schema.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise JournalFailure("CERTIFICATE_SCHEMA_DESERIALIZATION_FAILED") from exc
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    return [
+        f"{'/'.join(str(item) for item in error.absolute_path) or '<root>'}: {error.message}"
+        for error in sorted(validator.iter_errors(value), key=lambda item: list(item.absolute_path))
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run deterministic Phase 4B certification")
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--validate", type=Path)
-    args = parser.parse_args(argv)
-    if args.validate:
-        value = json.loads(args.validate.read_text(encoding="utf-8"))
-        errors = validate_certificate(value)
-        print(
-            json.dumps(
-                {"schema": str(SCHEMA_PATH), "valid": not errors, "errors": errors}, sort_keys=True
+    parser.add_argument("--journal-output", type=Path, default=DEFAULT_JOURNAL_OUTPUT)
+    parser.add_argument("--persistence-output", type=Path, default=DEFAULT_PERSISTENCE_OUTPUT)
+    parser.add_argument("--replay-output", type=Path, default=DEFAULT_REPLAY_OUTPUT)
+    arguments = parser.parse_args(argv)
+    try:
+        artifacts = generate_phase4b_certification(
+            CertificationOutputPaths(
+                certificate=arguments.output,
+                journal=arguments.journal_output,
+                persistence_receipt=arguments.persistence_output,
+                replay_receipt=arguments.replay_output,
             )
         )
-        return 0 if not errors else 1
-    value = _certificate()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps(value, indent=2, sort_keys=True))
-    return 0 if value["overall"] == "PASS" else 1
+    except JournalFailure as exc:
+        print(
+            json.dumps({"certification_status": "FAILED", "failure_code": exc.code}, sort_keys=True)
+        )
+        return 1
+    print(
+        json.dumps(
+            {
+                "certification_status": "AUTHORITATIVE_ARTIFACTS_PUBLISHED",
+                "journal_sha256": artifacts.journal_sha256,
+                "persistence_receipt_sha256": artifacts.persistence_receipt_sha256,
+                "replay_receipt_sha256": artifacts.replay_receipt_sha256,
+                "certificate_sha256": artifacts.certificate_sha256,
+                "certificate_path": str(artifacts.output_paths.certificate),
+                "journal_path": str(artifacts.output_paths.journal),
+                "persistence_path": str(artifacts.output_paths.persistence_receipt),
+                "replay_path": str(artifacts.output_paths.replay_receipt),
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 if __name__ == "__main__":

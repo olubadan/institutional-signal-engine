@@ -8,8 +8,10 @@ import subprocess
 from asyncio import Semaphore
 from collections import Counter
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from time import monotonic
+from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -749,25 +751,44 @@ async def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seconds", type=float, default=60.0)
-    parser.add_argument("--skip-oi-diagnostic", action="store_true")
+    parser.add_argument(
+        "--continuous-rth",
+        action="store_true",
+        default=True,
+        help="Run continuous-RTH session through intake-stop boundary (default)",
+    )
+    parser.add_argument(
+        "--smoke-seconds",
+        type=float,
+        default=None,
+        help="Fixed-duration smoke test (seconds); overrides continuous-RTH",
+    )
     parser.add_argument("--startup-timeout-seconds", type=float, default=None)
-    parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--plan-output", type=Path)
-    parser.add_argument("--prepared-plan", type=Path)
     arguments = parser.parse_args()
+
+    if arguments.smoke_seconds is not None:
+        _run_smoke(arguments)
+    else:
+        asyncio.run(_run_orchestrated_async(arguments))
+
+
+def _run_smoke(arguments: argparse.Namespace) -> None:
+    """Fixed-duration smoke test (explicitly requested, not production RTH)."""
     try:
         result = asyncio.run(
             asyncio.wait_for(
                 run(
-                    arguments.seconds,
-                    arguments.skip_oi_diagnostic,
-                    arguments.startup_timeout_seconds,
-                    prepare_only=arguments.prepare_only,
+                    arguments.smoke_seconds,
+                    skip_oi_diagnostic=True,
+                    startup_timeout_seconds=arguments.startup_timeout_seconds,
+                    prepare_only=False,
                     plan_output=arguments.plan_output,
-                    prepared_plan=arguments.prepared_plan,
+                    prepared_plan=None,
                 ),
-                timeout=(arguments.seconds + 2 * (arguments.startup_timeout_seconds or 120) + 30),
+                timeout=(
+                    arguments.smoke_seconds + 2 * (arguments.startup_timeout_seconds or 120) + 30
+                ),
             )
         )
     except StartupTimeout as exc:
@@ -793,6 +814,205 @@ def main() -> None:
             "orders_submitted": 0,
         }
     print(json.dumps(result, sort_keys=True, default=str))
+
+
+class _DiscoveryAdapter:
+    """Production discovery port using existing Alpaca catalog and prices."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._alpaca = AlpacaEquitiesProvider(
+            settings.alpaca_data_url,
+            _secret(settings.alpaca_key_id),
+            _secret(settings.alpaca_secret_key),
+        )
+        self._catalog = AlpacaOptionsContractProvider(
+            "https://paper-api.alpaca.markets",
+            _secret(settings.alpaca_key_id),
+            _secret(settings.alpaca_secret_key),
+        )
+
+    async def discover(
+        self, symbols: tuple[str, ...], as_of: datetime
+    ) -> tuple[AlpacaOptionContract, ...]:
+        discovered: list[AlpacaOptionContract] = []
+        async for contract in self._catalog.discover_active_calls(
+            symbols,
+            limit=100,
+            expiration_date_gte=as_of.date() + timedelta(days=7),
+            expiration_date_lte=as_of.date() + timedelta(days=45),
+        ):
+            discovered.append(contract)
+        return tuple(discovered)
+
+    async def prices(self, symbols: tuple[str, ...]) -> dict[str, Decimal]:
+        return await self._alpaca.current_prices(symbols)
+
+
+class _EnrichmentAdapter:
+    """Production enrichment port using existing quote/OI/liquidity components."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._quote_provider = AlpacaOptionSnapshotProvider(
+            "https://data.alpaca.markets",
+            _secret(settings.alpaca_key_id),
+            _secret(settings.alpaca_secret_key),
+        )
+        self._oi_provider = ThetaDataOpenInterestProvider(settings.theta_terminal_http_url)
+
+    async def enrich(
+        self,
+        discovered: tuple[AlpacaOptionContract, ...],
+        prices: dict[str, Decimal],
+        as_of: datetime,
+    ) -> tuple[UniverseSelection, ...]:
+        mapping_results = tuple(
+            round_trip_validate(map_alpaca_contract(contract)) for contract in discovered
+        )
+        coarse_selections, _coarse_exclusions = AlpacaContractSelector().coarse_select(
+            mapping_results,
+            prices,
+            as_of.date(),
+            symbols=PILOT_SYMBOLS,
+            max_per_symbol=self._settings.phase4_pre_enrichment_max_per_symbol,
+        )
+        coarse_contracts = {contract for s in coarse_selections for contract in s.contracts}
+        mapping_by_contract = {
+            r.theta_contract: r
+            for r in mapping_results
+            if r.accepted and r.theta_contract in coarse_contracts
+        }
+        quote_evidence = await self._quote_provider.snapshots(
+            tuple(
+                (r.source.occ_symbol, r.canonical)
+                for r in mapping_by_contract.values()
+                if r.canonical is not None
+            ),
+            feed="opra",
+        )
+        quote_by_contract = {e.identity.theta_contract(): e for e in quote_evidence}
+        enrichment = finalize_liquidity(
+            coarse_selections,
+            mapping_results,
+            quote_by_contract,
+            {},
+            as_of,
+            max_quote_age_seconds=self._settings.phase4_quote_freshness_seconds,
+            maximum_spread=self._settings.thresholds.maximum_spread,
+            minimum_quote_size=self._settings.phase4_min_quote_size,
+            alpaca_open_interest={
+                r.theta_contract: r.source.open_interest
+                for r in mapping_results
+                if r.accepted and r.theta_contract is not None
+            },
+            require_open_interest=False,
+            policy_version=PHASE4_SWEEP_OBSERVATION_POLICY_VERSION,
+            spread_policy_version=PHASE4_OBSERVATION_SPREAD_POLICY_VERSION,
+        )
+        return enrichment.selections
+
+
+class _ThetaEventStreamAdapter:
+    """Production event stream port using real ThetaData WebSocket."""
+
+    def __init__(self, settings: Settings, contracts: tuple[ThetaContract, ...]) -> None:
+        from .providers.thetadata import ThetaDataOptionsProvider as ThetaProv
+
+        self._provider = ThetaProv(
+            settings.theta_events_url,
+            _secret(settings.theta_api_key),
+            contracts=contracts,
+            request_types=("TRADE", "QUOTE"),
+        )
+
+    async def events(self) -> "Any":
+        async for evt in self._provider.events(sorted({c.root for c in self._provider.contracts})):
+            yield evt
+
+    async def health(self) -> dict[str, object]:
+        return await self._provider.health()
+
+
+async def _run_orchestrated_async(arguments: argparse.Namespace) -> None:
+    """Production continuous-RTH orchestration path (async).
+
+    Wires real Phase 4 discovery, enrichment, and ThetaData event stream
+    ports into the OrchestrationShell. Fails closed if any port is absent.
+    """
+    from .dynamic_subscriptions import DynamicSubscriptionAdapter
+    from .orchestration import OrchestrationConfig, OrchestrationShell, ProductionPlanner
+
+    settings = _load_settings()
+    config = OrchestrationConfig.from_settings(settings)
+
+    discovery = _DiscoveryAdapter(settings)
+    enrichment = _EnrichmentAdapter(settings)
+
+    adapter = DynamicSubscriptionAdapter(
+        events_url=settings.theta_events_url,
+        api_key=_secret(settings.theta_api_key),
+        request_types=("TRADE", "QUOTE"),
+    )
+    repository = (
+        PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
+    )
+    if isinstance(repository, PostgresRepository):
+        await asyncio.to_thread(repository.initialize)
+
+    event_stream = _ThetaEventStreamAdapter(settings, ())
+
+    shell = OrchestrationShell(
+        config=config,
+        settings=settings,
+        discovery=discovery,
+        enrichment=enrichment,  # type: ignore[arg-type]
+        subscription_adapter=adapter,
+        event_stream=event_stream,
+        planner=ProductionPlanner(
+            trade_limit=settings.phase4_trade_subscription_limit,
+            quote_limit=settings.phase4_quote_subscription_limit,
+            max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
+        ),
+        repository=repository,
+    )
+
+    try:
+        session_result = await asyncio.wait_for(
+            shell.run(),
+            timeout=(8 * 3600 + 2 * (arguments.startup_timeout_seconds or 120) + 30),
+        )
+        output = shell.result()
+        print(json.dumps(output, sort_keys=True, default=str), flush=True)
+        if session_result.status not in {
+            "live_observation_complete",
+            "blocked_no_contracts_selected",
+        }:
+            raise SystemExit(2)
+    except StartupTimeout as exc:
+        report = exc.report()
+        print(json.dumps(report, sort_keys=True), flush=True)
+        raise SystemExit(2)
+    except TimeoutError:
+        report = {
+            "status": "total_command_timeout",
+            "error_category": "total_command_timeout",
+            "trading_enabled": False,
+            "orders_constructed": 0,
+            "orders_submitted": 0,
+        }
+        print(json.dumps(report, sort_keys=True), flush=True)
+        raise SystemExit(2)
+    except (ProviderError, RuntimeError, ValueError) as exc:
+        report = {
+            "status": "blocked",
+            "reason": type(exc).__name__,
+            "trading_enabled": False,
+            "orders_constructed": 0,
+            "orders_submitted": 0,
+        }
+        print(json.dumps(report, sort_keys=True, default=str), flush=True)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

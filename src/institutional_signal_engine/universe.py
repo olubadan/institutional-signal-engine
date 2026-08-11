@@ -1,9 +1,11 @@
 """Typed option-universe selection and reconciliation."""
 
+import hashlib
+import json
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol, cast
 from uuid import UUID
@@ -704,3 +706,257 @@ def reconcile(
     return tuple(
         sorted(new - old, key=lambda value: (value.expiration, value.strike, value.right))
     ), tuple(sorted(old - new, key=lambda value: (value.expiration, value.strike, value.right)))
+
+
+PLANNER_EPOCH_LIFECYCLE_STATES = ("pending", "active", "superseded", "finalized")
+PLANNER_EPOCH_VERSION = "planner-epoch-v1"
+
+
+@dataclass(frozen=True)
+class PlannerEpoch:
+    """Immutable, content-addressed planner epoch.
+
+    Every universe transition produces a new PlannerEpoch. Epochs are
+    content-hashed for deterministic comparison and idempotent reapplication.
+    Only one epoch may be active at a time.
+    """
+
+    epoch_id: str
+    sequence: int
+    effective_at: datetime
+    candidate_population_version: str
+    selected_contracts: tuple[ThetaContract, ...]
+    trade_subscriptions: tuple[ThetaContract, ...]
+    quote_subscriptions: tuple[ThetaContract, ...]
+    additions: tuple[ThetaContract, ...]
+    removals: tuple[ThetaContract, ...]
+    planner_version: str
+    content_hash: str
+    provenance: str
+    lifecycle: str
+    coverage_plan: dict[str, object] | None = None
+    selection_records: tuple[dict[str, object], ...] = ()
+
+    @classmethod
+    def create(
+        cls,
+        sequence: int,
+        effective_at: datetime,
+        candidate_population_version: str,
+        selected_contracts: tuple[ThetaContract, ...],
+        previous_contracts: tuple[ThetaContract, ...] = (),
+        provenance: str = "production-planner-v1",
+        coverage_plan: dict[str, object] | None = None,
+        selection_records: tuple[dict[str, object], ...] = (),
+    ) -> "PlannerEpoch":
+        """Create a new PlannerEpoch with deterministic content hash.
+
+        The content hash covers every field that affects replay identity.
+        Additions and removals are computed from the diff against the previous
+        epoch's selected contracts.
+        """
+        additions, removals = reconcile(previous_contracts, selected_contracts)
+        trade_subscriptions = tuple(
+            sorted(selected_contracts, key=lambda v: (v.root, v.expiration, v.strike, v.right))
+        )
+        quote_subscriptions = trade_subscriptions  # paired TRADE/QUOTE
+        pre_hash = {
+            "sequence": sequence,
+            "effective_at": effective_at.isoformat(),
+            "candidate_population_version": candidate_population_version,
+            "selected_contracts": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in selected_contracts
+            ],
+            "trade_subscriptions": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in trade_subscriptions
+            ],
+            "quote_subscriptions": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in quote_subscriptions
+            ],
+            "additions": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in additions
+            ],
+            "removals": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in removals
+            ],
+            "planner_version": PLANNER_EPOCH_VERSION,
+            "provenance": provenance,
+        }
+        canonical = json.dumps(pre_hash, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        content_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        return cls(
+            epoch_id=str(UUID(content_hash[:32])),
+            sequence=sequence,
+            effective_at=effective_at,
+            candidate_population_version=candidate_population_version,
+            selected_contracts=selected_contracts,
+            trade_subscriptions=trade_subscriptions,
+            quote_subscriptions=quote_subscriptions,
+            additions=additions,
+            removals=removals,
+            planner_version=PLANNER_EPOCH_VERSION,
+            content_hash=content_hash,
+            provenance=provenance,
+            lifecycle="pending",
+            coverage_plan=coverage_plan,
+            selection_records=selection_records,
+        )
+
+    def activate(self) -> "PlannerEpoch":
+        """Return a copy with lifecycle='active'. Immutable — returns new object."""
+        if self.lifecycle != "pending":
+            raise ValueError(f"Cannot activate epoch in state {self.lifecycle}")
+        return PlannerEpoch(
+            epoch_id=self.epoch_id,
+            sequence=self.sequence,
+            effective_at=self.effective_at,
+            candidate_population_version=self.candidate_population_version,
+            selected_contracts=self.selected_contracts,
+            trade_subscriptions=self.trade_subscriptions,
+            quote_subscriptions=self.quote_subscriptions,
+            additions=self.additions,
+            removals=self.removals,
+            planner_version=self.planner_version,
+            content_hash=self.content_hash,
+            provenance=self.provenance,
+            lifecycle="active",
+            coverage_plan=self.coverage_plan,
+            selection_records=self.selection_records,
+        )
+
+    def supersede(self) -> "PlannerEpoch":
+        """Return a copy with lifecycle='superseded'."""
+        return PlannerEpoch(
+            epoch_id=self.epoch_id,
+            sequence=self.sequence,
+            effective_at=self.effective_at,
+            candidate_population_version=self.candidate_population_version,
+            selected_contracts=self.selected_contracts,
+            trade_subscriptions=self.trade_subscriptions,
+            quote_subscriptions=self.quote_subscriptions,
+            additions=self.additions,
+            removals=self.removals,
+            planner_version=self.planner_version,
+            content_hash=self.content_hash,
+            provenance=self.provenance,
+            lifecycle="superseded",
+            coverage_plan=self.coverage_plan,
+            selection_records=self.selection_records,
+        )
+
+    def finalize(self) -> "PlannerEpoch":
+        """Return a copy with lifecycle='finalized'."""
+        return PlannerEpoch(
+            epoch_id=self.epoch_id,
+            sequence=self.sequence,
+            effective_at=self.effective_at,
+            candidate_population_version=self.candidate_population_version,
+            selected_contracts=self.selected_contracts,
+            trade_subscriptions=self.trade_subscriptions,
+            quote_subscriptions=self.quote_subscriptions,
+            additions=self.additions,
+            removals=self.removals,
+            planner_version=self.planner_version,
+            content_hash=self.content_hash,
+            provenance=self.provenance,
+            lifecycle="finalized",
+            coverage_plan=self.coverage_plan,
+            selection_records=self.selection_records,
+        )
+
+    @property
+    def contract_count(self) -> int:
+        return len(self.selected_contracts)
+
+    @property
+    def is_noop(self) -> bool:
+        """True when no contracts were added or removed vs the previous epoch."""
+        return len(self.additions) == 0 and len(self.removals) == 0
+
+    def record(self) -> dict[str, object]:
+        """Serialise for persistence alongside UniverseManifest records."""
+        return {
+            "epoch_id": self.epoch_id,
+            "sequence": self.sequence,
+            "effective_at": self.effective_at.isoformat(),
+            "candidate_population_version": self.candidate_population_version,
+            "selected_contracts": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in self.selected_contracts
+            ],
+            "trade_subscriptions": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in self.trade_subscriptions
+            ],
+            "quote_subscriptions": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in self.quote_subscriptions
+            ],
+            "additions": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in self.additions
+            ],
+            "removals": [
+                {"root": c.root, "expiration": c.expiration, "strike": c.strike, "right": c.right}
+                for c in self.removals
+            ],
+            "planner_version": self.planner_version,
+            "content_hash": self.content_hash,
+            "provenance": self.provenance,
+            "lifecycle": self.lifecycle,
+            "coverage_plan": self.coverage_plan or {},
+            "contract_count": self.contract_count,
+            "is_noop": self.is_noop,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, object]) -> "PlannerEpoch":
+        """Reconstruct from a persisted record."""
+
+        def _contracts(key: str) -> tuple[ThetaContract, ...]:
+            raw = record.get(key, [])
+            if not isinstance(raw, list):
+                return ()
+            return tuple(
+                ThetaContract(
+                    str(item["root"]),
+                    int(str(item["expiration"])),
+                    int(str(item["strike"])),
+                    str(item["right"]),
+                )
+                for item in raw
+                if isinstance(item, dict)
+            )
+
+        def _parse_datetime(raw: object) -> datetime:
+            if isinstance(raw, datetime):
+                return raw
+            return datetime.fromisoformat(str(raw))
+
+        return cls(
+            epoch_id=str(record["epoch_id"]),
+            sequence=int(str(record["sequence"])),
+            effective_at=_parse_datetime(record["effective_at"]),
+            candidate_population_version=str(record["candidate_population_version"]),
+            selected_contracts=_contracts("selected_contracts"),
+            trade_subscriptions=_contracts("trade_subscriptions"),
+            quote_subscriptions=_contracts("quote_subscriptions"),
+            additions=_contracts("additions"),
+            removals=_contracts("removals"),
+            planner_version=str(record["planner_version"]),
+            content_hash=str(record["content_hash"]),
+            provenance=str(record["provenance"]),
+            lifecycle=str(record["lifecycle"]),
+            coverage_plan=coverage_plan_raw
+            if isinstance(coverage_plan_raw := record.get("coverage_plan"), dict)
+            else None,
+            selection_records=tuple(
+                item
+                for item in cast("list[dict[str, object]]", record.get("selection_records", []))
+            ),
+        )

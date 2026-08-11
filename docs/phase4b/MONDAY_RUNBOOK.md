@@ -1,64 +1,84 @@
-# Phase 4B Monday preflight and observation runbook
+# Phase 4B live observational-session run card
 
-This runbook is preparation only. Do not launch it during the weekend.
+This is an executable evidence run card. It does not assert provider or host
+readiness; those are preflight observations recorded by the operator. Trading
+must remain disabled and orders must remain `0/0`. Do not use the hermetic
+`phase4b_certify` command for a live-session bundle.
 
-1. Earliest preflight: 09:00 America/New_York on the next regular-session
-   date; do not start observation before 09:30 ET.
-2. From the authenticated checkout, verify branch
-   `feat/phase-4b-impact-shadow`, a clean tree, and `git rev-parse HEAD`.
-   Confirm the same exact head is the draft PR head and exact-head CI is green.
-3. On the existing VM, fast-forward only the clean checkout to that exact
-   head using the approved bundle procedure if GitHub SSH access is absent.
-4. Check PostgreSQL and Redis health. Check the active Theta Terminal startup
-   build and loopback MDDS status `CONNECTED`.
-5. Load the protected runtime through the Python configuration layer only;
-   confirm provider authentication by sanitized status. Confirm
-   `TRADING_ENABLED=false` and that no order route exists; orders must remain
-   `0/0`.
-6. Before market open, load completed split-adjusted Alpaca bars, calculate
-   and freeze the five-minute baselines, and persist effective date, sample
-   size, adjustment metadata, and provenance. Fail closed on fewer than 20
-   completed sessions.
-7. Generate and persist the conditional coverage sets `U_M`, `U_X`, `U_R`
-   through the connected pilot planner, then verify `U*=U_M∪U_R`, the
-   independent 15,000 TRADE and 10,000 QUOTE limits, the 10,000 paired-stream
-   ceiling, and every deterministic capacity exclusion. The manifest must
-   distinguish pilot candidates, theoretical U*, selected contracts, and
-   acknowledged contracts. Do not retry ThetaData REST discovery or OI
-   endpoints.
-8. Verify the single shared provider/subscription/normalization/quote/
-   persistence pipeline and the ordered individual-contract plan. Live
-   `SHADOW_IMPACT_V1` scoring is disabled pending optimization because the
-   weekend benchmark measured 169.36% p50 incremental overhead; retain the
-   shared feature/sweep evidence for offline scoring.
-9. Subscribe individual ThetaData Standard TRADE and QUOTE streams; correlate
-   only `REQ_RESPONSE.header.req_id` and validate incoming identities against
-   the acknowledged registry. Never use `STREAM_BULK`.
-10. Launch only after 09:30 ET in a protected tmux session:
+## Immutable head and environment validation
+
+Run from the checked-out repository and substitute the exact approved head:
 
 ```sh
-RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
-LOG="/var/log/phase4b-impact-shadow-${RUN_TS}.jsonl"
-umask 077
-tmux new-session -d -s phase4b-observation \
-  "cd /opt/institutional-signal-engine && RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env uv run python -m institutional_signal_engine.phase4_live_smoke --seconds 21600 --skip-oi-diagnostic >${LOG} 2>&1"
-chmod 600 "${LOG}"
+EXPECTED_HEAD=3caa6dfffe3b6b08ffdb89aeae2d0ed46e61a294
+test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD}"
+git status --short
+gh pr view 6 --json state,isDraft,headRefOid,mergeable
+RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env \
+  uv run python -m institutional_signal_engine.live_session validate-environment \
+  --session-output "/var/lib/institutional-signal-engine/sessions/${EXPECTED_HEAD}-$(date -u +%Y%m%dT%H%M%SZ)" \
+  --expected-git-commit "${EXPECTED_HEAD}" \
+  --repository-root /opt/institutional-signal-engine
 ```
 
-11. Health-check the tmux process and protected structured log without
-   printing environment values. Record start/completion times and bounded
-   drain status.
-12. At completion, query only the run ID for manifest, accepted events,
-   consumed quotes, impact clusters, sessions, decisions, queue metrics, and
-   acknowledgement outcomes.
-13. Replay the run from accepted events, consumed quotes, sweep audits, frozen
-   baselines, timers, universe manifest, and model configuration. Compare
-   shadow outputs and CONTROL_V1 outputs field by field.
-14. Produce a control-versus-shadow report for every cluster, including
-   nominal premium, signed/gross delta activity, coherence, baselines, Z,
-   failed thresholds, provenance, and model versions.
-15. Acceptance requires: five complete sessions and 30 shadow footprints for
-   model disposition; exact replay equality; no persistence backpressure;
-   no cross-symbol contamination; complete manifest; all accepted trades
-   retained; and orders `0/0`. A zero footprint result is reported honestly,
-   not treated as a pipeline failure.
+The protected runtime must explicitly configure `DATABASE_URL`,
+`LIVE_JOURNAL_DIRECTORY`, and `LIVE_EVIDENCE_AUTHORITY_KEY_FILE`. A missing or
+unavailable durable repository fails before any provider connection.
+
+## Full-session launch
+
+Choose a valid weekday market date. The output directory must not exist and is
+never redirected over an earlier artifact:
+
+```sh
+SESSION_OUTPUT="/var/lib/institutional-signal-engine/sessions/${EXPECTED_HEAD}-$(date -u +%Y%m%dT%H%M%SZ)"
+RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env \
+  uv run python -m institutional_signal_engine.live_session run \
+  --session-output "${SESSION_OUTPUT}" \
+  --market-date 2026-08-11 \
+  --expected-git-commit "${EXPECTED_HEAD}" \
+  --repository-root /opt/institutional-signal-engine
+```
+
+There is one production mode. The session loop targets 09:30–16:00
+America/New_York and stops intake at 16:00; it is not a nominal seconds run.
+
+## Health observation and fail-closed termination
+
+Observe only the staged directory and process state; do not print the runtime
+file or credentials:
+
+```sh
+test -f "${SESSION_OUTPUT}/INCOMPLETE" && echo INCOMPLETE || echo COMPLETE
+pgrep -af 'institutional_signal_engine.live_session run' || true
+```
+
+On provider, acknowledgement, clock, persistence, or shutdown failure, retain
+the directory as incomplete and stop the process. Never create or copy a
+manifest or certificate to make a partial run appear complete.
+
+## Artifact inspection, replay, and certification
+
+```sh
+RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env \
+  uv run python -m institutional_signal_engine.live_session inspect \
+  --bundle "${SESSION_OUTPUT}" \
+  --repository-root /opt/institutional-signal-engine
+
+RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env \
+  uv run python -m institutional_signal_engine.live_session replay \
+  --bundle "${SESSION_OUTPUT}" \
+  --output "${SESSION_OUTPUT}.replay.json" \
+  --repository-root /opt/institutional-signal-engine
+
+RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env \
+  uv run python -m institutional_signal_engine.live_session certify \
+  --bundle "${SESSION_OUTPUT}" \
+  --replay-output "${SESSION_OUTPUT}.certification-replay.json" \
+  --certificate-output "${SESSION_OUTPUT}.LIVE_CERTIFICATE.json" \
+  --repository-root /opt/institutional-signal-engine
+```
+
+The live certificate states that one persisted observational session was
+validated offline. The separate hermetic acceptance certificate remains
+available only through its existing command and retains its original meaning.

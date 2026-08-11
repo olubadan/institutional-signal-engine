@@ -65,6 +65,8 @@ class Settings(BaseModel):
     phase4_min_quote_size: int = Field(default=1, gt=0)
     phase4_oi_request_interval_seconds: Decimal = Field(default=Decimal("0.05"), ge=0)
     theta_terminal_http_url: str = "http://127.0.0.1:25503/v3"
+    live_journal_directory: Path | None = None
+    live_evidence_authority_key_file: Path | None = None
     config_version: str = "phase3-v1"
     engine_version: str = "0.1.0"
 
@@ -125,6 +127,16 @@ class Settings(BaseModel):
             theta_terminal_http_url=values.get(
                 "THETA_TERMINAL_HTTP_URL", "http://127.0.0.1:25503/v3"
             ),
+            live_journal_directory=(
+                Path(values["LIVE_JOURNAL_DIRECTORY"])
+                if values.get("LIVE_JOURNAL_DIRECTORY")
+                else None
+            ),
+            live_evidence_authority_key_file=(
+                Path(values["LIVE_EVIDENCE_AUTHORITY_KEY_FILE"])
+                if values.get("LIVE_EVIDENCE_AUTHORITY_KEY_FILE")
+                else None
+            ),
         )
 
     @classmethod
@@ -141,5 +153,12 @@ class Settings(BaseModel):
 
     def public_snapshot(self) -> dict[str, object]:
         return self.model_dump(
-            exclude={"alpaca_key_id", "alpaca_secret_key", "theta_api_key", "database_url"}
+            mode="json",
+            exclude={
+                "alpaca_key_id",
+                "alpaca_secret_key",
+                "theta_api_key",
+                "database_url",
+                "live_evidence_authority_key_file",
+            },
         )
