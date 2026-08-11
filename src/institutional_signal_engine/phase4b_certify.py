@@ -181,7 +181,7 @@ class ScenarioExecutor:
             async def prices(self, symbols: object) -> dict[str, Decimal]:
                 return {}
 
-        # Deterministic Enrichment port
+        # Deterministic Enrichment port — produces 1 selection with 1 contract
         class FixtureEnrichment:
             async def enrich(
                 self,
@@ -189,7 +189,19 @@ class ScenarioExecutor:
                 prices: dict[str, Decimal],
                 as_of: datetime,
             ) -> tuple[Any, ...]:
-                return ()
+                from .universe import UniverseSelection as US
+
+                sel = US(
+                    symbol="AAA",
+                    included=True,
+                    expiration=20260821,
+                    contracts=(contract_aaa,),
+                    rejection_reasons=(),
+                    provenance=("fixture",),
+                    provider_responses=(),
+                    contract_evidence=(),
+                )
+                return (sel,)
 
         # Deterministic EventStream port
         class FixtureEventStream:
