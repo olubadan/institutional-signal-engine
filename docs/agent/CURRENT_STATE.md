@@ -887,6 +887,10 @@
   9 focused live-session adversarial tests. No provider ran; trading remains
   disabled; orders remain `0/0`; PR #5 is unchanged; PR #6 remains draft and
   unmerged; Phase 5 has not started.
-- Remaining handoff: push the coherent implementation and journal closure,
-  await exact-head CI, and obtain independent validation. This is a build
-  result, not a claim of provider or host readiness.
+- Implementation commit `1205afcafe612958d37789965f01f3bf704da7b9` is pushed to
+  PR #6's branch. Exact-head CI jobs
+  `31480520321` and `31480517224` passed. PR #6 remains open, draft, mergeable,
+  and unmerged; PR #5 remains unchanged, open, and draft at
+  `4a3afe8dd70fecc1b629ff7ef5614a652a572529`. The live path build is complete
+  and awaits independent validation; this is not a provider or host readiness
+  claim.
