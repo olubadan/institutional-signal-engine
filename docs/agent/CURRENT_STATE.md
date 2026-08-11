@@ -853,3 +853,40 @@
   and `e5e1286264614184c7a80cbe23426eff4b0ae7616fb57a2588230679d36ce5e8`.
 - No provider ran. Trading remains disabled; orders remain `0/0`; PR #5 remains
   unchanged; PR #6 remains draft and unmerged; Phase 5 has not started.
+
+### SESSION-0032 live observational path closure — 20260811
+
+- Added a separate live observational evidence subsystem in
+  `live_session.py`. It requires a fresh output directory, configured durable
+  journal storage, a durable application repository, a protected authority key,
+  exact Git head, and disabled trading before provider connection.
+- One unified session port now owns discovery-adjacent subscription commands,
+  correlated paired acknowledgements, inbound events, clock boundaries,
+  disconnect/reconnect restoration, 16:00 ET intake stop, drain, finalization,
+  terminal journal seal, durable persistence, replay, and manifest-last staged
+  publication. Incomplete or partially written runs remain distinguishable and
+  cannot publish a certificate.
+- The live manifest binds commit, application/config/schema/rules identities,
+  configuration snapshot, session boundaries, provider identities, journal
+  count/root/seal, connection/recovery history, event and epoch evidence,
+  persistence/replay receipts, host-clock observations, impact fallback, and
+  disabled trading/order state. An HMAC authority binding rejects coherent
+  rehashing without the trusted deployment key.
+- Added offline `inspect`, `replay`, and `certify` commands. The live certificate
+  states that one persisted observational session was validated offline and
+  explicitly records that the deterministic hermetic scenario did not run.
+  The accepted `phase4b_certify` subsystem and its authority boundary remain
+  unchanged.
+- Added a deterministic virtual-clock harness using the same live composition;
+  it covers `{A} -> {A,B} -> {B}`, paired acknowledgements, events, removal,
+  disconnect/reconnect restoration, 16:00 stop, durable persistence, replay,
+  and live certification. Two executions produced byte-identical deterministic
+  bundle, replay, and certificate artifacts.
+- Verification currently passes: Ruff format/lint, strict mypy, lockfile check,
+  Bash syntax, structural/secret/diff checks, and 287 hermetic tests including
+  9 focused live-session adversarial tests. No provider ran; trading remains
+  disabled; orders remain `0/0`; PR #5 is unchanged; PR #6 remains draft and
+  unmerged; Phase 5 has not started.
+- Remaining handoff: push the coherent implementation and journal closure,
+  await exact-head CI, and obtain independent validation. This is a build
+  result, not a claim of provider or host readiness.

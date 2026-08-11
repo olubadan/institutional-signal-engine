@@ -1,29 +1,38 @@
 # Proposed Next Codex Prompt
 
-Independently review the exact-head complete Phase 4B certification-authority
-closure on draft PR #6. Begin from the published commit and do not trust builder
-claims or artifacts.
+Independently validate the complete live observational-session path on draft
+PR #6 from the pushed exact head. Do not contact providers, access production
+credentials, merge, begin Phase 5, enable trading, or construct or submit
+orders. Keep PR #5 unchanged at `4a3afe8dd70fecc1b629ff7ef5614a652a572529`.
 
-Confirm that the only authoritative production interface is
-`generate_phase4b_certification(output_paths) -> CertificationArtifacts`; its
-input is presentation-only; and one call internally loads and digest-verifies
-the fixed package contract, verifies the checked-in scenario digest, constructs
-the scenario and repository, executes and seals J, persists and reloads P,
-independently reconstructs and verifies R, immediately constructs the
-certificate, and publishes J/P/R/certificate only after completion.
+Reconcile local and GitHub state, then inspect the new `live_session.py`,
+`live_session_harness.py`, validation rules resource, tests, and run card.
+Confirm that production requires a fresh non-aliased output directory, durable
+repository and journal configuration, protected authority key, exact commit,
+disabled trading, and zero orders before provider connection. Verify one unified
+provider composition carries command transmission, receive-loop acknowledgements,
+market events, generation-aware subscription state, reevaluation, disconnect,
+reconnect, restoration, 16:00 ET intake stop, drain, finalization, sealed journal,
+durable persistence, replay, and manifest-last publication.
 
-Freshly enumerate all certificate/PASS constructors, projections, validators,
-receipts, contract/journal loaders, persistence/replay paths, CLIs, writers,
-exports, private semantic helpers, environment/path/config/DI points, and
-test-only imports. Attempt coherent whole-package, cross-run, cross-contract,
-self-rehash, pre-seed, copied-replay, manual-schema, former-capability, object
-mutation, output collision/symlink, alternate CLI/writer, and artifact-consumer
-bypasses. Verify low-level helpers are non-authoritative and no supported
-consumer can relabel their result.
+Independently attempt missing/rejected/malformed/unmatched/duplicate
+acknowledgements, event-before-activation, removal with pending traffic,
+disconnect during transition, provider termination, incomplete restoration,
+missing durable storage, output collisions/aliases, partial writes, journal
+corruption, coherent rehash without trusted authority, mixed/cross-session or
+cross-version components, copied receipts, altered final state, trading/order
+activity, and certification before finalization. Confirm incomplete evidence
+cannot produce a valid manifest or certificate and that the live certificate is
+distinct from the accepted hermetic certificate and says the deterministic
+scenario did not run.
 
-Reproduce the full checks, 65 focused tests, 279 hermetic tests, fixed contract
-and scenario digests, and byte-identical J/P/R/certificate hashes. Confirm exact-
-head CI, draft/unmerged PR state, unchanged PR #5 at
-`4a3afe8dd70fecc1b629ff7ef5614a652a572529`, disabled trading, orders `0/0`, no
-provider access, and no Phase 5 work. Do not modify, merge, or claim acceptance
-unless the independent review itself supports it.
+Run CLI-help/runbook drift checks, Ruff format/lint, strict mypy, lockfile,
+complete hermetic tests, focused live-session tests, structural/Bash/ShellCheck/
+secret checks, and two accelerated harness executions with byte and semantic
+equality comparison. Confirm exact-head CI, PR #6 open/draft/mergeable/unmerged,
+PR #5 unchanged, trading disabled, orders `0/0`, no provider access, and no
+Phase 5 work.
+
+Do not claim live readiness merely because the hermetic proof passes. Report:
+
+`LIVE PATH BUILD COMPLETE — AWAITING INDEPENDENT VALIDATION`
