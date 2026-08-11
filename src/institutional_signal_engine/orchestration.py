@@ -37,6 +37,32 @@ from .impact_coverage import (
     build_coverage_plan,
     build_pilot_coverage_candidates,
 )
+from .journal import (
+    JOURNAL_KIND_CLOCK_ADVANCED,
+    JOURNAL_KIND_CONFIGURATION,
+    JOURNAL_KIND_DISCOVERY_COMPLETE,
+    JOURNAL_KIND_DISCOVERY_START,
+    JOURNAL_KIND_ENRICHMENT_COMPLETE,
+    JOURNAL_KIND_ENRICHMENT_START,
+    JOURNAL_KIND_EPOCH_ACTIVATED,
+    JOURNAL_KIND_EPOCH_CREATED,
+    JOURNAL_KIND_EPOCH_PERSISTED,
+    JOURNAL_KIND_EPOCH_RESTORED,
+    JOURNAL_KIND_EVENT_ACCEPTED,
+    JOURNAL_KIND_EVENT_REJECTED,
+    JOURNAL_KIND_INTAKE_STOPPED,
+    JOURNAL_KIND_PERSISTENCE_DRAINED,
+    JOURNAL_KIND_PROVIDER_DISCONNECTED,
+    JOURNAL_KIND_PROVIDER_READY,
+    JOURNAL_KIND_PROVIDER_RECONNECTED,
+    JOURNAL_KIND_REEVALUATION_START,
+    JOURNAL_KIND_REPLAY_VERIFIED,
+    JOURNAL_KIND_SESSION_FINALIZED,
+    JOURNAL_KIND_SESSION_START,
+    JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+    JOURNAL_KIND_SUBSCRIPTION_COMMAND,
+    Journal,
+)
 from .persistence import InMemoryRepository
 from .persistence_async import AsyncAuditWriter
 from .pipeline import SignalPipeline
@@ -377,6 +403,7 @@ class OrchestrationShell:
         repository: EventRepository | None = None,
         historical_baselines: Mapping[tuple[str, int], ImpactBaseline] | None = None,
         stage_callback: StageCallback | None = None,
+        journal: Journal | None = None,
     ) -> None:
         self.config = config
         self.settings = settings
@@ -393,6 +420,7 @@ class OrchestrationShell:
         self._repository = repository or InMemoryRepository()
         self._historical_baselines = historical_baselines or {}
         self._stage_callback = stage_callback
+        self._journal = journal or Journal(config.run_id, clock=self._clock)
 
         # Mutable session state
         self._active_epoch: PlannerEpoch | None = None
@@ -420,6 +448,10 @@ class OrchestrationShell:
     @property
     def epochs(self) -> tuple[PlannerEpoch, ...]:
         return tuple(self._epochs)
+
+    @property
+    def journal(self) -> Journal:
+        return self._journal
 
     @property
     def event_count(self) -> int:
@@ -515,6 +547,16 @@ class OrchestrationShell:
             epoch1 = epoch1.activate()
             self._active_epoch = epoch1
             self._epochs.append(epoch1)
+            self._journal.append(
+                JOURNAL_KIND_EPOCH_ACTIVATED,
+                timestamp=self._clock(),
+                parent_sequence=self._journal.sequence - 1,
+                epoch_sequence=epoch1.sequence,
+                epoch_id=epoch1.epoch_id,
+                content_hash=epoch1.content_hash,
+                contract_count=epoch1.contract_count,
+                lifecycle=epoch1.lifecycle,
+            )
             self._recorder.emit("epoch_activated", epoch=1, contract_count=epoch1.contract_count)
 
             # 6. Event intake loop
@@ -531,6 +573,9 @@ class OrchestrationShell:
 
             # 10. Post-session replay
             replay_equal = self._verify_replay()
+
+            # Seal the journal — no further appends permitted
+            self._journal.seal()
 
             return SessionResult(
                 run_id=self.config.run_id,
@@ -565,6 +610,23 @@ class OrchestrationShell:
         """Pre-open initialization."""
         if self.settings.trading_enabled:
             raise RuntimeError("orchestration_shell_refuses_trading_enabled")
+        now = self._clock()
+        self._journal.append(
+            JOURNAL_KIND_SESSION_START,
+            timestamp=now,
+            session_date=self.config.session_date,
+            rth_start=self.config.rth_start.isoformat(),
+            rth_stop=self.config.rth_stop.isoformat(),
+            intake_stop=self.config.intake_stop.isoformat(),
+            trading_enabled=False,
+        )
+        self._journal.append(
+            JOURNAL_KIND_CONFIGURATION,
+            timestamp=now,
+            parent_sequence=0,
+            reevaluation_interval_seconds=self.config.reevaluation_interval.total_seconds(),
+            ack_timeout=self.config.ack_timeout,
+        )
         self._recorder.emit("configuration_loaded")
         self._recorder.emit("pre_open_initialization_complete")
 
@@ -576,6 +638,16 @@ class OrchestrationShell:
             health = await self._event_stream.health()
             if health.get("status") == "unavailable":
                 raise RuntimeError("provider_not_ready")
+        self._journal.append(
+            JOURNAL_KIND_PROVIDER_READY,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            adapter_connected=(
+                self._subscription_adapter.connected
+                if self._subscription_adapter is not None
+                else False
+            ),
+        )
         self._recorder.emit("providers_authenticated")
 
     async def _create_initial_epoch(self) -> PlannerEpoch | None:
@@ -584,17 +656,45 @@ class OrchestrationShell:
         assert self._enrichment is not None, "enrichment port required"
 
         symbolic_now = self._clock()
+        parent_seq = self._journal.sequence - 1
+
+        self._journal.append(
+            JOURNAL_KIND_DISCOVERY_START,
+            timestamp=symbolic_now,
+            parent_sequence=parent_seq,
+            symbols=list(PILOT_SYMBOLS),
+        )
         self._recorder.emit("universe_discovery_started")
         prices = await self._discovery.prices(PILOT_SYMBOLS)
         discovered = await self._discovery.discover(PILOT_SYMBOLS, symbolic_now)
+        disc_seq = self._journal.append(
+            JOURNAL_KIND_DISCOVERY_COMPLETE,
+            timestamp=self._clock(),
+            parent_sequence=parent_seq + 1,
+            completed_items=len(discovered),
+            remaining_items=0,
+        ).sequence
         self._recorder.emit(
             "universe_discovery_completed",
             completed_items=len(discovered),
             remaining_items=0,
         )
 
+        self._journal.append(
+            JOURNAL_KIND_ENRICHMENT_START,
+            timestamp=self._clock(),
+            parent_sequence=disc_seq,
+            symbol_count=len(discovered),
+        )
         self._recorder.emit("enrichment_started")
         selections = await self._enrichment.enrich(discovered, prices, symbolic_now)
+        enrich_seq = self._journal.append(
+            JOURNAL_KIND_ENRICHMENT_COMPLETE,
+            timestamp=self._clock(),
+            parent_sequence=disc_seq + 1,
+            completed_items=len(selections),
+            remaining_items=0,
+        ).sequence
         self._recorder.emit(
             "enrichment_completed",
             completed_items=len(selections),
@@ -615,8 +715,27 @@ class OrchestrationShell:
             baseline_symbols=baseline_symbols,
         )
         if epoch.contract_count == 0:
+            self._journal.append(
+                JOURNAL_KIND_EPOCH_CREATED,
+                timestamp=self._clock(),
+                parent_sequence=enrich_seq,
+                epoch_sequence=1,
+                contract_count=0,
+                lifecycle="empty",
+            )
             return None
-            return None
+        self._journal.append(
+            JOURNAL_KIND_EPOCH_CREATED,
+            timestamp=self._clock(),
+            parent_sequence=enrich_seq,
+            epoch_sequence=epoch.sequence,
+            epoch_id=epoch.epoch_id,
+            content_hash=epoch.content_hash,
+            contract_count=epoch.contract_count,
+            additions=len(epoch.additions),
+            removals=len(epoch.removals),
+            lifecycle=epoch.lifecycle,
+        )
         return epoch
 
     async def _request_and_acknowledge_subscriptions(
@@ -625,6 +744,33 @@ class OrchestrationShell:
         """Request paired TRADE/QUOTE subscriptions and wait for acknowledgement."""
         if self._subscription_adapter is None:
             # Without a real adapter, return a synthetic acknowledgement
+            self._journal.append(
+                JOURNAL_KIND_SUBSCRIPTION_COMMAND,
+                timestamp=self._clock(),
+                parent_sequence=self._journal.sequence - 1,
+                epoch_sequence=epoch.sequence,
+                epoch_id=epoch.epoch_id,
+                command="add",
+                contract_count=epoch.contract_count,
+                request_types=list(
+                    self._subscription_adapter.request_types
+                    if self._subscription_adapter is not None
+                    else ["TRADE", "QUOTE"]
+                ),
+                adapter="none",
+            )
+            self._journal.append(
+                JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+                timestamp=self._clock(),
+                parent_sequence=self._journal.sequence - 1,
+                epoch_sequence=epoch.sequence,
+                epoch_id=epoch.epoch_id,
+                acknowledged=0,
+                rejected=0,
+                timed_out=0,
+                accepted=True,
+                diagnostic="no_subscription_adapter_configured",
+            )
             return SubscriptionAcknowledgement(
                 acknowledged=(),
                 rejected=(),
@@ -641,7 +787,32 @@ class OrchestrationShell:
         )
         # Request subscriptions for all contracts in the epoch
         add_ids = await self._subscription_adapter.add_subscriptions(epoch.trade_subscriptions)
+        cmd_seq = self._journal.append(
+            JOURNAL_KIND_SUBSCRIPTION_COMMAND,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            epoch_sequence=epoch.sequence,
+            epoch_id=epoch.epoch_id,
+            command="add",
+            request_ids=list(add_ids),
+            contract_count=epoch.contract_count,
+            request_types=list(self._subscription_adapter.request_types),
+            adapter_connected=self._subscription_adapter.connected,
+        ).sequence
         ack = await self._subscription_adapter.acknowledge(add_ids, timeout=self.config.ack_timeout)
+        self._journal.append(
+            JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+            timestamp=self._clock(),
+            parent_sequence=cmd_seq,
+            epoch_sequence=epoch.sequence,
+            epoch_id=epoch.epoch_id,
+            acknowledged=list(ack.acknowledged),
+            rejected=[dict(r) for r in ack.rejected],
+            timed_out=list(ack.timed_out),
+            partially_acknowledged=ack.partially_acknowledged,
+            accepted=ack.accepted,
+            diagnostic=ack.diagnostic,
+        )
         self._recorder.emit(
             "subscriptions_acknowledged",
             acknowledged=len(ack.acknowledged),
@@ -651,7 +822,7 @@ class OrchestrationShell:
         return ack
 
     async def _run_intake_loop(self) -> None:
-        """Main event intake loop with scheduled reevaluation."""
+        """Main event intake loop with scheduled reevaluation and reconnect."""
         if self._event_stream is None:
             # Without an event stream, the loop is a no-op (test mode)
             return
@@ -669,35 +840,94 @@ class OrchestrationShell:
 
         self._recorder.emit("observation_started")
 
-        try:
-            async for event in self._event_stream.events():
-                if self._intake_stopped:
-                    break
+        # Wrap in a while loop for reconnect: if the event stream raises
+        # a recoverable error, handle disconnect and try again.
+        reconnect_attempts = 0
+        max_reconnects = 5
+        while reconnect_attempts <= max_reconnects:
+            try:
+                async for event in self._event_stream.events():
+                    if self._intake_stopped:
+                        break
 
-                # Check if this event's contract is accepted under the active epoch
-                if not self._is_event_accepted(event):
-                    continue
+                    now = self._clock()
 
-                # Process the event through the pipeline
-                self._pipeline.process(event)
-                self._event_count += 1
+                    # Check if this event's contract is accepted under the active epoch
+                    if not self._is_event_accepted(event):
+                        self._journal.append(
+                            JOURNAL_KIND_EVENT_REJECTED,
+                            timestamp=now,
+                            parent_sequence=self._journal.sequence - 1,
+                            epoch_sequence=(
+                                self._active_epoch.sequence
+                                if self._active_epoch is not None
+                                else None
+                            ),
+                            epoch_id=(
+                                self._active_epoch.epoch_id
+                                if self._active_epoch is not None
+                                else None
+                            ),
+                            event_id=str(event.event_id),
+                            event_kind=event.kind.value,
+                            symbol=event.symbol,
+                            reason="not_in_active_epoch",
+                        )
+                        continue
 
-                # Check for scheduled reevaluation
-                now = self._clock()
-                if self._should_reevaluate(now):
-                    await self._perform_reevaluation(now)
+                    # Process the event through the pipeline
+                    self._pipeline.process(event)
+                    self._event_count += 1
+                    self._journal.append(
+                        JOURNAL_KIND_EVENT_ACCEPTED,
+                        timestamp=now,
+                        parent_sequence=self._journal.sequence - 1,
+                        epoch_sequence=(
+                            self._active_epoch.sequence if self._active_epoch is not None else None
+                        ),
+                        epoch_id=(
+                            self._active_epoch.epoch_id if self._active_epoch is not None else None
+                        ),
+                        event_id=str(event.event_id),
+                        event_kind=event.kind.value,
+                        symbol=event.symbol,
+                        event_count=self._event_count,
+                    )
 
-                # Check for intake stop
-                if self.config.intake_stop and now >= self.config.intake_stop:
-                    self._intake_stopped = True
-                    break
+                    # Check for intake stop first — no reevaluation past intake boundary
+                    if self.config.intake_stop and now >= self.config.intake_stop:
+                        self._intake_stopped = True
+                        break
 
-        except (OSError, RuntimeError, ValueError, ConnectionError) as exc:
-            # Disconnect detection: the event stream should raise on disconnect.
-            # The orchestration shell handles reconnection through the adapter.
-            logger.warning("event_stream_error", extra={"error": str(exc)})
-            await self._handle_disconnect()
-            # After reconnect, the event stream is restarted by the caller
+                    # Check for scheduled reevaluation
+                    if self._should_reevaluate(now):
+                        self._journal.append(
+                            JOURNAL_KIND_CLOCK_ADVANCED,
+                            timestamp=now,
+                            parent_sequence=self._journal.sequence - 1,
+                            previous_epoch=(
+                                self._active_epoch.sequence
+                                if self._active_epoch is not None
+                                else None
+                            ),
+                            reason="reevaluation_due",
+                        )
+                        await self._perform_reevaluation(now)
+
+                # Normal exit from event stream — done
+                break
+
+            except (OSError, RuntimeError, ValueError, ConnectionError) as exc:
+                logger.warning("event_stream_error", extra={"error": str(exc)})
+                await self._handle_disconnect()
+                reconnect_attempts += 1
+                # After reconnect, loop restarts and event stream continues
+                continue
+
+        # After the event stream ends, check if clock has passed intake_stop
+        now = self._clock()
+        if self.config.intake_stop and now >= self.config.intake_stop:
+            self._intake_stopped = True
 
     async def _perform_reevaluation(self, now: datetime) -> None:
         """Run a scheduled candidate reevaluation and epoch transition."""
@@ -705,6 +935,13 @@ class OrchestrationShell:
             return
 
         self._scheduler.record_reevaluation(now)
+        parent_seq = self._journal.append(
+            JOURNAL_KIND_REEVALUATION_START,
+            timestamp=now,
+            parent_sequence=self._journal.sequence - 1,
+            epoch_sequence=self._active_epoch.sequence,
+            evaluations_completed=self._scheduler.evaluations_completed,
+        ).sequence
         self._recorder.emit("reevaluation_started", epoch=self._active_epoch.sequence)
 
         # Run the planner with the current universe state
@@ -720,8 +957,28 @@ class OrchestrationShell:
 
         # No-op detection: if the selected set is unchanged, skip
         if new_epoch.is_noop:
+            self._journal.append(
+                "reevaluation.noop",
+                timestamp=self._clock(),
+                parent_sequence=parent_seq,
+                epoch_sequence=new_epoch.sequence,
+            )
             self._recorder.emit("reevaluation_noop", sequence=new_epoch.sequence)
             return
+
+        # Journal the new epoch creation
+        self._journal.append(
+            JOURNAL_KIND_EPOCH_CREATED,
+            timestamp=self._clock(),
+            parent_sequence=parent_seq,
+            epoch_sequence=new_epoch.sequence,
+            epoch_id=new_epoch.epoch_id,
+            content_hash=new_epoch.content_hash,
+            contract_count=new_epoch.contract_count,
+            additions=len(new_epoch.additions),
+            removals=len(new_epoch.removals),
+            lifecycle=new_epoch.lifecycle,
+        )
 
         # Persist the new epoch before activation
         self._persist_epoch(new_epoch)
@@ -730,7 +987,30 @@ class OrchestrationShell:
         if self._subscription_adapter is not None:
             if new_epoch.additions:
                 add_ids = await self._subscription_adapter.add_subscriptions(new_epoch.additions)
+                add_cmd_seq = self._journal.append(
+                    JOURNAL_KIND_SUBSCRIPTION_COMMAND,
+                    timestamp=self._clock(),
+                    parent_sequence=self._journal.sequence - 1,
+                    epoch_sequence=new_epoch.sequence,
+                    epoch_id=new_epoch.epoch_id,
+                    command="add",
+                    request_ids=list(add_ids),
+                    contract_count=len(new_epoch.additions),
+                    request_types=list(self._subscription_adapter.request_types),
+                ).sequence
                 add_ack = await self._subscription_adapter.acknowledge(add_ids)
+                self._journal.append(
+                    JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+                    timestamp=self._clock(),
+                    parent_sequence=add_cmd_seq,
+                    epoch_sequence=new_epoch.sequence,
+                    epoch_id=new_epoch.epoch_id,
+                    acknowledged=list(add_ack.acknowledged),
+                    rejected=[dict(r) for r in add_ack.rejected],
+                    timed_out=list(add_ack.timed_out),
+                    accepted=add_ack.accepted,
+                    diagnostic=add_ack.diagnostic,
+                )
                 if not add_ack.accepted:
                     self._recorder.emit(
                         "reevaluation_add_ack_failed",
@@ -742,7 +1022,30 @@ class OrchestrationShell:
                 remove_ids = await self._subscription_adapter.remove_subscriptions(
                     new_epoch.removals
                 )
+                rem_cmd_seq = self._journal.append(
+                    JOURNAL_KIND_SUBSCRIPTION_COMMAND,
+                    timestamp=self._clock(),
+                    parent_sequence=self._journal.sequence - 1,
+                    epoch_sequence=new_epoch.sequence,
+                    epoch_id=new_epoch.epoch_id,
+                    command="remove",
+                    request_ids=list(remove_ids),
+                    contract_count=len(new_epoch.removals),
+                    request_types=list(self._subscription_adapter.request_types),
+                ).sequence
                 _remove_ack = await self._subscription_adapter.acknowledge(remove_ids)
+                self._journal.append(
+                    JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+                    timestamp=self._clock(),
+                    parent_sequence=rem_cmd_seq,
+                    epoch_sequence=new_epoch.sequence,
+                    epoch_id=new_epoch.epoch_id,
+                    acknowledged=list(_remove_ack.acknowledged),
+                    rejected=[dict(r) for r in _remove_ack.rejected],
+                    timed_out=list(_remove_ack.timed_out),
+                    accepted=_remove_ack.accepted,
+                    diagnostic=_remove_ack.diagnostic,
+                )
                 # Removal failures are logged but not fatal
 
         # Supersede the previous epoch and activate the new one
@@ -751,6 +1054,18 @@ class OrchestrationShell:
         new_epoch = new_epoch.activate()
         self._active_epoch = new_epoch
         self._epochs.append(new_epoch)
+        self._journal.append(
+            JOURNAL_KIND_EPOCH_ACTIVATED,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            epoch_sequence=new_epoch.sequence,
+            epoch_id=new_epoch.epoch_id,
+            content_hash=new_epoch.content_hash,
+            contract_count=new_epoch.contract_count,
+            additions=len(new_epoch.additions),
+            removals=len(new_epoch.removals),
+            lifecycle=new_epoch.lifecycle,
+        )
 
         self._recorder.emit(
             "epoch_activated",
@@ -765,10 +1080,39 @@ class OrchestrationShell:
         if self._subscription_adapter is None or self._active_epoch is None:
             return
 
+        disc_seq = self._journal.append(
+            JOURNAL_KIND_PROVIDER_DISCONNECTED,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            epoch_sequence=self._active_epoch.sequence,
+            epoch_id=self._active_epoch.epoch_id,
+            adapter_connected=(
+                self._subscription_adapter.connected
+                if self._subscription_adapter is not None
+                else False
+            ),
+        ).sequence
         self._recorder.emit("provider_disconnected")
         # The underlying provider's reconnecting_stream handles reconnection.
         # After reconnect, restore the current epoch's subscriptions.
         await self._subscription_adapter.restore_epoch(self._active_epoch.selected_contracts)
+        self._journal.append(
+            JOURNAL_KIND_PROVIDER_RECONNECTED,
+            timestamp=self._clock(),
+            parent_sequence=disc_seq,
+            epoch_sequence=self._active_epoch.sequence,
+            epoch_id=self._active_epoch.epoch_id,
+            adapter_connected=self._subscription_adapter.connected,
+            connection_generation=self._subscription_adapter.connection_generation,
+        )
+        self._journal.append(
+            JOURNAL_KIND_EPOCH_RESTORED,
+            timestamp=self._clock(),
+            parent_sequence=disc_seq + 1,
+            epoch_sequence=self._active_epoch.sequence,
+            epoch_id=self._active_epoch.epoch_id,
+            contract_count=len(self._active_epoch.selected_contracts),
+        )
         self._recorder.emit("epoch_restored_after_reconnect", epoch=self._active_epoch.sequence)
 
     def _should_reevaluate(self, now: datetime) -> bool:
@@ -799,10 +1143,24 @@ class OrchestrationShell:
         """Persist an epoch before or atomically with activation."""
         if isinstance(self._repository, InMemoryRepository):
             self._repository.record_universe(epoch.record())
+        self._journal.append(
+            JOURNAL_KIND_EPOCH_PERSISTED,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            epoch_sequence=epoch.sequence,
+            epoch_id=epoch.epoch_id,
+            content_hash=epoch.content_hash,
+        )
 
     async def _stop_intake(self) -> None:
         """Stop event intake at the configured boundary."""
         self._intake_stopped = True
+        self._journal.append(
+            JOURNAL_KIND_INTAKE_STOPPED,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            event_count=self._event_count,
+        )
         self._recorder.emit("intake_stopped")
 
     async def _drain_persistence(self) -> None:
@@ -810,6 +1168,17 @@ class OrchestrationShell:
         if self._writer is not None:
             await self._writer.close()
         self._drained = True
+        self._journal.append(
+            JOURNAL_KIND_PERSISTENCE_DRAINED,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            event_count=self._event_count,
+            repository_events=(
+                len(getattr(self._repository, "events", []))
+                if isinstance(self._repository, InMemoryRepository)
+                else 0
+            ),
+        )
         self._recorder.emit("persistence_drained")
 
     async def _finalize(self) -> None:
@@ -819,24 +1188,54 @@ class OrchestrationShell:
             self._epochs[-1] = finalized
             self._active_epoch = finalized
         self._finalized = True
+        self._journal.append(
+            JOURNAL_KIND_SESSION_FINALIZED,
+            timestamp=self._clock(),
+            parent_sequence=self._journal.sequence - 1,
+            epoch_count=len(self._epochs),
+            event_count=self._event_count,
+            trading_enabled=False,
+            orders_constructed=0,
+            orders_submitted=0,
+        )
         self._recorder.emit("observation_completed")
 
     def _verify_replay(self) -> bool:
         """Verify that persisted events and epochs replay deterministically."""
+        parent_seq = self._journal.sequence - 1
         if isinstance(self._repository, InMemoryRepository):
             original_events = getattr(self._repository, "events", [])
-            replayed_events = tuple(self._repository.replay_events(self.config.run_id))
-            if len(replayed_events) != len(original_events):
-                return False
-            for orig, repl in zip(
-                sorted(original_events, key=lambda e: str(e.event_id)),
-                sorted(replayed_events, key=lambda e: str(e.event_id)),
-            ):
-                if orig.event_id != repl.event_id:
-                    return False
+            replayed_events = tuple(self._repository.replay_events(None))
+            replay_ok = len(replayed_events) == len(original_events)
+            if replay_ok:
+                for orig, repl in zip(
+                    sorted(original_events, key=lambda e: str(e.event_id)),
+                    sorted(replayed_events, key=lambda e: str(e.event_id)),
+                ):
+                    if orig.event_id != repl.event_id:
+                        replay_ok = False
+                        break
             # Verify epoch history was persisted
-            replayed_universe = tuple(self._repository.replay_universe(self.config.run_id))
-            return len(replayed_universe) >= len(self._epochs)
+            replayed_universe = tuple(self._repository.replay_universe(None))
+            replay_ok = replay_ok and len(replayed_universe) >= len(self._epochs)
+            self._journal.append(
+                JOURNAL_KIND_REPLAY_VERIFIED,
+                timestamp=self._clock(),
+                parent_sequence=parent_seq,
+                original_event_count=len(original_events),
+                replayed_event_count=len(replayed_events),
+                replayed_universe_count=len(replayed_universe),
+                epoch_count=len(self._epochs),
+                replay_equal=replay_ok,
+            )
+            return replay_ok
+        self._journal.append(
+            JOURNAL_KIND_REPLAY_VERIFIED,
+            timestamp=self._clock(),
+            parent_sequence=parent_seq,
+            replay_equal=False,
+            reason="no_inmemory_repository",
+        )
         return False  # Must be verified through actual replay, not assumed
 
     def _build_diagnostics(self) -> dict[str, object]:
