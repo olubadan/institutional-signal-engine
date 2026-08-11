@@ -158,7 +158,6 @@ class ScenarioExecutor:
 
     async def execute_composition(self) -> dict[str, object]:
         """Run the production orchestration shell with deterministic ports."""
-        from .dynamic_subscriptions import DynamicSubscriptionAdapter
         from .orchestration import OrchestrationConfig, OrchestrationShell, ProductionPlanner
 
         now = datetime(2026, 8, 10, 13, 40, tzinfo=UTC)
@@ -258,12 +257,6 @@ class ScenarioExecutor:
             async def health(self) -> dict[str, object]:
                 return {"status": "healthy"}
 
-        # No pre-seeding — adapter starts empty
-        adapter = DynamicSubscriptionAdapter(
-            events_url="ws://127.0.0.1:25520/v1/events",
-            api_key="fixture-theta",
-        )
-
         config = OrchestrationConfig(
             run_id=RUN_ID,
             session_date="2026-08-10",
@@ -280,7 +273,6 @@ class ScenarioExecutor:
             discovery=FixtureDiscovery(),
             enrichment=FixtureEnrichment(),
             planner=ProductionPlanner(trade_limit=15000, quote_limit=10000),
-            subscription_adapter=adapter,
             event_stream=FixtureEventStream(),
             repository=repository,
         )
