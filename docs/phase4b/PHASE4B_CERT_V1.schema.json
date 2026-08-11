@@ -1,29 +1,96 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "PHASE4B_CERT_V1",
+  "$id": "PHASE4B_CAUSAL_CERT_V2",
   "type": "object",
-  "required": ["certification_version", "evidence_kind", "git_commit", "worktree_dirty", "scenario_version", "scenario_sha256", "configuration_versions", "run_id", "trace", "universe", "events", "persistence", "replay_equality", "comparison_matrix", "delta_provenance", "finalization", "orders", "invariants", "failed_invariants", "overall"],
+  "required": [
+    "certification_version", "evidence_kind", "run_id", "journal",
+    "configuration_versions", "epochs", "subscriptions", "events", "clock",
+    "recovery", "persistence", "replay", "orders", "invariants",
+    "failed_invariants", "overall"
+  ],
   "properties": {
-    "certification_version": {"const": "PHASE4B_CERT_V1"},
-    "evidence_kind": {"enum": ["RUNTIME_CERTIFICATE", "EXAMPLE_FIXTURE"]},
-    "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "worktree_dirty": {"type": "boolean"},
-    "scenario_version": {"const": "PHASE4B_ACCELERATED_RTH_V1"},
-    "scenario_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "configuration_versions": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
+    "certification_version": {"const": "PHASE4B_CAUSAL_CERT_V2"},
+    "evidence_kind": {"const": "RUNTIME_CERTIFICATE"},
     "run_id": {"type": "string", "format": "uuid"},
-    "trace": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["record_id", "kind"], "properties": {"record_id": {"type": "string"}, "kind": {"type": "string"}}, "additionalProperties": true}},
-    "universe": {"type": "object", "required": ["epoch_count", "contracts_evaluated", "contracts_admitted", "contracts_removed", "paired_capacity", "acknowledgements"], "properties": {"epoch_count": {"type": "integer"}, "contracts_evaluated": {"type": "integer"}, "contracts_admitted": {"type": "integer"}, "contracts_removed": {"type": "integer"}, "paired_capacity": {"type": "object", "required": ["trade", "quote"], "properties": {"trade": {"type": "integer"}, "quote": {"type": "integer"}}, "additionalProperties": false}, "acknowledgements": {"type": "object", "required": ["accepted", "duplicate_or_unmatched_rejected"], "properties": {"accepted": {"type": "integer"}, "duplicate_or_unmatched_rejected": {"type": "integer"}}, "additionalProperties": false}}, "additionalProperties": false},
-    "events": {"type": "object", "required": ["events", "quotes", "clusters", "decisions"], "properties": {"events": {"type": "integer"}, "quotes": {"type": "integer"}, "clusters": {"type": "integer"}, "decisions": {"type": "integer"}}, "additionalProperties": false},
-    "persistence": {"type": "object", "required": ["enqueued", "drained", "queue_depth_final"], "properties": {"enqueued": {"type": "integer"}, "drained": {"type": "integer"}, "queue_depth_final": {"const": 0}}, "additionalProperties": false},
-    "replay_equality": {"type": "boolean"},
-    "comparison_matrix": {"type": "array", "minItems": 1},
-    "delta_provenance": {"type": "object", "required": ["recognized", "missing_or_unsupported", "unscoreable_reasons"], "properties": {"recognized": {"type": "integer"}, "missing_or_unsupported": {"type": "integer"}, "unscoreable_reasons": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false},
-    "finalization": {"type": "object", "required": ["status"], "properties": {"status": {"enum": ["FINALIZED", "INCOMPLETE"]}}, "additionalProperties": false},
-    "orders": {"type": "object", "required": ["trading_enabled", "constructed", "submitted"], "properties": {"trading_enabled": {"const": false}, "constructed": {"const": 0}, "submitted": {"const": 0}}, "additionalProperties": false},
-    "invariants": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "object", "required": ["status", "evidence_source", "record_ids", "expected", "observed"], "properties": {"status": {"enum": ["PASS", "FAIL"]}, "evidence_source": {"type": "string"}, "record_ids": {"type": "array", "items": {"type": "string"}}, "expected": {}, "observed": {}}, "additionalProperties": false}},
-    "failed_invariants": {"type": "array", "items": {"type": "object", "required": ["code", "message"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": false}},
-    "overall": {"enum": ["PASS", "FAIL"]}
+    "journal": {
+      "type": "object",
+      "required": ["record_count", "terminal_sequence", "terminal_digest", "seal_digest"],
+      "properties": {
+        "record_count": {"type": "integer", "minimum": 1},
+        "terminal_sequence": {"type": "integer", "minimum": 0},
+        "terminal_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "seal_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "configuration_versions": {
+      "type": "object",
+      "required": ["scenario", "control_model", "shadow_model", "coverage"],
+      "additionalProperties": {"type": "string"}
+    },
+    "epochs": {"type": "array", "minItems": 3, "maxItems": 3},
+    "subscriptions": {"type": "array", "minItems": 6},
+    "events": {
+      "type": "object",
+      "required": ["accepted", "rejected"],
+      "properties": {
+        "accepted": {"type": "array", "minItems": 1},
+        "rejected": {"type": "array", "minItems": 1}
+      },
+      "additionalProperties": false
+    },
+    "clock": {
+      "type": "object",
+      "required": ["advancements", "reevaluations"],
+      "properties": {
+        "advancements": {"const": 2},
+        "reevaluations": {"const": 2}
+      },
+      "additionalProperties": false
+    },
+    "recovery": {
+      "type": "object",
+      "required": ["disconnects", "reconnects", "restorations"],
+      "properties": {
+        "disconnects": {"const": 1},
+        "reconnects": {"const": 1},
+        "restorations": {"const": 1}
+      },
+      "additionalProperties": false
+    },
+    "persistence": {
+      "type": "object",
+      "required": ["identity", "digest", "queue_depth_final"],
+      "properties": {
+        "identity": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "queue_depth_final": {"const": 0}
+      },
+      "additionalProperties": false
+    },
+    "replay": {
+      "type": "object",
+      "required": ["exact_equal", "record_count", "terminal_digest"],
+      "properties": {
+        "exact_equal": {"const": true},
+        "record_count": {"type": "integer", "minimum": 1},
+        "terminal_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "orders": {
+      "type": "object",
+      "required": ["trading_enabled", "constructed", "submitted"],
+      "properties": {
+        "trading_enabled": {"const": false},
+        "constructed": {"const": 0},
+        "submitted": {"const": 0}
+      },
+      "additionalProperties": false
+    },
+    "invariants": {"type": "object", "minProperties": 1, "additionalProperties": {"const": true}},
+    "failed_invariants": {"type": "array", "maxItems": 0},
+    "overall": {"const": "PASS"}
   },
   "additionalProperties": false
 }

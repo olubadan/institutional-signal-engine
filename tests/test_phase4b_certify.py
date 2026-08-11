@@ -1,310 +1,335 @@
-"""Negative provenance tests for Phase 4B certification.
+"""Adversarial tests mutate the real persisted causal journal, never its certificate."""
 
-These tests prove that the certificate fails when journal records are
-deleted, reordered, altered, disconnected from their causal parent,
-or replaced with fabricated records.
+from __future__ import annotations
 
-Every test mutates the journal or certificate and verifies that the
-result fails validation. A passing certificate on a mutated trace is
-a test failure.
-"""
-
+import asyncio
+import json
+from collections.abc import Callable
 from copy import deepcopy
+from typing import Any, cast
 
 import pytest
 
 from institutional_signal_engine.journal import (
+    JOURNAL_KIND_CLOCK_ADVANCED,
+    JOURNAL_KIND_CONFIGURATION,
+    JOURNAL_KIND_EPOCH_ACTIVATED,
     JOURNAL_KIND_EPOCH_CREATED,
+    JOURNAL_KIND_EPOCH_RESTORED,
     JOURNAL_KIND_EVENT_ACCEPTED,
-    JOURNAL_KIND_PROVIDER_DISCONNECTED,
+    JOURNAL_KIND_JOURNAL_PERSISTED,
+    JOURNAL_KIND_REPLAY_VERIFIED,
     JOURNAL_KIND_SESSION_FINALIZED,
+    JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+    Journal,
+    JournalFailure,
+    canonical_json,
+    sha256,
+    verify_complete,
 )
 from institutional_signal_engine.phase4b_certify import (
-    CERTIFICATION_VERSION,
-    SCENARIO_VERSION,
-    _project_certificate,
+    acceptance_projection,
     execute_composition,
     validate_certificate,
 )
 
+RawJournal = dict[str, Any]
+
 
 @pytest.fixture(scope="module")
-def _composition_fixture() -> dict:
-    """Run the composition once and cache for all tests in this module."""
-    import asyncio
+def canonical_serialized() -> str:
+    return asyncio.run(execute_composition()).replayed.canonical_serialization
 
-    shell, repo, _clock = asyncio.run(execute_composition())
-    certificate = _project_certificate(shell.journal, repo, shell)
-    return {
-        "shell": shell,
-        "repo": repo,
-        "clock": _clock,
-        "certificate": certificate,
-        "journal": shell.journal,
+
+def _record(raw: RawJournal, kind: str, occurrence: int = 0) -> dict[str, Any]:
+    return [record for record in raw["records"] if record["kind"] == kind][occurrence]
+
+
+def _rehash(raw: RawJournal) -> None:
+    records = cast(list[dict[str, Any]], raw["records"])
+    old_to_new: dict[int, int] = {}
+    for new_sequence, record in enumerate(records):
+        old_to_new.setdefault(int(record["sequence"]), new_sequence)
+    previous_digest = "0" * 64
+    for sequence, record in enumerate(records):
+        old_parent = record.get("parent_sequence")
+        record["sequence"] = sequence
+        if old_parent is not None:
+            record["parent_sequence"] = old_to_new.get(int(old_parent), max(0, sequence - 1))
+        record["payload_digest"] = sha256(record["payload"])
+        record["previous_record_digest"] = previous_digest
+        digest_input = {key: value for key, value in record.items() if key != "record_digest"}
+        record["record_digest"] = sha256(digest_input)
+        previous_digest = record["record_digest"]
+    commitment = {
+        "run_id": raw["run_id"],
+        "record_count": len(records),
+        "terminal_sequence": records[-1]["sequence"],
+        "terminal_digest": records[-1]["record_digest"],
     }
+    raw["seal"] = {**commitment, "seal_digest": sha256(commitment)}
 
 
-@pytest.fixture
-def composition(_composition_fixture):
-    """Return a deep copy so tests don't mutate the cached fixture."""
-    return deepcopy(_composition_fixture)
+def _failure(serialized: str) -> str:
+    try:
+        verified = verify_complete(Journal.deserialize(serialized))
+        acceptance_projection(verified)
+    except JournalFailure as exc:
+        return exc.code
+    pytest.fail("corrupted journal unexpectedly passed production verification")
 
 
-# ---------------------------------------------------------------------------
-# Sanity: the certificate passes before mutation
-# ---------------------------------------------------------------------------
+def _mutate(
+    serialized: str, mutation: Callable[[RawJournal], None], *, rehash: bool = False
+) -> str:
+    raw = cast(RawJournal, json.loads(serialized))
+    mutation(raw)
+    if rehash:
+        _rehash(raw)
+    return canonical_json(raw)
 
 
-def test_certificate_passes_at_composition(composition):
-    """The certificate from one composition execution passes all invariants
-    except exact_head_clean (which requires a clean working tree)."""
-    cert = composition["certificate"]
-    failures = [
-        name
-        for name, inv in cert["invariants"].items()
-        if inv["status"] == "FAIL" and name != "exact_head_clean"
-    ]
-    assert not failures, f"Unexpected failures: {failures}"
-    assert cert["certification_version"] == CERTIFICATION_VERSION
-    assert cert["scenario_version"] == SCENARIO_VERSION
-    assert cert["orders"] == {"trading_enabled": False, "constructed": 0, "submitted": 0}
+def _delete_kind(raw: RawJournal, kind: str, occurrence: int = 0) -> None:
+    target = _record(raw, kind, occurrence)
+    raw["records"].remove(target)
 
 
-def test_certificate_is_deterministic(composition):
-    """Running composition twice produces certificates with identical invariants."""
-    import asyncio
-
-    shell2, repo2, _clock2 = asyncio.run(execute_composition())
-    cert2 = _project_certificate(shell2.journal, repo2, shell2)
-    first = composition["certificate"]
-    assert first["certification_version"] == cert2["certification_version"]
-    assert first["scenario_version"] == cert2["scenario_version"]
-    assert first["scenario_sha256"] == cert2["scenario_sha256"]
-    # Invariant statuses must match
-    for key in first["invariants"]:
-        assert first["invariants"][key]["status"] == cert2["invariants"][key]["status"], (
-            f"Mismatch on {key}"
-        )
-    assert first["orders"] == cert2["orders"]
+def test_positive_composition_and_persisted_projection_are_exact(canonical_serialized: str) -> None:
+    journal = Journal.deserialize(canonical_serialized)
+    verified = verify_complete(journal)
+    certificate = acceptance_projection(verified)
+    replayed = verify_complete(Journal.deserialize(verified.canonical_serialization))
+    assert acceptance_projection(replayed) == certificate
+    assert certificate["overall"] == "PASS"
+    assert validate_certificate(certificate) == []
 
 
-# ---------------------------------------------------------------------------
-# Deletion: removing a required record causes failure
-# ---------------------------------------------------------------------------
-
-
-def test_delete_disconnect_record_fails(composition):
-    """Removing the disconnect record causes disconnect_observed to fail."""
-    cert = deepcopy(composition["certificate"])
-    # Remove provider.disconnected from trace
-    cert["trace"] = [
-        r for r in cert["trace"] if r.get("kind") != JOURNAL_KIND_PROVIDER_DISCONNECTED
-    ]
-    # Rebuild invariants — the disconnect_observed invariant should now fail
-    cert["invariants"]["disconnect_observed"]["observed"] = False
-    cert["invariants"]["disconnect_observed"]["status"] = "FAIL"
-    cert["invariants"]["disconnect_observed"]["record_ids"] = []
-    cert["failed_invariants"] = [{"code": "DISCONNECT_OBSERVED", "message": "False"}]
-    cert["overall"] = "FAIL"
-    # Certificate should report FAIL
-    assert cert["overall"] == "FAIL"
-
-
-def test_delete_epoch_created_record_fails(composition):
-    """Removing an epoch.created record causes epochs_created to fail."""
-    cert = deepcopy(composition["certificate"])
-    epoch_count_original = cert["universe"]["epoch_count"]
-    # Remove one epoch.created record
-    cert["trace"] = [
-        r
-        for r in cert["trace"]
-        if not (r.get("kind") == JOURNAL_KIND_EPOCH_CREATED and r.get("epoch_sequence") == 2)
-    ]
-    cert["universe"]["epoch_count"] = epoch_count_original - 1
-    cert["invariants"]["epochs_created"]["observed"] = epoch_count_original - 1
-    cert["invariants"]["epochs_created"]["status"] = "FAIL"
-    cert["failed_invariants"] = [
-        {"code": "EPOCHS_CREATED", "message": str(epoch_count_original - 1)}
-    ]
-    cert["overall"] = "FAIL"
-    assert cert["overall"] == "FAIL"
-
-
-def test_delete_finalization_record_fails(composition):
-    """Removing the finalization record causes finalization_complete to fail."""
-    cert = deepcopy(composition["certificate"])
-    cert["trace"] = [r for r in cert["trace"] if r.get("kind") != JOURNAL_KIND_SESSION_FINALIZED]
-    cert["invariants"]["finalization_complete"]["observed"] = False
-    cert["invariants"]["finalization_complete"]["status"] = "FAIL"
-    cert["finalization"]["status"] = "INCOMPLETE"
-    cert["failed_invariants"] = [{"code": "FINALIZATION_COMPLETE", "message": "False"}]
-    cert["overall"] = "FAIL"
-    assert cert["overall"] == "FAIL"
-
-
-# ---------------------------------------------------------------------------
-# Alteration: modifying a record's content causes failure
-# ---------------------------------------------------------------------------
-
-
-def test_altered_replay_record_fails(composition):
-    """Changing replay_equal to False causes replay_equality to fail."""
-    cert = deepcopy(composition["certificate"])
-    cert["replay_equality"] = False
-    cert["invariants"]["replay_equality"]["observed"] = False
-    cert["invariants"]["replay_equality"]["status"] = "FAIL"
-    cert["failed_invariants"] = [{"code": "REPLAY_EQUALITY", "message": "False"}]
-    cert["overall"] = "FAIL"
-    assert cert["overall"] == "FAIL"
-
-
-def test_altered_epoch_activation_fails(composition):
-    """Changing epoch activation status causes epochs_activated to fail."""
-    cert = deepcopy(composition["certificate"])
-    cert["invariants"]["epochs_activated"]["observed"] = False
-    cert["invariants"]["epochs_activated"]["status"] = "FAIL"
-    cert["failed_invariants"] = [{"code": "EPOCHS_ACTIVATED", "message": "False"}]
-    cert["overall"] = "FAIL"
-    assert cert["overall"] == "FAIL"
-
-
-# ---------------------------------------------------------------------------
-# Fabrication: inserting an extra record that wasn't emitted
-# ---------------------------------------------------------------------------
-
-
-def test_fabricated_extra_event_fails_validation(composition):
-    """Adding a fabricated event.accepted record creates duplicates."""
-    cert = deepcopy(composition["certificate"])
-    cert["trace"].append(
-        {
-            "record_id": "j-FAKE",
-            "kind": JOURNAL_KIND_EVENT_ACCEPTED,
-            "timestamp": "2026-08-10T13:20:00+00:00",
-            "epoch_sequence": 1,
-            "contract_identity": None,
-            "payload_digest": "fake",
-        }
+def test_deleted_required_record(canonical_serialized: str) -> None:
+    corrupted = _mutate(
+        canonical_serialized,
+        lambda raw: _delete_kind(raw, JOURNAL_KIND_CONFIGURATION),
+        rehash=True,
     )
-    # Validation should detect the fake record
-    errors = validate_certificate(cert)
-    # The fake record may be detected via schema or invariant check
-    # At minimum, the record has no valid evidence source
-    assert len(errors) >= 0  # Schema validation may or may not catch this
+    assert _failure(corrupted) == "MISSING_REQUIRED_RECORD"
 
 
-def test_fabricated_orders_nonzero_fails(composition):
-    """Setting orders_constructed to non-zero causes failure."""
-    cert = deepcopy(composition["certificate"])
-    cert["orders"]["constructed"] = 1
-    cert["invariants"]["orders_constructed_zero"]["observed"] = 1
-    cert["invariants"]["orders_constructed_zero"]["status"] = "FAIL"
-    cert["failed_invariants"] = [{"code": "ORDERS_CONSTRUCTED_ZERO", "message": "1"}]
-    cert["overall"] = "FAIL"
-    assert cert["overall"] == "FAIL"
+def test_reordered_records(canonical_serialized: str) -> None:
+    def reorder(raw: RawJournal) -> None:
+        raw["records"][5], raw["records"][6] = raw["records"][6], raw["records"][5]
+
+    assert _failure(_mutate(canonical_serialized, reorder)) == "SEQUENCE_INVALID"
 
 
-# ---------------------------------------------------------------------------
-# Broken causality: parent reference chain is broken
-# ---------------------------------------------------------------------------
+def test_altered_payload_without_updated_digest(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"]["ack_timeout"] = 999
+
+    assert _failure(_mutate(canonical_serialized, alter)) == "PAYLOAD_DIGEST_MISMATCH"
 
 
-def test_broken_parent_chain_detected(composition):
-    """A journal with a non-monotonic sequence fails integrity check."""
-    journal = composition["journal"]
-    # Create a copy of the journal with broken causality
-    # Verify the original journal is intact
-    ok, reason = journal.verify_integrity()
-    assert ok, f"Journal integrity check failed: {reason}"
+def test_altered_payload_digest_but_broken_record_chain(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        record = _record(raw, JOURNAL_KIND_CONFIGURATION)
+        record["payload"]["ack_timeout"] = 999
+        record["payload_digest"] = sha256(record["payload"])
+
+    assert _failure(_mutate(canonical_serialized, alter)) == "RECORD_DIGEST_MISMATCH"
 
 
-def test_certificate_validates_against_schema(composition):
-    """The certificate validates against the JSON schema."""
-    cert = composition["certificate"]
-    errors = validate_certificate(cert)
-    # exact_head_clean might fail due to dirty tree, but schema must validate
-    assert not errors, f"Schema validation errors: {errors}"
+def test_invalid_causal_parent(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["parent_sequence"] = raw["records"][-1][
+            "sequence"
+        ]
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "CAUSAL_PARENT_MISSING"
 
 
-# ---------------------------------------------------------------------------
-# Schema-level negative tests
-# ---------------------------------------------------------------------------
+def test_plausible_but_wrong_earlier_parent(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        completion = next(r for r in raw["records"] if r["kind"] == "discovery.complete")
+        completion["parent_sequence"] = _record(raw, JOURNAL_KIND_CONFIGURATION)["sequence"]
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "CAUSAL_PARENT_WRONG"
 
 
-def test_certificate_rejects_missing_required_field():
-    """A certificate missing a required field fails validation."""
-    import asyncio
+def test_missing_parent(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["parent_sequence"] = None
 
-    shell, repo, _clock = asyncio.run(execute_composition())
-    cert = _project_certificate(shell.journal, repo, shell)
-
-    # Remove a required field
-    mutated = deepcopy(cert)
-    del mutated["run_id"]
-    errors = validate_certificate(mutated)
-    assert len(errors) > 0
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "CAUSAL_PARENT_WRONG"
 
 
-def test_certificate_rejects_wrong_type():
-    """A certificate with a wrong type fails validation."""
-    import asyncio
+def test_record_from_another_run(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        _record(raw, JOURNAL_KIND_EVENT_ACCEPTED)["run_id"] = "4b000000-0000-4000-8000-000000000099"
 
-    shell, repo, _clock = asyncio.run(execute_composition())
-    cert = _project_certificate(shell.journal, repo, shell)
-
-    mutated = deepcopy(cert)
-    mutated["worktree_dirty"] = "false"  # Should be boolean
-    errors = validate_certificate(mutated)
-    assert len(errors) > 0
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "RUN_ID_MISMATCH"
 
 
-def test_certificate_rejects_invalid_uuid():
-    """A certificate with an invalid UUID fails validation."""
-    import asyncio
+def test_fabricated_extra_record(canonical_serialized: str) -> None:
+    def fabricate(raw: RawJournal) -> None:
+        raw["records"].insert(-2, deepcopy(_record(raw, JOURNAL_KIND_EVENT_ACCEPTED)))
 
-    shell, repo, _clock = asyncio.run(execute_composition())
-    cert = _project_certificate(shell.journal, repo, shell)
-
-    mutated = deepcopy(cert)
-    mutated["run_id"] = "not-a-uuid"
-    errors = validate_certificate(mutated)
-    assert len(errors) > 0
+    assert _failure(_mutate(canonical_serialized, fabricate)) == "SEQUENCE_INVALID"
 
 
-def test_certificate_rejects_malformed_sha():
-    """A certificate with a malformed SHA fails validation."""
-    import asyncio
+def test_fabricated_record_with_recalculated_hashes(canonical_serialized: str) -> None:
+    def fabricate(raw: RawJournal) -> None:
+        stop_index = next(
+            index
+            for index, record in enumerate(raw["records"])
+            if record["kind"] == "intake.stopped"
+        )
+        clone = deepcopy(_record(raw, JOURNAL_KIND_CONFIGURATION))
+        clone["sequence"] = 9999
+        clone["parent_sequence"] = raw["records"][stop_index - 1]["sequence"]
+        clone["timestamp"] = raw["records"][stop_index - 1]["timestamp"]
+        raw["records"].insert(stop_index, clone)
 
-    shell, repo, _clock = asyncio.run(execute_composition())
-    cert = _project_certificate(shell.journal, repo, shell)
-
-    mutated = deepcopy(cert)
-    mutated["scenario_sha256"] = "short"
-    errors = validate_certificate(mutated)
-    assert len(errors) > 0
-
-
-def test_certificate_rejects_status_mismatch(composition):
-    """An invariant whose status doesn't match observed-vs-expected fails."""
-    cert = deepcopy(composition["certificate"])
-    # Mutate: set observed to False but keep status PASS
-    for inv in cert["invariants"].values():
-        if inv["expected"] is True and inv["observed"] is True:
-            inv["observed"] = False
-            # Status should change to FAIL but we leave it as PASS
-            break
-    errors = validate_certificate(cert)
-    # Schema-level invariant-status-mismatch check should catch this
-    assert len(errors) > 0
+    assert _failure(_mutate(canonical_serialized, fabricate, rehash=True)) == "DUPLICATE_RECORD"
 
 
-def test_empty_trace_fails(composition):
-    """Removing all trace records causes invariant evidence failures."""
-    cert = deepcopy(composition["certificate"])
-    cert["trace"] = []
-    # All invariants that depend on trace evidence should now have empty record_ids
-    for inv in cert["invariants"].values():
-        inv["record_ids"] = []
-    errors = validate_certificate(cert)
-    # The schema requires trace array with minItems: 1
-    assert len(errors) > 0
+def test_broken_command_acknowledgement_correlation(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        ack = _record(raw, JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)
+        ack["contract_identity"] = "B:20260821:11000:C"
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "ACK_CORRELATION_INVALID"
+
+
+@pytest.mark.parametrize("channel", ["TRADE", "QUOTE"])
+def test_missing_channel_acknowledgement(canonical_serialized: str, channel: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        target = next(
+            record
+            for record in raw["records"]
+            if record["kind"] == JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT
+            and record["epoch_sequence"] == 1
+            and record["payload"]["channel"] == channel
+        )
+        raw["records"].remove(target)
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "ACTIVATION_BEFORE_ACK"
+
+
+def test_activation_before_complete_acknowledgement(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        activation = _record(raw, JOURNAL_KIND_EPOCH_ACTIVATED)
+        raw["records"].remove(activation)
+        first_ack = next(
+            record
+            for record in raw["records"]
+            if record["kind"] == JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT
+            and record["epoch_sequence"] == 1
+        )
+        activation["parent_sequence"] = first_ack["sequence"]
+        last_ack_index = max(
+            index
+            for index, record in enumerate(raw["records"])
+            if record["kind"] == JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT
+            and record["epoch_sequence"] == 1
+        )
+        raw["records"].insert(last_ack_index, activation)
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "ACTIVATION_BEFORE_ACK"
+
+
+def test_incorrect_epoch_membership(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["payload"]["membership"] = [
+            "B:20260821:11000:C"
+        ]
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == (
+        "SUBSCRIPTION_DIFF_INCOMPLETE"
+    )
+
+
+def test_accepted_event_for_removed_contract(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        target = next(
+            record
+            for record in raw["records"]
+            if record["kind"] == JOURNAL_KIND_EVENT_ACCEPTED and record["epoch_sequence"] == 3
+        )
+        target["contract_identity"] = "A:20260821:10000:C"
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == (
+        "ACCEPTED_EVENT_NOT_ACTIVE"
+    )
+
+
+def test_incorrect_restoration_epoch(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        restored = _record(raw, JOURNAL_KIND_EPOCH_RESTORED)
+        restored["epoch_sequence"] = 1
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == (
+        "RESTORATION_EPOCH_INVALID"
+    )
+
+
+def test_reevaluation_without_clock_cause(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        reevaluation = next(r for r in raw["records"] if r["kind"] == "reevaluation.start")
+        reevaluation["parent_sequence"] = _record(raw, JOURNAL_KIND_EVENT_ACCEPTED)["sequence"]
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "CAUSAL_PARENT_WRONG"
+
+
+def test_record_after_finalization(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        final_index = next(
+            index
+            for index, record in enumerate(raw["records"])
+            if record["kind"] == JOURNAL_KIND_SESSION_FINALIZED
+        )
+        clone = deepcopy(_record(raw, JOURNAL_KIND_EVENT_ACCEPTED))
+        clone["sequence"] = 9999
+        clone["timestamp"] = raw["records"][final_index]["timestamp"]
+        raw["records"].insert(final_index + 1, clone)
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == (
+        "RECORD_AFTER_FINALIZATION"
+    )
+
+
+def test_altered_seal(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        raw["seal"]["record_count"] += 1
+
+    assert _failure(_mutate(canonical_serialized, alter)) == "SEAL_RECORD_COUNT_MISMATCH"
+
+
+def test_unsealed_journal_and_projection_rejected(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        raw["seal"] = None
+
+    corrupted = _mutate(canonical_serialized, alter)
+    assert _failure(corrupted) == "UNSEALED_JOURNAL"
+    with pytest.raises(JournalFailure) as failure:
+        acceptance_projection(cast(Any, Journal.deserialize(corrupted)))
+    assert failure.value.code == "PROJECTION_REQUIRES_VERIFIED_JOURNAL"
+
+
+def test_persisted_replay_mismatch(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        replay = _record(raw, JOURNAL_KIND_REPLAY_VERIFIED)
+        replay["payload"]["exact_equal"] = False
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "REPLAY_MISMATCH"
+
+
+def test_clock_payload_corruption_is_detected(canonical_serialized: str) -> None:
+    def alter(raw: RawJournal) -> None:
+        _record(raw, JOURNAL_KIND_CLOCK_ADVANCED)["payload"].pop("boundary")
+
+    assert _failure(_mutate(canonical_serialized, alter, rehash=True)) == "CLOCK_BOUNDARY_MISSING"
+
+
+def test_journal_persistence_record_is_not_synthetic(canonical_serialized: str) -> None:
+    verified = verify_complete(Journal.deserialize(canonical_serialized))
+    persisted = verified.records_by_kind(JOURNAL_KIND_JOURNAL_PERSISTED)[0]
+    assert persisted.payload["persisted_identity"].startswith("memory://journal/")
+    assert persisted.payload["queue_depth_final"] == 0

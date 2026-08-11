@@ -1,7 +1,7 @@
 # Proposed Next Codex Prompt
 
-Perform independent review of the corrected Work Package 1 certification on
-PR #5. Do not begin Work Package 2, repair production Phase 4B behavior, run
-providers, enable trading, or create orders. If review authorizes later work,
-open a new scoped prompt and preserve the external exact-head certificate and
-its trace-derived evidence.
+Independently validate the exact-head Phase 4B causal-journal correction on
+draft PR #6. Reconstruct the persisted journal, rerun production structural and
+semantic verification and the one-input acceptance projection, and confirm the
+published artifact hashes and exact-head CI. Do not modify PR #5, mark PR #6
+ready, run providers, enable trading, create orders, or begin Phase 5.

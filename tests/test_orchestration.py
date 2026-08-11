@@ -242,10 +242,9 @@ def test_deterministic_epoch_hash():
         candidate_population_version="test-v1",
         selected_contracts=contracts,
     )
-    # Content hashes must match (epoch_id is random but content_hash is deterministic)
+    # Content hash and identity are deterministic for identical epoch content.
     assert epoch1.content_hash == epoch2.content_hash
-    # But epoch IDs differ
-    assert epoch1.epoch_id != epoch2.epoch_id
+    assert epoch1.epoch_id == epoch2.epoch_id
 
 
 # ---------------------------------------------------------------------------

@@ -5,17 +5,18 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 4 merged; Phase 4B mathematical footprint validation
-  is in weekend preparation on a draft branch; Phase 5 has not started
+- **Current phase:** Phase 4 merged; Phase 4B causal-journal recovery is active
+  on stacked draft PR #6; Phase 5 has not started
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline; Phase 2 — reproducible Vast environment verified with
   documented Ubuntu 22.04/finite-duration exception and merged in PR #2
-- **Active branch:** `feat/phase-4b-impact-shadow`
+- **Active branch:** `feat/rth-orchestration-recovery`
 - **Phase 4 merge:** PR #4 is merged into `main` at
   `b62d017dc572fd4dfbef99afccfc3f01b4399840`; resulting-main CI run
   `31209185798` passed.
-- **Pull-request state:** Phase 4B draft PR #5 is open from
-  `feat/phase-4b-impact-shadow`; Phase 4 PR #4 is closed and merged.
+- **Pull-request state:** Recovery draft PR #6 is open from
+  `feat/rth-orchestration-recovery`, stacked on open draft PR #5; Phase 4 PR #4
+  is closed and merged.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
   correlated Standard exact-contract requests, dynamic-universe selection ports,
@@ -79,10 +80,9 @@
   with field-by-field equality. This proof applies to this corrected run under
   its recorded engine, configuration and condition-mapping versions; it does
   not claim that every historical run is replayable.
-- **Next action:** Complete weekend Phase 4B verification and exact-head CI;
-  Monday requires only deployment preflight and explicit live-observation
-  authorization. Phase 5 begins only after Phase 4B scope is complete and the
-  owner explicitly approves it.
+- **Next action:** Obtain final independent validation of the exact-head causal
+  journal correction on draft PR #6. Phase 5 begins only after Phase 4B scope is
+  complete and the owner explicitly approves it.
 
 ## Phase 4B weekend preparation — SESSION-0022
 
@@ -702,3 +702,25 @@
 - Verification: Ruff, strict mypy, and 168 hermetic tests passed; focused
   schema/structural checks, secret scan, and diff check passed. `jsonschema`
   was not installed; dependency-free certificate schema validation passed.
+
+### SESSION-0027 final causal-journal correction — 20260811
+
+- Draft PR #6 now uses one `OrchestrationShell` for production and deterministic
+  execution. A driver selects market events, scheduled clock boundaries,
+  disconnects, and intake stop as independent inputs.
+- The runtime certificate accepts one sealed `VerifiedJournal` and reads no Git,
+  worktree, shell, repository, environment, scenario helper, or expected-result
+  object. Build-envelope evidence is separate.
+- Journal verification recalculates payload and complete-record digests, the
+  ordered chain, parent constraints, run and sequence consistency, and the seal;
+  semantic verification enforces discovery/enrichment, epoch, paired command and
+  acknowledgement, activation, event, restoration, clock, and terminal lifecycle
+  causality.
+- Canonical journal persistence is reconstructed through the repository boundary;
+  the replayed journal is reverified and projects an exactly equal certificate.
+  The deterministic trace proves E1 `{A}`, E2 `{A,B}`, E3 `{B}`, clock-only
+  reevaluations, recovery, removed-A rejection, active-B acceptance, stop, drain,
+  finalization, persistence, and replay.
+- The focused positive and corruption suite has 25 tests; the complete hermetic
+  suite has 239 tests. Trading is disabled and orders remain `0/0`. Exact-head CI
+  and artifact digests are recorded in SESSION-0027 after publication.

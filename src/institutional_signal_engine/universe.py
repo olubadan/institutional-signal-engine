@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol, cast
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from .contract_mapping import MappingResult
 from .providers.thetadata import ThetaContract
@@ -790,7 +790,7 @@ class PlannerEpoch:
         canonical = json.dumps(pre_hash, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         content_hash = hashlib.sha256(canonical.encode()).hexdigest()
         return cls(
-            epoch_id=str(uuid4()),
+            epoch_id=str(UUID(content_hash[:32])),
             sequence=sequence,
             effective_at=effective_at,
             candidate_population_version=candidate_population_version,
