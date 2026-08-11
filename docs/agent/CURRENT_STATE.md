@@ -782,3 +782,37 @@
 - No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
   unchanged; PR #6 remains draft and unmerged. Exact-head publication and CI are
   confirmed externally after the single correction commit is pushed.
+
+### SESSION-0030 fused certification boundary correction — 20260811
+
+- Authoritative issuance now has exactly one production construction function:
+  `Certificate = certify_repository_backed(CDelta, J, P, R, repository)`.
+  `VerifiedEvidencePackage`, `_issue`, the repository-verification authority,
+  authority checks, the standalone projection, and the repository-free artifact
+  constructor are removed.
+- Every certification invocation independently validates sealed J, validates P
+  only as a claim, loads P's exact repository object, compares canonical bytes,
+  reconstructs and fully verifies a distinct journal, derives observations and
+  all replay facts from verified local objects, compares caller R, and constructs
+  the certificate immediately. Certificate observations use the repository
+  reconstruction and locally derived P/R facts, never caller fields directly.
+- `validate_certificate_schema` is explicitly shape-only and cannot authorize
+  issuance. Public-API and AST inspection prove the removed names are absent and
+  only `certify_repository_backed` contains an `overall: PASS` construction.
+- Adversarial production-boundary coverage includes former-capability lookalikes,
+  low-level object mutation, copied evidence, forged authority identity, empty,
+  wrong, altered, cross-run and cross-contract repository evidence, invented R,
+  schema-valid manual fields, residual projection API absence, and mandatory
+  repository loading with stable failure codes.
+- Local verification passes: Ruff format/lint, strict mypy, dependency lock,
+  structural and secret checks, Bash syntax, 271 hermetic tests, and 57 focused
+  certification tests. Local ShellCheck was unavailable; exact-head GitHub CI
+  installs and runs it. Two executions produced byte-identical artifacts.
+  J/P/R/certificate SHA-256 values remain respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `01dbcdcaca2e367aeac5db63bd9b3b4a1818e357d428215b4af9ec1111e40784`.
+- No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
+  unchanged; PR #6 remains draft and unmerged. Exact-head publication and CI are
+  confirmed externally after the single correction commit is pushed.

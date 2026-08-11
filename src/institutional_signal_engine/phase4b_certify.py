@@ -305,154 +305,11 @@ class DeterministicSessionDriver(SessionDriverPort):
 @dataclass(frozen=True)
 class Composition:
     contract: AcceptanceContract
-    evidence: VerifiedEvidencePackage
+    journal: VerifiedJournal
+    persistence: PersistenceReceipt
+    replay: ReplayReceipt
     reconstructed: VerifiedJournal
     journal_repository: InMemoryJournalRepository
-
-
-class VerifiedEvidencePackage:
-    """Opaque capability issued only after repository-backed Omega verification."""
-
-    __slots__ = ("_authority", "_contract", "_journal", "_persistence", "_replay")
-    _authority: object
-    _contract: AcceptanceContract
-    _journal: VerifiedJournal
-    _persistence: PersistenceReceipt
-    _replay: ReplayReceipt
-
-    def __init__(self, *_: object, **__: object) -> None:
-        raise JournalFailure("VERIFIED_EVIDENCE_CONSTRUCTION_FORBIDDEN")
-
-    def __setattr__(self, _: str, __: object) -> None:
-        raise JournalFailure("VERIFIED_EVIDENCE_PACKAGE_IMMUTABLE")
-
-    @classmethod
-    def _issue(
-        cls,
-        authority: object,
-        contract: AcceptanceContract,
-        journal: VerifiedJournal,
-        persistence: PersistenceReceipt,
-        replay: ReplayReceipt,
-    ) -> VerifiedEvidencePackage:
-        package = object.__new__(cls)
-        object.__setattr__(package, "_authority", authority)
-        object.__setattr__(package, "_contract", contract)
-        object.__setattr__(package, "_journal", journal)
-        object.__setattr__(package, "_persistence", persistence)
-        object.__setattr__(package, "_replay", replay)
-        return package
-
-    @property
-    def journal(self) -> VerifiedJournal:
-        return self._journal
-
-    @property
-    def persistence(self) -> PersistenceReceipt:
-        return self._persistence
-
-    @property
-    def replay(self) -> ReplayReceipt:
-        return self._replay
-
-
-_REPOSITORY_VERIFICATION_AUTHORITY = object()
-
-
-def journal_projection(journal: VerifiedJournal) -> dict[str, object]:
-    """Observed J facts only; contains neither expectations nor P/R observations."""
-    records = journal.records
-
-    def by_kind(kind: str) -> tuple[JournalRecord, ...]:
-        return tuple(record for record in records if record.kind == kind)
-
-    configuration = by_kind(JOURNAL_KIND_CONFIGURATION)[0]
-    epochs = by_kind(JOURNAL_KIND_EPOCH_CREATED)
-    commands = by_kind(JOURNAL_KIND_SUBSCRIPTION_COMMAND)
-    acknowledgements = {
-        record.command_id: record for record in by_kind(JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)
-    }
-    finalized = by_kind(JOURNAL_KIND_SESSION_FINALIZED)[0]
-    return {
-        "run_id": str(journal.run_id),
-        "configuration_versions": {
-            "scenario": configuration.payload["scenario_version"],
-            "control_model": configuration.payload["control_model_version"],
-            "shadow_model": configuration.payload["shadow_model_version"],
-            "coverage": configuration.payload["coverage_version"],
-        },
-        "epochs": [
-            {
-                "sequence": record.epoch_sequence,
-                "epoch_id": record.epoch_id,
-                "membership": list(cast(list[object], record.payload["membership"])),
-                "operation_id": record.operation_id,
-            }
-            for record in epochs
-        ],
-        "subscriptions": [
-            {
-                "command_id": command.command_id,
-                "epoch_sequence": command.epoch_sequence,
-                "contract_identity": command.contract_identity,
-                "action": command.payload["action"],
-                "channel": command.payload["channel"],
-                "ack_id": acknowledgements[command.command_id].ack_id,
-                "acknowledged": acknowledgements[command.command_id].payload["accepted"],
-                "command_sequence": command.sequence,
-                "ack_sequence": acknowledgements[command.command_id].sequence,
-            }
-            for command in commands
-        ],
-        "events": {
-            kind.split(".", 1)[1]: [
-                {
-                    "event_id": record.payload["event_id"],
-                    "epoch_sequence": record.epoch_sequence,
-                    "contract_identity": record.contract_identity,
-                    "channel": record.payload["event_kind"],
-                }
-                for record in by_kind(kind)
-            ]
-            for kind in (JOURNAL_KIND_EVENT_ACCEPTED, JOURNAL_KIND_EVENT_REJECTED)
-        },
-        "clock": {
-            "boundaries": [
-                record.payload["boundary"] for record in by_kind(JOURNAL_KIND_CLOCK_ADVANCED)
-            ],
-            "reevaluations": len(by_kind(JOURNAL_KIND_REEVALUATION_START)),
-        },
-        "recovery": {
-            "disconnects": len(by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED)),
-            "reconnects": len(by_kind(JOURNAL_KIND_PROVIDER_RECONNECTED)),
-            "restorations": [
-                {
-                    "cycle_id": record.correlation_id,
-                    "epoch_sequence": record.epoch_sequence,
-                    "membership": list(cast(list[object], record.payload["membership"])),
-                }
-                for record in by_kind(JOURNAL_KIND_EPOCH_RESTORED)
-            ],
-        },
-        "lifecycle": [
-            record.kind
-            for record in records
-            if record.kind
-            in {
-                "session.start",
-                "configuration.loaded",
-                "provider.ready",
-                "intake.stopped",
-                "persistence.drained",
-                "session.finalized",
-            }
-        ],
-        "orders": {
-            "trading_enabled": finalized.payload["trading_enabled"],
-            "constructed": finalized.payload["orders_constructed"],
-            "submitted": finalized.payload["orders_submitted"],
-        },
-    }
 
 
 def replay_persisted(
@@ -461,7 +318,103 @@ def replay_persisted(
     persistence: PersistenceReceipt,
     repository: JournalRepository,
 ) -> tuple[VerifiedJournal, ReplayReceipt]:
-    """Read P's object, reconstruct a new J, fully verify it, and only then issue R."""
+    """Create untrusted replay claim R after a repository reconstruction."""
+
+    def receipt_projection(value: VerifiedJournal) -> dict[str, object]:
+        records = value.records
+
+        def by_kind(kind: str) -> tuple[JournalRecord, ...]:
+            return tuple(record for record in records if record.kind == kind)
+
+        configuration = by_kind(JOURNAL_KIND_CONFIGURATION)[0]
+        epochs = by_kind(JOURNAL_KIND_EPOCH_CREATED)
+        commands = by_kind(JOURNAL_KIND_SUBSCRIPTION_COMMAND)
+        acknowledgements = {
+            record.command_id: record
+            for record in by_kind(JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)
+        }
+        finalized = by_kind(JOURNAL_KIND_SESSION_FINALIZED)[0]
+        return {
+            "run_id": str(value.run_id),
+            "configuration_versions": {
+                "scenario": configuration.payload["scenario_version"],
+                "control_model": configuration.payload["control_model_version"],
+                "shadow_model": configuration.payload["shadow_model_version"],
+                "coverage": configuration.payload["coverage_version"],
+            },
+            "epochs": [
+                {
+                    "sequence": record.epoch_sequence,
+                    "epoch_id": record.epoch_id,
+                    "membership": list(cast(list[object], record.payload["membership"])),
+                    "operation_id": record.operation_id,
+                }
+                for record in epochs
+            ],
+            "subscriptions": [
+                {
+                    "command_id": command.command_id,
+                    "epoch_sequence": command.epoch_sequence,
+                    "contract_identity": command.contract_identity,
+                    "action": command.payload["action"],
+                    "channel": command.payload["channel"],
+                    "ack_id": acknowledgements[command.command_id].ack_id,
+                    "acknowledged": acknowledgements[command.command_id].payload["accepted"],
+                    "command_sequence": command.sequence,
+                    "ack_sequence": acknowledgements[command.command_id].sequence,
+                }
+                for command in commands
+            ],
+            "events": {
+                kind.split(".", 1)[1]: [
+                    {
+                        "event_id": record.payload["event_id"],
+                        "epoch_sequence": record.epoch_sequence,
+                        "contract_identity": record.contract_identity,
+                        "channel": record.payload["event_kind"],
+                    }
+                    for record in by_kind(kind)
+                ]
+                for kind in (JOURNAL_KIND_EVENT_ACCEPTED, JOURNAL_KIND_EVENT_REJECTED)
+            },
+            "clock": {
+                "boundaries": [
+                    record.payload["boundary"] for record in by_kind(JOURNAL_KIND_CLOCK_ADVANCED)
+                ],
+                "reevaluations": len(by_kind(JOURNAL_KIND_REEVALUATION_START)),
+            },
+            "recovery": {
+                "disconnects": len(by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED)),
+                "reconnects": len(by_kind(JOURNAL_KIND_PROVIDER_RECONNECTED)),
+                "restorations": [
+                    {
+                        "cycle_id": record.correlation_id,
+                        "epoch_sequence": record.epoch_sequence,
+                        "membership": list(cast(list[object], record.payload["membership"])),
+                    }
+                    for record in by_kind(JOURNAL_KIND_EPOCH_RESTORED)
+                ],
+            },
+            "lifecycle": [
+                record.kind
+                for record in records
+                if record.kind
+                in {
+                    "session.start",
+                    "configuration.loaded",
+                    "provider.ready",
+                    "intake.stopped",
+                    "persistence.drained",
+                    "session.finalized",
+                }
+            ],
+            "orders": {
+                "trading_enabled": finalized.payload["trading_enabled"],
+                "constructed": finalized.payload["orders_constructed"],
+                "submitted": finalized.payload["orders_submitted"],
+            },
+        }
+
     _verify_persistence_receipt_integrity(contract, persistence)
     loaded = repository.load(persistence.persistence_identity)
     reconstructed = verify_complete(Journal.deserialize(loaded), contract)
@@ -470,8 +423,8 @@ def replay_persisted(
     if reconstructed is original:
         raise JournalFailure("REPLAY_RECONSTRUCTION_NOT_DISTINCT")
     verify_persistence_receipt(contract, original, persistence)
-    original_projection_digest = sha256(journal_projection(original))
-    replayed_projection_digest = sha256(journal_projection(reconstructed))
+    original_projection_digest = sha256(receipt_projection(original))
+    replayed_projection_digest = sha256(receipt_projection(reconstructed))
     original_bytes = sha256_bytes(original.canonical_serialization)
     reconstructed_bytes = sha256_bytes(loaded)
     exact = (
@@ -517,16 +470,27 @@ def _verify_persistence_receipt_integrity(
         raise JournalFailure("PERSISTENCE_OBJECT_IDENTITY_INVALID")
 
 
-def verify_repository_backed_evidence_package(
+def certify_repository_backed(
     contract: AcceptanceContract,
     journal: VerifiedJournal,
     persistence: PersistenceReceipt,
     replay: ReplayReceipt,
     repository: JournalRepository,
-) -> VerifiedEvidencePackage:
-    """Verify Omega from P's repository object and issue the projection capability."""
+) -> dict[str, object]:
+    """Verify repository-backed J/P/R and immediately issue the certificate."""
+    if not isinstance(contract, AcceptanceContract):
+        raise JournalFailure("CERTIFICATION_REQUIRES_ACCEPTANCE_CONTRACT")
     if not isinstance(journal, VerifiedJournal):
         raise JournalFailure("EVIDENCE_REQUIRES_VERIFIED_JOURNAL")
+    if not isinstance(persistence, PersistenceReceipt):
+        raise JournalFailure("CERTIFICATION_REQUIRES_PERSISTENCE_RECEIPT")
+    if not isinstance(replay, ReplayReceipt):
+        raise JournalFailure("CERTIFICATION_REQUIRES_REPLAY_RECEIPT")
+    if not isinstance(repository, JournalRepository):
+        raise JournalFailure("CERTIFICATION_REQUIRES_JOURNAL_REPOSITORY")
+
+    # J is caller-supplied evidence. Reconstruct and verify it before using any
+    # of its values, including its declared contract binding.
     independently_verified = verify_complete(
         Journal.deserialize(journal.canonical_serialization), contract
     )
@@ -534,19 +498,211 @@ def verify_repository_backed_evidence_package(
         raise JournalFailure("VERIFIED_JOURNAL_VALUE_MISMATCH")
     if journal.contract_version != contract.contract_version:
         raise JournalFailure("JOURNAL_CONTRACT_VERSION_MISMATCH")
-    _reconstructed, independently_derived_replay = replay_persisted(
-        contract, journal, persistence, repository
+
+    # P is only a syntactically and cryptographically intact claim until this
+    # invocation consults the repository and verifies the named object.
+    _verify_persistence_receipt_integrity(contract, persistence)
+    loaded = repository.load(persistence.persistence_identity)
+    if loaded != independently_verified.canonical_serialization:
+        raise JournalFailure("PERSISTED_JOURNAL_BYTES_MISMATCH")
+    reconstructed = verify_complete(Journal.deserialize(loaded), contract)
+    if reconstructed is independently_verified or reconstructed is journal:
+        raise JournalFailure("REPOSITORY_RECONSTRUCTION_NOT_DISTINCT")
+    verify_persistence_receipt(contract, independently_verified, persistence)
+    locally_derived_persistence = PersistenceReceipt.create(
+        contract, reconstructed, persistence.persistence_identity
     )
-    verify_replay_receipt(contract, journal, persistence, replay)
-    if replay != independently_derived_replay:
+    if persistence != locally_derived_persistence:
+        raise JournalFailure("PERSISTENCE_FACTS_NOT_REPOSITORY_DERIVED")
+
+    # Projection is intentionally local to the fused boundary. It closes over
+    # the independently verified repository reconstruction and accepts no
+    # caller-created evidence object.
+    def repository_observed_projection(value: VerifiedJournal) -> dict[str, object]:
+        records = value.records
+
+        def by_kind(kind: str) -> tuple[JournalRecord, ...]:
+            return tuple(record for record in records if record.kind == kind)
+
+        configuration = by_kind(JOURNAL_KIND_CONFIGURATION)[0]
+        epochs = by_kind(JOURNAL_KIND_EPOCH_CREATED)
+        commands = by_kind(JOURNAL_KIND_SUBSCRIPTION_COMMAND)
+        acknowledgements = {
+            record.command_id: record
+            for record in by_kind(JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)
+        }
+        finalized = by_kind(JOURNAL_KIND_SESSION_FINALIZED)[0]
+        return {
+            "run_id": str(value.run_id),
+            "configuration_versions": {
+                "scenario": configuration.payload["scenario_version"],
+                "control_model": configuration.payload["control_model_version"],
+                "shadow_model": configuration.payload["shadow_model_version"],
+                "coverage": configuration.payload["coverage_version"],
+            },
+            "epochs": [
+                {
+                    "sequence": record.epoch_sequence,
+                    "epoch_id": record.epoch_id,
+                    "membership": list(cast(list[object], record.payload["membership"])),
+                    "operation_id": record.operation_id,
+                }
+                for record in epochs
+            ],
+            "subscriptions": [
+                {
+                    "command_id": command.command_id,
+                    "epoch_sequence": command.epoch_sequence,
+                    "contract_identity": command.contract_identity,
+                    "action": command.payload["action"],
+                    "channel": command.payload["channel"],
+                    "ack_id": acknowledgements[command.command_id].ack_id,
+                    "acknowledged": acknowledgements[command.command_id].payload["accepted"],
+                    "command_sequence": command.sequence,
+                    "ack_sequence": acknowledgements[command.command_id].sequence,
+                }
+                for command in commands
+            ],
+            "events": {
+                kind.split(".", 1)[1]: [
+                    {
+                        "event_id": record.payload["event_id"],
+                        "epoch_sequence": record.epoch_sequence,
+                        "contract_identity": record.contract_identity,
+                        "channel": record.payload["event_kind"],
+                    }
+                    for record in by_kind(kind)
+                ]
+                for kind in (JOURNAL_KIND_EVENT_ACCEPTED, JOURNAL_KIND_EVENT_REJECTED)
+            },
+            "clock": {
+                "boundaries": [
+                    record.payload["boundary"] for record in by_kind(JOURNAL_KIND_CLOCK_ADVANCED)
+                ],
+                "reevaluations": len(by_kind(JOURNAL_KIND_REEVALUATION_START)),
+            },
+            "recovery": {
+                "disconnects": len(by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED)),
+                "reconnects": len(by_kind(JOURNAL_KIND_PROVIDER_RECONNECTED)),
+                "restorations": [
+                    {
+                        "cycle_id": record.correlation_id,
+                        "epoch_sequence": record.epoch_sequence,
+                        "membership": list(cast(list[object], record.payload["membership"])),
+                    }
+                    for record in by_kind(JOURNAL_KIND_EPOCH_RESTORED)
+                ],
+            },
+            "lifecycle": [
+                record.kind
+                for record in records
+                if record.kind
+                in {
+                    "session.start",
+                    "configuration.loaded",
+                    "provider.ready",
+                    "intake.stopped",
+                    "persistence.drained",
+                    "session.finalized",
+                }
+            ],
+            "orders": {
+                "trading_enabled": finalized.payload["trading_enabled"],
+                "constructed": finalized.payload["orders_constructed"],
+                "submitted": finalized.payload["orders_submitted"],
+            },
+        }
+
+    original_observed = repository_observed_projection(independently_verified)
+    observed = repository_observed_projection(reconstructed)
+    original_projection_digest = sha256(original_observed)
+    reconstructed_projection_digest = sha256(observed)
+    canonical_byte_digest = sha256_bytes(reconstructed.canonical_serialization)
+    locally_derived_replay = ReplayReceipt.from_values(
+        contract_version=contract.contract_version,
+        run_id=reconstructed.run_id,
+        persistence_identity=locally_derived_persistence.persistence_identity,
+        original_root_digest=independently_verified.root_digest,
+        reconstructed_root_digest=reconstructed.root_digest,
+        original_byte_sha256=sha256_bytes(independently_verified.canonical_serialization),
+        reconstructed_byte_sha256=canonical_byte_digest,
+        original_record_count=independently_verified.seal.record_count,
+        reconstructed_record_count=reconstructed.seal.record_count,
+        original_projection_digest=original_projection_digest,
+        replayed_projection_digest=reconstructed_projection_digest,
+        exact_equality=(
+            reconstructed.canonical_serialization == independently_verified.canonical_serialization
+            and reconstructed.root_digest == independently_verified.root_digest
+            and reconstructed.seal.record_count == independently_verified.seal.record_count
+            and original_projection_digest == reconstructed_projection_digest
+        ),
+    )
+    verify_replay_receipt(contract, independently_verified, persistence, replay)
+    if replay != locally_derived_replay:
         raise JournalFailure("REPLAY_FACTS_NOT_INDEPENDENTLY_RECONSTRUCTED")
-    return VerifiedEvidencePackage._issue(
-        _REPOSITORY_VERIFICATION_AUTHORITY,
-        contract,
-        journal,
-        persistence,
-        replay,
+
+    observed_epochs = tuple(
+        tuple(map(str, cast(list[object], item["membership"])))
+        for item in cast(list[dict[str, object]], observed["epochs"])
     )
+    clock = cast(dict[str, object], observed["clock"])
+    subscriptions = cast(list[dict[str, object]], observed["subscriptions"])
+    recovery = cast(dict[str, object], observed["recovery"])
+    orders = cast(dict[str, object], observed["orders"])
+    lifecycle = tuple(map(str, cast(list[object], observed["lifecycle"])))
+    invariants = {
+        "run_binding": observed["run_id"] == str(contract.expected_run_id),
+        "epochs_exact": observed_epochs == contract.expected_epoch_memberships,
+        "paired_commands_acknowledged": all(
+            item["acknowledged"] is True
+            and cast(int, item["command_sequence"]) < cast(int, item["ack_sequence"])
+            for item in subscriptions
+        ),
+        "clock_boundaries_exact": tuple(map(str, cast(list[object], clock["boundaries"])))
+        == contract.expected_clock_boundaries,
+        "disconnect_reconnect_restore": recovery["disconnects"] == 1
+        and recovery["reconnects"] == 1
+        and len(cast(list[object], recovery["restorations"])) == 1,
+        "lifecycle_complete": lifecycle == contract.allowed_lifecycle_order,
+        "journal_sealed_finalization_terminal": reconstructed.records[-1].kind
+        == JOURNAL_KIND_SESSION_FINALIZED,
+        "persistence_complete": locally_derived_persistence.persistence_completed is True,
+        "replay_exact": locally_derived_replay.exact_equality is True,
+        "trading_disabled": orders["trading_enabled"] is False,
+        "orders_zero": orders["constructed"] == 0 and orders["submitted"] == 0,
+    }
+    unknown = set(contract.required_invariants) - set(invariants)
+    if unknown:
+        raise JournalFailure("CONTRACT_REQUIRED_INVARIANT_UNKNOWN", min(unknown))
+    failures = [name for name in contract.required_invariants if not invariants[name]]
+    return {
+        "certificate_version": contract.certificate_version,
+        "evidence_kind": "RUNTIME_EVIDENCE_BUNDLE_CERTIFICATE",
+        "acceptance_contract": {
+            "contract_version": contract.contract_version,
+            "expected_run_id": str(contract.expected_run_id),
+            "expected_epoch_memberships": [
+                list(membership) for membership in contract.expected_epoch_memberships
+            ],
+            "expected_clock_boundaries": list(contract.expected_clock_boundaries),
+            "required_invariants": list(contract.required_invariants),
+        },
+        "observed": {
+            **observed,
+            "journal": {
+                "record_count": reconstructed.seal.record_count,
+                "terminal_sequence": reconstructed.seal.terminal_sequence,
+                "root_digest": reconstructed.root_digest,
+                "seal_digest": reconstructed.seal.seal_digest,
+                "canonical_byte_sha256": canonical_byte_digest,
+            },
+            "persistence": locally_derived_persistence.as_dict(),
+            "replay": locally_derived_replay.as_dict(),
+        },
+        "invariants": invariants,
+        "failed_invariants": failures,
+        "overall": "PASS" if not failures else "FAIL",
+    }
 
 
 async def execute_composition() -> Composition:
@@ -621,121 +777,17 @@ async def execute_composition() -> Composition:
     original = verify_complete(shell.journal, contract)
     persistence = persist_verified_journal(contract, original, journal_repository)
     reconstructed, replay = replay_persisted(contract, original, persistence, journal_repository)
-    evidence = verify_repository_backed_evidence_package(
-        contract, original, persistence, replay, journal_repository
-    )
-    return Composition(contract, evidence, reconstructed, journal_repository)
+    return Composition(contract, original, persistence, replay, reconstructed, journal_repository)
 
 
-def acceptance_projection(
-    contract: AcceptanceContract, evidence: VerifiedEvidencePackage
-) -> dict[str, object]:
-    """Implement pi_CDelta(Omega) from immutable CDelta and verified Omega only."""
-    if not isinstance(contract, AcceptanceContract):
-        raise JournalFailure("PROJECTION_REQUIRES_ACCEPTANCE_CONTRACT")
-    if not isinstance(evidence, VerifiedEvidencePackage):
-        raise JournalFailure("PROJECTION_REQUIRES_VERIFIED_EVIDENCE_PACKAGE")
-    if getattr(evidence, "_authority", None) is not _REPOSITORY_VERIFICATION_AUTHORITY:
-        raise JournalFailure("PROJECTION_REQUIRES_REPOSITORY_VERIFIED_EVIDENCE_PACKAGE")
-    if getattr(evidence, "_contract", None) != contract:
-        raise JournalFailure("PROJECTION_CONTRACT_BINDING_MISMATCH")
-    verified = evidence
-    observed = journal_projection(verified.journal)
-    observed_epochs = tuple(
-        tuple(map(str, cast(list[object], item["membership"])))
-        for item in cast(list[dict[str, object]], observed["epochs"])
-    )
-    clock = cast(dict[str, object], observed["clock"])
-    subscriptions = cast(list[dict[str, object]], observed["subscriptions"])
-    recovery = cast(dict[str, object], observed["recovery"])
-    orders = cast(dict[str, object], observed["orders"])
-    lifecycle = tuple(map(str, cast(list[object], observed["lifecycle"])))
-    invariants = {
-        "run_binding": observed["run_id"] == str(contract.expected_run_id),
-        "epochs_exact": observed_epochs == contract.expected_epoch_memberships,
-        "paired_commands_acknowledged": all(
-            item["acknowledged"] is True
-            and cast(int, item["command_sequence"]) < cast(int, item["ack_sequence"])
-            for item in subscriptions
-        ),
-        "clock_boundaries_exact": tuple(map(str, cast(list[object], clock["boundaries"])))
-        == contract.expected_clock_boundaries,
-        "disconnect_reconnect_restore": recovery["disconnects"] == 1
-        and recovery["reconnects"] == 1
-        and len(cast(list[object], recovery["restorations"])) == 1,
-        "lifecycle_complete": lifecycle == contract.allowed_lifecycle_order,
-        "journal_sealed_finalization_terminal": verified.journal.records[-1].kind
-        == JOURNAL_KIND_SESSION_FINALIZED,
-        "persistence_complete": verified.persistence.persistence_completed is True,
-        "replay_exact": verified.replay.exact_equality is True,
-        "trading_disabled": orders["trading_enabled"] is False,
-        "orders_zero": orders["constructed"] == 0 and orders["submitted"] == 0,
-    }
-    unknown = set(contract.required_invariants) - set(invariants)
-    if unknown:
-        raise JournalFailure("CONTRACT_REQUIRED_INVARIANT_UNKNOWN", min(unknown))
-    failures = [name for name in contract.required_invariants if not invariants[name]]
-    return {
-        "certificate_version": contract.certificate_version,
-        "evidence_kind": "RUNTIME_EVIDENCE_BUNDLE_CERTIFICATE",
-        "acceptance_contract": {
-            "contract_version": contract.contract_version,
-            "expected_run_id": str(contract.expected_run_id),
-            "expected_epoch_memberships": [
-                list(membership) for membership in contract.expected_epoch_memberships
-            ],
-            "expected_clock_boundaries": list(contract.expected_clock_boundaries),
-            "required_invariants": list(contract.required_invariants),
-        },
-        "observed": {
-            **observed,
-            "journal": {
-                "record_count": verified.journal.seal.record_count,
-                "terminal_sequence": verified.journal.seal.terminal_sequence,
-                "root_digest": verified.journal.root_digest,
-                "seal_digest": verified.journal.seal.seal_digest,
-                "canonical_byte_sha256": sha256_bytes(verified.journal.canonical_serialization),
-            },
-            "persistence": verified.persistence.as_dict(),
-            "replay": verified.replay.as_dict(),
-        },
-        "invariants": invariants,
-        "failed_invariants": failures,
-        "overall": "PASS" if not failures else "FAIL",
-    }
-
-
-def validate_certificate(value: dict[str, object]) -> list[str]:
+def validate_certificate_schema(value: dict[str, object]) -> list[str]:
+    """Validate certificate shape only; this is never operational verification."""
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     return [
         f"{'/'.join(str(item) for item in error.absolute_path) or '<root>'}: {error.message}"
         for error in sorted(validator.iter_errors(value), key=lambda item: list(item.absolute_path))
     ]
-
-
-def write_artifacts(
-    composition: Composition,
-    output: Path,
-    journal_output: Path,
-    persistence_output: Path,
-    replay_output: Path,
-) -> dict[str, object]:
-    certificate = acceptance_projection(composition.contract, composition.evidence)
-    errors = validate_certificate(certificate)
-    if errors:
-        raise JournalFailure("CERTIFICATE_SCHEMA_INVALID", ";".join(errors))
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(certificate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    journal_output.parent.mkdir(parents=True, exist_ok=True)
-    journal_output.write_text(
-        composition.evidence.journal.canonical_serialization, encoding="utf-8"
-    )
-    persistence_output.parent.mkdir(parents=True, exist_ok=True)
-    persistence_output.write_text(composition.evidence.persistence.serialize(), encoding="utf-8")
-    replay_output.parent.mkdir(parents=True, exist_ok=True)
-    replay_output.write_text(composition.evidence.replay.serialize(), encoding="utf-8")
-    return certificate
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -747,13 +799,30 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         composition = asyncio.run(execute_composition())
-        certificate = write_artifacts(
-            composition,
-            arguments.output,
-            arguments.journal_output,
-            arguments.persistence_output,
-            arguments.replay_output,
+        certificate = certify_repository_backed(
+            composition.contract,
+            composition.journal,
+            composition.persistence,
+            composition.replay,
+            composition.journal_repository,
         )
+        errors = validate_certificate_schema(certificate)
+        if errors:
+            raise JournalFailure("CERTIFICATE_SCHEMA_INVALID", ";".join(errors))
+        arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.output.write_text(
+            json.dumps(certificate, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        arguments.journal_output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.journal_output.write_text(
+            composition.journal.canonical_serialization, encoding="utf-8"
+        )
+        arguments.persistence_output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.persistence_output.write_text(
+            composition.persistence.serialize(), encoding="utf-8"
+        )
+        arguments.replay_output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.replay_output.write_text(composition.replay.serialize(), encoding="utf-8")
     except JournalFailure as exc:
         print(json.dumps({"overall": "FAIL", "failure_code": exc.code}, sort_keys=True))
         return 1
@@ -761,13 +830,9 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "overall": certificate["overall"],
-                "journal_sha256": sha256_bytes(
-                    composition.evidence.journal.canonical_serialization
-                ),
-                "persistence_receipt_sha256": sha256_bytes(
-                    composition.evidence.persistence.serialize()
-                ),
-                "replay_receipt_sha256": sha256_bytes(composition.evidence.replay.serialize()),
+                "journal_sha256": sha256_bytes(composition.journal.canonical_serialization),
+                "persistence_receipt_sha256": sha256_bytes(composition.persistence.serialize()),
+                "replay_receipt_sha256": sha256_bytes(composition.replay.serialize()),
                 "certificate_path": str(arguments.output),
                 "journal_path": str(arguments.journal_output),
                 "persistence_path": str(arguments.persistence_output),

@@ -12,19 +12,19 @@ The evidence boundary now implements exactly:
 J = seal(compose(E_det, Σ))
 P = persist(J)
 R = replay(P)
-Ω_verified = verify_repository_backed(CΔ, J, P, R, repository)
-Certificate = π_CΔ(Ω_verified)
+Certificate = certify_repository_backed(CΔ, J, P, R, repository)
 ```
 
 P and R are separate immutable, recalculably digested receipts. Replay reads the
 persisted object identified by P, reconstructs a new journal, reruns structural
 and contract-driven semantic verification, and compares canonical bytes, record
 counts, root digests, and observed projection digests before R exists.
-Certification then gives the production verifier the same repository, reloads
-P's object again, reconstructs and fully verifies a distinct journal, derives
-the replay facts independently, and compares caller-supplied R with those facts.
-Only that repository-backed verifier can issue the package accepted by the
-certificate projection.
+Certification then gives the sole fused production function the same repository.
+Every invocation independently validates J, reloads P's object, compares exact
+bytes, reconstructs and fully verifies a distinct journal, derives observations
+and replay facts from verified local results, compares caller-supplied R, and
+immediately constructs the certificate. No externally supplied intermediate
+object can authorize construction.
 
 The closed semantic language requires exact operation/cause/correlation
 identities, exact epoch diffs, paired command acknowledgements, activation only
@@ -34,12 +34,12 @@ stop/drain/finalization chain. CΔ owns expected values and rules; J, P, and R o
 observations. Build evidence is separate.
 
 The focused suite mutates J, P, R, CΔ, and persisted bytes and always traverses
-the production verifier and projection. It covers the requested same-kind
-parent, coherent fabrications, duplicates, run and version mismatches,
-restoration/boundary errors, forged receipts, unsealed replay, wrong object
-bindings, projection inequality, and post-finalization records, while retaining
-the earlier genuine chain, seal, epoch, command, acknowledgement, event, clock,
-and lifecycle corruptions.
+the fused production boundary. It also proves that the former capability,
+authority, `_issue`, and projection APIs do not exist; low-level lookalikes,
+schema-valid manual fields, copied/mutated evidence, and repository-load bypasses
+cannot issue authoritative certificates. The suite retains the earlier genuine
+chain, seal, epoch, command, acknowledgement, event, clock, lifecycle, receipt,
+repository-object, run, and contract corruptions.
 
 Runtime artifacts:
 

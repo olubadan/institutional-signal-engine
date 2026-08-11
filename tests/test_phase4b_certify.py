@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import json
 from collections.abc import Callable
 from copy import deepcopy
@@ -11,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+import institutional_signal_engine.phase4b_certify as certification
 from institutional_signal_engine.journal import (
     JOURNAL_KIND_CLOCK_ADVANCED,
     JOURNAL_KIND_CONFIGURATION,
@@ -36,12 +39,10 @@ from institutional_signal_engine.journal import (
 )
 from institutional_signal_engine.phase4b_certify import (
     Composition,
-    VerifiedEvidencePackage,
-    acceptance_projection,
+    certify_repository_backed,
     execute_composition,
     replay_persisted,
-    validate_certificate,
-    verify_repository_backed_evidence_package,
+    validate_certificate_schema,
 )
 
 RawJournal = dict[str, Any]
@@ -95,15 +96,24 @@ def _mutate_journal(
     return canonical_json(raw)
 
 
-def _journal_failure(contract: AcceptanceContract, serialized: str) -> str:
+def _journal_failure(composition: Composition, serialized: str) -> str:
+    forged = replace(composition.journal, canonical_serialization=serialized)
+    repository = InMemoryJournalRepository()
+    repository._values[composition.persistence.persistence_identity] = serialized
     try:
-        verify_complete(Journal.deserialize(serialized), contract)
+        certify_repository_backed(
+            composition.contract,
+            forged,
+            composition.persistence,
+            composition.replay,
+            repository,
+        )
     except JournalFailure as exc:
         return exc.code
-    pytest.fail("mutated J unexpectedly passed production verification")
+    pytest.fail("mutated J unexpectedly passed production certification")
 
 
-def _projection_failure(
+def _certification_failure(
     contract: AcceptanceContract,
     journal: object,
     persistence: PersistenceReceipt,
@@ -114,17 +124,16 @@ def _projection_failure(
     if isinstance(serialized, str):
         repository._values[persistence.persistence_identity] = serialized
     try:
-        verified = verify_repository_backed_evidence_package(
+        certify_repository_backed(
             contract,
             cast(Any, journal),
             persistence,
             replay,
             repository,
         )
-        acceptance_projection(contract, verified)
     except JournalFailure as exc:
         return exc.code
-    pytest.fail("mutated evidence unexpectedly passed production projection")
+    pytest.fail("mutated evidence unexpectedly passed production certification")
 
 
 def _redigest_persistence(receipt: PersistenceReceipt) -> PersistenceReceipt:
@@ -137,35 +146,37 @@ def _redigest_replay(receipt: ReplayReceipt) -> ReplayReceipt:
     return replace(empty, receipt_digest=sha256(empty.commitment()))
 
 
-def test_positive_evidence_bundle_and_projection_are_exact(composition: Composition) -> None:
-    certificate = acceptance_projection(composition.contract, composition.evidence)
-    assert composition.evidence.journal.records[-1].kind == JOURNAL_KIND_SESSION_FINALIZED
-    assert composition.evidence.journal.seal.record_count == len(
-        composition.evidence.journal.records
+def test_positive_fused_repository_certification_is_exact(composition: Composition) -> None:
+    certificate = certify_repository_backed(
+        composition.contract,
+        composition.journal,
+        composition.persistence,
+        composition.replay,
+        composition.journal_repository,
     )
-    assert composition.reconstructed is not composition.evidence.journal
-    assert composition.evidence.persistence.persistence_completed is True
-    assert composition.evidence.replay.exact_equality is True
+    assert composition.journal.records[-1].kind == JOURNAL_KIND_SESSION_FINALIZED
+    assert composition.journal.seal.record_count == len(composition.journal.records)
+    assert composition.reconstructed is not composition.journal
+    assert composition.persistence.persistence_completed is True
+    assert composition.replay.exact_equality is True
     assert (
-        PersistenceReceipt.deserialize(composition.evidence.persistence.serialize())
-        == composition.evidence.persistence
+        PersistenceReceipt.deserialize(composition.persistence.serialize())
+        == composition.persistence
     )
-    assert ReplayReceipt.deserialize(composition.evidence.replay.serialize()) == (
-        composition.evidence.replay
-    )
+    assert ReplayReceipt.deserialize(composition.replay.serialize()) == (composition.replay)
     assert certificate["overall"] == "PASS"
-    assert validate_certificate(certificate) == []
+    assert validate_certificate_schema(certificate) == []
 
 
 def test_correct_receipts_cannot_certify_absent_repository_object(
     composition: Composition,
 ) -> None:
     with pytest.raises(JournalFailure) as failure:
-        verify_repository_backed_evidence_package(
+        certify_repository_backed(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
-            composition.evidence.replay,
+            composition.journal,
+            composition.persistence,
+            composition.replay,
             InMemoryJournalRepository(),
         )
     assert failure.value.code == "PERSISTED_JOURNAL_MISSING"
@@ -175,7 +186,7 @@ def test_correctly_digested_receipts_for_wrong_stored_object_are_rejected(
     composition: Composition,
 ) -> None:
     wrong_serialized = _mutate_journal(
-        composition.evidence.journal.canonical_serialization,
+        composition.journal.canonical_serialization,
         lambda raw: _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"].update(
             diagnostic_marker="wrong-object"
         ),
@@ -187,9 +198,9 @@ def test_correctly_digested_receipts_for_wrong_stored_object_are_rejected(
     persistence = PersistenceReceipt.create(composition.contract, wrong_journal, identity)
     _, replay = replay_persisted(composition.contract, wrong_journal, persistence, repository)
     with pytest.raises(JournalFailure) as failure:
-        verify_repository_backed_evidence_package(
+        certify_repository_backed(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             persistence,
             replay,
             repository,
@@ -199,15 +210,15 @@ def test_correctly_digested_receipts_for_wrong_stored_object_are_rejected(
 
 def test_stored_bytes_must_exactly_equal_sealed_j(composition: Composition) -> None:
     repository = InMemoryJournalRepository()
-    repository._values[composition.evidence.persistence.persistence_identity] = (
-        composition.evidence.journal.canonical_serialization + "\n"
+    repository._values[composition.persistence.persistence_identity] = (
+        composition.journal.canonical_serialization + "\n"
     )
     with pytest.raises(JournalFailure) as failure:
-        verify_repository_backed_evidence_package(
+        certify_repository_backed(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
-            composition.evidence.replay,
+            composition.journal,
+            composition.persistence,
+            composition.replay,
             repository,
         )
     assert failure.value.code == "PERSISTED_JOURNAL_BYTES_MISMATCH"
@@ -224,13 +235,13 @@ def test_stored_bytes_must_exactly_equal_sealed_j(composition: Composition) -> N
                     for record in raw["records"]
                 ],
             ),
-            "CONTRACT_RUN_BINDING_MISMATCH",
+            "PERSISTED_JOURNAL_BYTES_MISMATCH",
         ),
         (
             lambda raw: _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"].update(
                 acceptance_contract_version="WRONG_CONTRACT"
             ),
-            "JOURNAL_CONTRACT_VERSION_MISMATCH",
+            "PERSISTED_JOURNAL_BYTES_MISMATCH",
         ),
     ],
 )
@@ -240,7 +251,7 @@ def test_cross_bound_repository_objects_are_rejected_during_reconstruction(
     expected_code: str,
 ) -> None:
     serialized = _mutate_journal(
-        composition.evidence.journal.canonical_serialization,
+        composition.journal.canonical_serialization,
         mutation,
         rehash=True,
     )
@@ -249,18 +260,18 @@ def test_cross_bound_repository_objects_are_rejected_during_reconstruction(
     identity = repository.save(composition.contract.expected_run_id, serialized)
     persistence = _redigest_persistence(
         replace(
-            composition.evidence.persistence,
+            composition.persistence,
             journal_root_digest=str(raw["seal"]["terminal_digest"]),
             journal_byte_sha256=sha256_bytes(serialized),
             journal_record_count=len(raw["records"]),
             persistence_identity=identity,
         )
     )
-    replay = _redigest_replay(replace(composition.evidence.replay, persistence_identity=identity))
+    replay = _redigest_replay(replace(composition.replay, persistence_identity=identity))
     with pytest.raises(JournalFailure) as failure:
-        verify_repository_backed_evidence_package(
+        certify_repository_backed(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             persistence,
             replay,
             repository,
@@ -273,99 +284,205 @@ def test_internally_consistent_forged_receipt_is_not_repository_backed(
 ) -> None:
     forged = PersistenceReceipt.create(
         composition.contract,
-        composition.evidence.journal,
-        composition.evidence.persistence.persistence_identity,
+        composition.journal,
+        composition.persistence.persistence_identity,
     )
     assert forged.receipt_digest == sha256(forged.commitment())
     with pytest.raises(JournalFailure) as failure:
-        verify_repository_backed_evidence_package(
+        certify_repository_backed(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             forged,
-            composition.evidence.replay,
+            composition.replay,
             InMemoryJournalRepository(),
         )
     assert failure.value.code == "PERSISTED_JOURNAL_MISSING"
 
 
-def test_verified_package_cannot_be_constructed_directly(composition: Composition) -> None:
-    with pytest.raises(JournalFailure) as failure:
-        VerifiedEvidencePackage(
-            composition.evidence.journal,
-            composition.evidence.persistence,
-            composition.evidence.replay,
+def test_former_capability_and_authority_issuance_api_do_not_exist() -> None:
+    forbidden = {
+        "VerifiedEvidencePackage",
+        "_REPOSITORY_VERIFICATION_AUTHORITY",
+        "acceptance_projection",
+        "journal_projection",
+        "verify_repository_backed_evidence_package",
+        "_issue",
+    }
+    assert forbidden.isdisjoint(vars(certification))
+
+
+def test_low_level_lookalike_forgery_cannot_certify(composition: Composition) -> None:
+    class FormerCapabilityLookalike:
+        pass
+
+    forged = object.__new__(FormerCapabilityLookalike)
+    object.__setattr__(forged, "_authority", object())
+    object.__setattr__(forged, "_journal", composition.journal)
+    assert (
+        _certification_failure(
+            composition.contract,
+            forged,
+            composition.persistence,
+            composition.replay,
         )
-    assert failure.value.code == "VERIFIED_EVIDENCE_CONSTRUCTION_FORBIDDEN"
+        == "EVIDENCE_REQUIRES_VERIFIED_JOURNAL"
+    )
 
 
-def test_unverified_package_cannot_reach_projection(composition: Composition) -> None:
-    unverified = object.__new__(VerifiedEvidencePackage)
+def test_object_level_mutation_of_copied_verified_journal_fails_closed(
+    composition: Composition,
+) -> None:
+    forged = replace(composition.journal, records=composition.journal.records[:-1])
+    assert (
+        _certification_failure(
+            composition.contract,
+            forged,
+            composition.persistence,
+            composition.replay,
+        )
+        == "VERIFIED_JOURNAL_VALUE_MISMATCH"
+    )
+
+
+def test_every_certification_invocation_loads_repository_object(
+    composition: Composition,
+) -> None:
+    class LoadCountingRepository(InMemoryJournalRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.load_calls = 0
+
+        def load(self, identity: str) -> str:
+            self.load_calls += 1
+            return super().load(identity)
+
+    repository = LoadCountingRepository()
+    repository._values.update(composition.journal_repository._values)
+    certificate = certify_repository_backed(
+        composition.contract,
+        composition.journal,
+        composition.persistence,
+        composition.replay,
+        repository,
+    )
+    assert certificate["overall"] == "PASS"
+    assert repository.load_calls == 1
+
+
+def test_repository_load_cannot_be_bypassed_during_issuance(
+    composition: Composition,
+) -> None:
+    class LoadRejectingRepository(InMemoryJournalRepository):
+        def load(self, identity: str) -> str:
+            del identity
+            raise JournalFailure("CERTIFICATION_REPOSITORY_LOAD_REQUIRED")
+
     with pytest.raises(JournalFailure) as failure:
-        acceptance_projection(composition.contract, unverified)
-    assert failure.value.code == "PROJECTION_REQUIRES_REPOSITORY_VERIFIED_EVIDENCE_PACKAGE"
+        certify_repository_backed(
+            composition.contract,
+            composition.journal,
+            composition.persistence,
+            composition.replay,
+            LoadRejectingRepository(),
+        )
+    assert failure.value.code == "CERTIFICATION_REPOSITORY_LOAD_REQUIRED"
 
 
-def test_repository_verified_package_is_immutable(composition: Composition) -> None:
-    with pytest.raises(JournalFailure) as failure:
-        composition.evidence._journal = composition.evidence.journal
-    assert failure.value.code == "VERIFIED_EVIDENCE_PACKAGE_IMMUTABLE"
+def test_schema_valid_manual_fields_are_not_authoritative_issuance(
+    composition: Composition,
+) -> None:
+    issued = certify_repository_backed(
+        composition.contract,
+        composition.journal,
+        composition.persistence,
+        composition.replay,
+        composition.journal_repository,
+    )
+    manually_copied = deepcopy(issued)
+    assert manually_copied["overall"] == "PASS"
+    assert validate_certificate_schema(manually_copied) == []
+    assert list(inspect.signature(validate_certificate_schema).parameters) == ["value"]
+    assert list(inspect.signature(certify_repository_backed).parameters) == [
+        "contract",
+        "journal",
+        "persistence",
+        "replay",
+        "repository",
+    ]
+
+
+def test_only_fused_boundary_constructs_overall_pass() -> None:
+    module = ast.parse(inspect.getsource(certification))
+    producers: list[str] = []
+    for node in module.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        has_pass = any(
+            isinstance(item, ast.Constant) and item.value == "PASS" for item in ast.walk(node)
+        )
+        has_overall = any(
+            isinstance(item, ast.Constant) and item.value == "overall" for item in ast.walk(node)
+        )
+        if has_pass and has_overall:
+            producers.append(node.name)
+    assert producers == ["certify_repository_backed"]
 
 
 def test_j_contains_no_circular_persistence_or_replay_claim(composition: Composition) -> None:
-    kinds = {record.kind for record in composition.evidence.journal.records}
+    kinds = {record.kind for record in composition.journal.records}
     assert "journal.persisted" not in kinds
     assert "replay.verified" not in kinds
 
 
 def test_deleted_required_record(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         raw["records"].remove(_record(raw, JOURNAL_KIND_CONFIGURATION))
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "MISSING_REQUIRED_RECORD"
     )
 
 
 def test_reordered_records(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         raw["records"][5], raw["records"][6] = raw["records"][6], raw["records"][5]
 
-    assert _journal_failure(composition.contract, _mutate_journal(serialized, mutate)) == (
+    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
         "SEQUENCE_INVALID"
     )
 
 
 def test_altered_payload_without_digest(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"]["ack_timeout"] = 999
 
-    assert _journal_failure(composition.contract, _mutate_journal(serialized, mutate)) == (
+    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
         "PAYLOAD_DIGEST_MISMATCH"
     )
 
 
 def test_missing_causal_parent(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         record = _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)
         record["parent_sequence"] = None
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "CAUSAL_PARENT_WRONG"
     )
 
 
 def test_wrong_same_kind_causal_parent(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         child = _record(raw, JOURNAL_KIND_DISCOVERY_COMPLETE, 1)
@@ -374,13 +491,13 @@ def test_wrong_same_kind_causal_parent(composition: Composition) -> None:
         child["cause_operation_id"] = wrong["operation_id"]
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "DISCOVERY_CORRELATION_INVALID"
     )
 
 
 def test_fabricated_unknown_record_with_recomputed_hashes(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         stop_index = next(
@@ -395,13 +512,13 @@ def test_fabricated_unknown_record_with_recomputed_hashes(composition: Compositi
         raw["records"].insert(stop_index, clone)
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "UNKNOWN_RECORD_KIND"
     )
 
 
 def test_fabricated_accepted_event_with_recomputed_hashes(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         stop_index = next(
@@ -414,13 +531,13 @@ def test_fabricated_accepted_event_with_recomputed_hashes(composition: Compositi
         raw["records"].insert(stop_index, clone)
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "UNEXPECTED_ACCEPTED_EVENT"
     )
 
 
 def test_duplicate_event(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         stop_index = next(
@@ -431,13 +548,13 @@ def test_duplicate_event(composition: Composition) -> None:
         raw["records"].insert(stop_index, clone)
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "DUPLICATE_EVENT"
     )
 
 
 def test_changed_journal_run_identity(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         changed = "4b000000-0000-4000-8000-000000000099"
@@ -446,38 +563,36 @@ def test_changed_journal_run_identity(composition: Composition) -> None:
             record["run_id"] = changed
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "CONTRACT_RUN_BINDING_MISMATCH"
     )
 
 
 def test_mismatched_run_id_across_j_p_r(composition: Composition) -> None:
     changed = replace(
-        composition.evidence.persistence,
-        run_id=type(composition.evidence.persistence.run_id)(
-            "4b000000-0000-4000-8000-000000000099"
-        ),
+        composition.persistence,
+        run_id=type(composition.persistence.run_id)("4b000000-0000-4000-8000-000000000099"),
     )
     changed = _redigest_persistence(changed)
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             changed,
-            composition.evidence.replay,
+            composition.replay,
         )
         == "EVIDENCE_RUN_ID_MISMATCH"
     )
 
 
 def test_incorrect_restoration_membership(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_EPOCH_RESTORED)["payload"]["membership"] = ["A:20260821:10000:C"]
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "RESTORATION_MEMBERSHIP_INVALID"
     )
 
@@ -491,11 +606,11 @@ def test_incorrect_scheduled_boundary_in_contract(composition: Composition) -> N
         ),
     )
     assert (
-        _projection_failure(
+        _certification_failure(
             changed,
-            composition.evidence.journal,
-            composition.evidence.persistence,
-            composition.evidence.replay,
+            composition.journal,
+            composition.persistence,
+            composition.replay,
         )
         == "SCHEDULED_BOUNDARY_INVALID"
     )
@@ -508,12 +623,12 @@ def test_incorrect_scheduled_boundary_in_contract(composition: Composition) -> N
 def test_fabricated_replay_counts_or_digests(
     composition: Composition, field: str, value: object
 ) -> None:
-    changed = _redigest_replay(replace(composition.evidence.replay, **{field: value}))
+    changed = _redigest_replay(replace(composition.replay, **{field: value}))
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
+            composition.journal,
+            composition.persistence,
             changed,
         )
         == "REPLAY_JOURNAL_BINDING_MISMATCH"
@@ -521,16 +636,16 @@ def test_fabricated_replay_counts_or_digests(
 
 
 def test_replay_of_unsealed_persisted_journal(composition: Composition) -> None:
-    raw = json.loads(composition.evidence.journal.canonical_serialization)
+    raw = json.loads(composition.journal.canonical_serialization)
     raw["seal"] = None
-    identity = composition.evidence.persistence.persistence_identity
+    identity = composition.persistence.persistence_identity
     original = composition.journal_repository._values[identity]
     composition.journal_repository._values[identity] = canonical_json(raw)
     with pytest.raises(JournalFailure) as failure:
         replay_persisted(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
+            composition.journal,
+            composition.persistence,
             composition.journal_repository,
         )
     assert failure.value.code == "UNSEALED_JOURNAL"
@@ -538,15 +653,13 @@ def test_replay_of_unsealed_persisted_journal(composition: Composition) -> None:
 
 
 def test_p_bound_to_wrong_j(composition: Composition) -> None:
-    changed = _redigest_persistence(
-        replace(composition.evidence.persistence, journal_root_digest="e" * 64)
-    )
+    changed = _redigest_persistence(replace(composition.persistence, journal_root_digest="e" * 64))
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             changed,
-            composition.evidence.replay,
+            composition.replay,
         )
         == "PERSISTENCE_JOURNAL_BINDING_MISMATCH"
     )
@@ -554,13 +667,13 @@ def test_p_bound_to_wrong_j(composition: Composition) -> None:
 
 def test_r_bound_to_wrong_p(composition: Composition) -> None:
     changed = _redigest_replay(
-        replace(composition.evidence.replay, persistence_identity="memory://journal/wrong")
+        replace(composition.replay, persistence_identity="memory://journal/wrong")
     )
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
+            composition.journal,
+            composition.persistence,
             changed,
         )
         == "REPLAY_PERSISTENCE_BINDING_MISMATCH"
@@ -570,13 +683,13 @@ def test_r_bound_to_wrong_p(composition: Composition) -> None:
 def test_coherently_fabricated_persistence_identity(composition: Composition) -> None:
     identity = "journal://4b000000-0000-4000-8000-000000000027/" + "a" * 64
     persistence = _redigest_persistence(
-        replace(composition.evidence.persistence, persistence_identity=identity)
+        replace(composition.persistence, persistence_identity=identity)
     )
-    replay = _redigest_replay(replace(composition.evidence.replay, persistence_identity=identity))
+    replay = _redigest_replay(replace(composition.replay, persistence_identity=identity))
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             persistence,
             replay,
         )
@@ -585,25 +698,25 @@ def test_coherently_fabricated_persistence_identity(composition: Composition) ->
 
 
 def test_altered_p_receipt_digest(composition: Composition) -> None:
-    changed = replace(composition.evidence.persistence, receipt_digest="0" * 64)
+    changed = replace(composition.persistence, receipt_digest="0" * 64)
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             changed,
-            composition.evidence.replay,
+            composition.replay,
         )
         == "PERSISTENCE_RECEIPT_DIGEST_MISMATCH"
     )
 
 
 def test_altered_r_receipt_digest(composition: Composition) -> None:
-    changed = replace(composition.evidence.replay, receipt_digest="0" * 64)
+    changed = replace(composition.replay, receipt_digest="0" * 64)
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
+            composition.journal,
+            composition.persistence,
             changed,
         )
         == "REPLAY_RECEIPT_DIGEST_MISMATCH"
@@ -611,14 +724,12 @@ def test_altered_r_receipt_digest(composition: Composition) -> None:
 
 
 def test_original_replay_projection_inequality(composition: Composition) -> None:
-    changed = _redigest_replay(
-        replace(composition.evidence.replay, replayed_projection_digest="1" * 64)
-    )
+    changed = _redigest_replay(replace(composition.replay, replayed_projection_digest="1" * 64))
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
+            composition.journal,
+            composition.persistence,
             changed,
         )
         == "REPLAY_PROJECTION_MISMATCH"
@@ -628,16 +739,16 @@ def test_original_replay_projection_inequality(composition: Composition) -> None
 def test_coherently_fabricated_projection_digests(composition: Composition) -> None:
     changed = _redigest_replay(
         replace(
-            composition.evidence.replay,
+            composition.replay,
             original_projection_digest="2" * 64,
             replayed_projection_digest="2" * 64,
         )
     )
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
+            composition.journal,
+            composition.persistence,
             changed,
         )
         == "REPLAY_FACTS_NOT_INDEPENDENTLY_RECONSTRUCTED"
@@ -645,7 +756,7 @@ def test_coherently_fabricated_projection_digests(composition: Composition) -> N
 
 
 def test_record_after_finalization(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         clone = deepcopy(_record(raw, JOURNAL_KIND_EVENT_ACCEPTED, -1))
@@ -654,13 +765,13 @@ def test_record_after_finalization(composition: Composition) -> None:
         raw["records"].append(clone)
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "RECORD_AFTER_FINALIZATION"
     )
 
 
 def test_broken_acknowledgement_correlation(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)["contract_identity"] = (
@@ -668,13 +779,13 @@ def test_broken_acknowledgement_correlation(composition: Composition) -> None:
         )
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "ACK_CORRELATION_INVALID"
     )
 
 
 def test_activation_before_required_acknowledgement(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         activation = _record(raw, JOURNAL_KIND_EPOCH_ACTIVATED)
@@ -683,13 +794,13 @@ def test_activation_before_required_acknowledgement(composition: Composition) ->
         ]
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "ACTIVATION_BEFORE_ACK"
     )
 
 
 def test_accepted_event_for_removed_contract(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         final_event = _record(raw, JOURNAL_KIND_EVENT_ACCEPTED, -1)
@@ -697,15 +808,15 @@ def test_accepted_event_for_removed_contract(composition: Composition) -> None:
         final_event["payload"]["symbol"] = "A"
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "ACCEPTED_EVENT_NOT_ACTIVE"
     )
 
 
 def test_unsealed_journal_rejected(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
     corrupted = _mutate_journal(serialized, lambda raw: raw.update(seal=None))
-    assert _journal_failure(composition.contract, corrupted) == "UNSEALED_JOURNAL"
+    assert _journal_failure(composition, corrupted) == "UNSEALED_JOURNAL"
 
 
 def test_changed_contract_run_binding(composition: Composition) -> None:
@@ -716,31 +827,31 @@ def test_changed_contract_run_binding(composition: Composition) -> None:
         ),
     )
     assert (
-        _projection_failure(
+        _certification_failure(
             changed,
-            composition.evidence.journal,
-            composition.evidence.persistence,
-            composition.evidence.replay,
+            composition.journal,
+            composition.persistence,
+            composition.replay,
         )
         == "CONTRACT_RUN_BINDING_MISMATCH"
     )
 
 
 def test_altered_payload_digest_without_record_digest(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         record = _record(raw, JOURNAL_KIND_CONFIGURATION)
         record["payload"]["ack_timeout"] = 999
         record["payload_digest"] = sha256(record["payload"])
 
-    assert _journal_failure(composition.contract, _mutate_journal(serialized, mutate)) == (
+    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
         "RECORD_DIGEST_MISMATCH"
     )
 
 
 def test_future_causal_parent(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["parent_sequence"] = raw["records"][-1][
@@ -748,13 +859,13 @@ def test_future_causal_parent(composition: Composition) -> None:
         ]
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "CAUSAL_PARENT_MISSING"
     )
 
 
 def test_fabricated_duplicate_lifecycle_record(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         stop_index = next(
@@ -766,37 +877,37 @@ def test_fabricated_duplicate_lifecycle_record(composition: Composition) -> None
         raw["records"].insert(stop_index, clone)
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "DUPLICATE_RECORD"
     )
 
 
 def test_single_record_from_another_run(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_EVENT_ACCEPTED)["run_id"] = "4b000000-0000-4000-8000-000000000099"
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "RUN_ID_MISMATCH"
     )
 
 
 def test_incorrect_restoration_epoch(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_EPOCH_RESTORED)["epoch_sequence"] = 1
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "RESTORATION_MEMBERSHIP_INVALID"
     )
 
 
 def test_missing_channel_acknowledgement(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         target = next(
@@ -809,13 +920,13 @@ def test_missing_channel_acknowledgement(composition: Composition) -> None:
         raw["records"].remove(target)
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "ACTIVATION_BEFORE_ACK"
     )
 
 
 def test_incorrect_epoch_membership(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["payload"]["membership"] = [
@@ -823,49 +934,49 @@ def test_incorrect_epoch_membership(composition: Composition) -> None:
         ]
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "EPOCH_MEMBERSHIP_INVALID"
     )
 
 
 def test_reevaluation_without_clock_cause(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         reevaluation = _record(raw, JOURNAL_KIND_REEVALUATION_START)
         reevaluation["parent_sequence"] = _record(raw, JOURNAL_KIND_EVENT_ACCEPTED)["sequence"]
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "CAUSAL_PARENT_WRONG"
     )
 
 
 def test_clock_boundary_missing(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_CLOCK_ADVANCED)["payload"].pop("boundary")
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "CLOCK_BOUNDARY_MISSING"
     )
 
 
 def test_altered_seal(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         raw["seal"]["record_count"] += 1
 
-    assert _journal_failure(composition.contract, _mutate_journal(serialized, mutate)) == (
+    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
         "SEAL_RECORD_COUNT_MISMATCH"
     )
 
 
 def test_journal_contract_version_mismatch(composition: Composition) -> None:
-    serialized = composition.evidence.journal.canonical_serialization
+    serialized = composition.journal.canonical_serialization
 
     def mutate(raw: RawJournal) -> None:
         _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"]["acceptance_contract_version"] = (
@@ -873,35 +984,33 @@ def test_journal_contract_version_mismatch(composition: Composition) -> None:
         )
 
     assert (
-        _journal_failure(composition.contract, _mutate_journal(serialized, mutate, rehash=True))
+        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
         == "JOURNAL_CONTRACT_VERSION_MISMATCH"
     )
 
 
 def test_persistence_contract_version_mismatch(composition: Composition) -> None:
     changed = _redigest_persistence(
-        replace(composition.evidence.persistence, contract_version="WRONG_CONTRACT")
+        replace(composition.persistence, contract_version="WRONG_CONTRACT")
     )
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
+            composition.journal,
             changed,
-            composition.evidence.replay,
+            composition.replay,
         )
         == "PERSISTENCE_CONTRACT_VERSION_MISMATCH"
     )
 
 
 def test_replay_contract_version_mismatch(composition: Composition) -> None:
-    changed = _redigest_replay(
-        replace(composition.evidence.replay, contract_version="WRONG_CONTRACT")
-    )
+    changed = _redigest_replay(replace(composition.replay, contract_version="WRONG_CONTRACT"))
     assert (
-        _projection_failure(
+        _certification_failure(
             composition.contract,
-            composition.evidence.journal,
-            composition.evidence.persistence,
+            composition.journal,
+            composition.persistence,
             changed,
         )
         == "REPLAY_CONTRACT_VERSION_MISMATCH"
@@ -909,7 +1018,7 @@ def test_replay_contract_version_mismatch(composition: Composition) -> None:
 
 
 def test_serialized_receipt_boolean_fabrication_rejected(composition: Composition) -> None:
-    raw = composition.evidence.persistence.as_dict()
+    raw = composition.persistence.as_dict()
     raw["persistence_completed"] = "true"
     with pytest.raises(JournalFailure) as failure:
         PersistenceReceipt.deserialize(canonical_json(raw))
