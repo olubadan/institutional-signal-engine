@@ -276,9 +276,10 @@
   capacities, constants, nested fields, UUID/SHA formats, and extra fields.
 - Runtime output is external-only at `/tmp/phase4b-certification/CERTIFICATE.json`;
   the committed `PHASE4B_CERT_V1.example.json` is explicitly not evidence.
-  The observed runtime head is `639a071` before closure and will identify the
-  correction commit after publication. Trading remains disabled; orders are
-  `0/0`; no providers ran; Phase 5 remains unopened.
+  The correction commit is `4366407ad62ace1b24989493e22780935370cafd`; the
+  runtime certificate identifies the exact clean checked-out head at execution.
+  Trading remains disabled; orders are `0/0`; no providers ran; Phase 5 remains
+  unopened.
 
 ## Owner-authorized sweep closure — 20260805
 
