@@ -45,7 +45,14 @@ class InMemoryRepository:
             self.decisions.append(decision)
 
     def replay_events(self, run_id: UUID | None = None) -> Iterable[CanonicalEvent]:
-        return tuple(self.events)
+        if run_id is None:
+            return tuple(self.events)
+        return tuple(event for event in self.events if event.run_id == run_id)
+
+    def replay_decisions(self, run_id: UUID | None = None) -> tuple[Decision, ...]:
+        if run_id is None:
+            return tuple(self.decisions)
+        return tuple(decision for decision in self.decisions if decision.run_id == run_id)
 
     def record_quote_consumption(self, consumption: QuoteConsumption) -> None:
         self.quote_consumptions.append(consumption)

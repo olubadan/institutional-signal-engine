@@ -259,6 +259,27 @@
   measurements remain reported without clamping; plan-level throttling was not
   established from official documentation or support confirmation.
 
+## Work Package 1 correction — SESSION-0026
+
+- The declarative certificate at `639a071` was replaced by an executable
+  deterministic scenario executor. It consumes virtual-time actions in order,
+  invokes the production signal composition boundary with deterministic
+  provider/clock/persistence ports, runs real coverage planning across epochs,
+  executes normalized events, impact evaluation, persistence, replay, and
+  lifecycle observations, and derives every invariant from trace/state.
+- The signal runner gained an optional deterministic composition interface;
+  default production construction is unchanged. The Phase 4 outer runner was
+  not repaired. Its missing composition interface is recorded as an observed
+  failed invariant, so the certificate remains honestly `FAIL`.
+- JSON Schema validation uses `jsonschema` Draft 2020-12 with format checking;
+  negative schema and anti-cheating tests cover mutation, duplicate events,
+  capacities, constants, nested fields, UUID/SHA formats, and extra fields.
+- Runtime output is external-only at `/tmp/phase4b-certification/CERTIFICATE.json`;
+  the committed `PHASE4B_CERT_V1.example.json` is explicitly not evidence.
+  The observed runtime head is `639a071` before closure and will identify the
+  correction commit after publication. Trading remains disabled; orders are
+  `0/0`; no providers ran; Phase 5 remains unopened.
+
 ## Owner-authorized sweep closure — 20260805
 
 - Implemented `NEW_QUALIFYING_SWEEP` in `sweeps.py` exactly to the owner
