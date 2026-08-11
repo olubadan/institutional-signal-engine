@@ -722,5 +722,7 @@
   reevaluations, recovery, removed-A rejection, active-B acceptance, stop, drain,
   finalization, persistence, and replay.
 - The focused positive and corruption suite has 25 tests; the complete hermetic
-  suite has 239 tests. Trading is disabled and orders remain `0/0`. Exact-head CI
-  and artifact digests are recorded in SESSION-0027 after publication.
+  suite has 239 tests. Implementation commit
+  `4cfdd92c51e627d37d117f176e60a558ca5071b5` and both implementation-head CI
+  triggers passed. Trading is disabled and orders remain `0/0`; artifact digests
+  and the journal-close state are recorded in SESSION-0027.
