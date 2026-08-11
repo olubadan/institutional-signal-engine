@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption
 CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS sweep_transitions (run_id uuid NOT NULL, cluster_id uuid NOT NULL, transition_order bigint NOT NULL, transition text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id, transition_order));
 CREATE TABLE IF NOT EXISTS universe_audits (run_id uuid NOT NULL, audit_order bigint GENERATED ALWAYS AS IDENTITY, symbol text NOT NULL, included boolean NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, audit_order));
+CREATE TABLE IF NOT EXISTS impact_clusters (run_id uuid NOT NULL, cluster_id text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
+CREATE TABLE IF NOT EXISTS impact_sessions (run_id uuid NOT NULL, symbol text NOT NULL, as_of timestamptz NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, symbol, as_of));
 """
 
 
@@ -26,6 +28,13 @@ class InMemoryRepository:
         self.sweeps: list[dict[str, object]] = []
         self.sweep_transitions: list[dict[str, object]] = []
         self.universe_audits: list[dict[str, object]] = []
+        self.impact_clusters: list[dict[str, object]] = []
+        self.impact_sessions: list[dict[str, object]] = []
+        self.probes: list[str] = []
+
+    def write_drain_probe(self, probe_id: str) -> bool:
+        self.probes.append(probe_id)
+        return True
 
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
@@ -36,7 +45,14 @@ class InMemoryRepository:
             self.decisions.append(decision)
 
     def replay_events(self, run_id: UUID | None = None) -> Iterable[CanonicalEvent]:
-        return tuple(self.events)
+        if run_id is None:
+            return tuple(self.events)
+        return tuple(event for event in self.events if event.run_id == run_id)
+
+    def replay_decisions(self, run_id: UUID | None = None) -> tuple[Decision, ...]:
+        if run_id is None:
+            return tuple(self.decisions)
+        return tuple(decision for decision in self.decisions if decision.run_id == run_id)
 
     def record_quote_consumption(self, consumption: QuoteConsumption) -> None:
         self.quote_consumptions.append(consumption)
@@ -55,11 +71,40 @@ class InMemoryRepository:
     def record_universe(self, audit: dict[str, object]) -> None:
         self.universe_audits.append(audit)
 
+    def record_impact_cluster(self, cluster: dict[str, object]) -> None:
+        if cluster.get("cluster_id") not in {
+            value.get("cluster_id") for value in self.impact_clusters
+        }:
+            self.impact_clusters.append(cluster)
+
+    def record_impact_session(self, session: dict[str, object]) -> None:
+        self.impact_sessions.append(session)
+
+    def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.impact_clusters
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(values)
+
+    def replay_impact_sessions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.impact_sessions
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(values)
+
     def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         values = self.universe_audits
         if run_id is not None:
             values = [value for value in values if value.get("run_id") == str(run_id)]
         return tuple(values)
+
+    def replay_universe_finalization(self, run_id: UUID) -> dict[str, object] | None:
+        values = [value for value in self.universe_audits if value.get("run_id") == str(run_id)]
+        for value in reversed(values):
+            finalization = value.get("finalization")
+            if isinstance(finalization, dict) and finalization:
+                return finalization
+        return None
 
     def replay_quote_consumptions(self, run_id: UUID | None = None) -> tuple[QuoteConsumption, ...]:
         if run_id is None:
@@ -76,6 +121,8 @@ class PostgresRepository:
         self._pending_quote_consumptions: list[QuoteConsumption] = []
         self._pending_sweeps: list[dict[str, object]] = []
         self._pending_universe: list[dict[str, object]] = []
+        self._pending_impact_clusters: list[dict[str, object]] = []
+        self._pending_impact_sessions: list[dict[str, object]] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -129,6 +176,35 @@ class PostgresRepository:
         ):
             connection.execute(statement)
 
+    def healthcheck(self) -> bool:
+        """Verify the same configured connection path used by live writes."""
+        try:
+            self._session().execute("SELECT 1").fetchone()
+            return True
+        except Exception:  # noqa: BLE001 - health probes return sanitized booleans
+            return False
+
+    def write_drain_probe(self, probe_id: str) -> bool:
+        """Exercise a reversible write/read/delete probe on the application connection."""
+        try:
+            connection = self._session()
+            connection.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS ignition_write_probe "
+                "(probe_id text PRIMARY KEY, value integer NOT NULL)"
+            )
+            connection.execute("DELETE FROM ignition_write_probe WHERE probe_id=%s", (probe_id,))
+            connection.execute(
+                "INSERT INTO ignition_write_probe (probe_id,value) VALUES (%s,%s)",
+                (probe_id, 1),
+            )
+            row = connection.execute(
+                "SELECT value FROM ignition_write_probe WHERE probe_id=%s", (probe_id,)
+            ).fetchone()
+            connection.execute("DELETE FROM ignition_write_probe WHERE probe_id=%s", (probe_id,))
+            return row is not None and int(row[0]) == 1
+        except Exception:  # noqa: BLE001 - health probes return sanitized booleans
+            return False
+
     def record_event(self, event: CanonicalEvent) -> None:
         self._pending_events.append(event)
         if len(self._pending_events) >= 100_000:
@@ -141,6 +217,8 @@ class PostgresRepository:
             and not self._pending_quote_consumptions
             and not self._pending_sweeps
             and not self._pending_universe
+            and not self._pending_impact_clusters
+            and not self._pending_impact_sessions
         ):
             return
         connection = self._session()
@@ -216,6 +294,23 @@ class PostgresRepository:
                 ),
             )
         self._pending_universe.clear()
+        for cluster in self._pending_impact_clusters:
+            connection.execute(
+                "INSERT INTO impact_clusters (run_id,cluster_id,payload) VALUES (%s,%s,%s) ON CONFLICT (run_id,cluster_id) DO UPDATE SET payload=EXCLUDED.payload",
+                (cluster["run_id"], cluster["cluster_id"], json.dumps(cluster, default=str)),
+            )
+        self._pending_impact_clusters.clear()
+        for session in self._pending_impact_sessions:
+            connection.execute(
+                "INSERT INTO impact_sessions (run_id,symbol,as_of,payload) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                (
+                    session["run_id"],
+                    session["symbol"],
+                    session["as_of"],
+                    json.dumps(session, default=str),
+                ),
+            )
+        self._pending_impact_sessions.clear()
 
     @staticmethod
     def _decision_parameters(decision: Decision) -> tuple[object, ...]:
@@ -259,6 +354,36 @@ class PostgresRepository:
         if len(self._pending_universe) >= 100:
             self.flush()
 
+    def record_impact_cluster(self, cluster: dict[str, object]) -> None:
+        self._pending_impact_clusters.append(cluster)
+        if len(self._pending_impact_clusters) >= 100:
+            self.flush()
+
+    def record_impact_session(self, session: dict[str, object]) -> None:
+        self._pending_impact_sessions.append(session)
+        if len(self._pending_impact_sessions) >= 100:
+            self.flush()
+
+    def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM impact_clusters"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY cluster_id"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
+
+    def replay_impact_sessions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM impact_sessions"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY as_of,symbol"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
+
     def replay_universe(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         self.flush()
         query = "SELECT payload FROM universe_audits"
@@ -268,6 +393,14 @@ class PostgresRepository:
             params = (run_id,)
         query += " ORDER BY audit_order"
         return tuple(row[0] for row in self._session().execute(query, params).fetchall())
+
+    def replay_universe_finalization(self, run_id: UUID) -> dict[str, object] | None:
+        values = tuple(self.replay_universe(run_id))
+        for value in reversed(values):
+            finalization = value.get("finalization")
+            if isinstance(finalization, dict) and finalization:
+                return finalization
+        return None
 
     def replay_sweep_transitions(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         self.flush()

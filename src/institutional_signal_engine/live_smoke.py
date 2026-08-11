@@ -5,17 +5,27 @@ import asyncio
 import json
 import os
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr
 
 from .config import Settings
+from .impact import (
+    IMPACT_MODEL_VERSION,
+    SHADOW_IMPACT_LIVE_SCORING_STATUS,
+    ImpactBaseline,
+    ShadowImpactEngine,
+)
 from .indicators import IndicatorCalculator
 from .persistence import InMemoryRepository, PostgresRepository
 from .persistence_async import AsyncAuditWriter
 from .pipeline import EventTiming, SignalPipeline
+from .ports import EventRepository
 from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
 from .providers.thetadata import SMOKE_AAPL_CONTRACT, ThetaContract, ThetaDataOptionsProvider
@@ -27,6 +37,18 @@ def _secret(value: SecretStr | None) -> str:
     if value is None:
         raise RuntimeError("provider credential is not configured")
     return value.get_secret_value()
+
+
+@dataclass(frozen=True)
+class CompositionInterfaces:
+    """Optional deterministic ports used only by hermetic composition tests."""
+
+    settings: Settings
+    clock: Callable[[], datetime]
+    alpaca: Any
+    theta_factory: Callable[..., Any]
+    repository: EventRepository
+    writer_factory: Callable[[EventRepository], AsyncAuditWriter] | None = None
 
 
 async def _collect(
@@ -102,6 +124,9 @@ async def run(
     diagnostic_membership: dict[str, set[ThetaContract]] | None = None,
     startup_timeout_seconds: float = 120.0,
     stage_callback: StageCallback | None = None,
+    impact_baselines: Mapping[tuple[str, int], ImpactBaseline] | None = None,
+    run_id: UUID | None = None,
+    composition: CompositionInterfaces | None = None,
 ) -> dict[str, object]:
     recorder = StageRecorder(stage_callback)
 
@@ -111,28 +136,40 @@ async def run(
     pilot_symbols = tuple(sorted({symbol.upper() for symbol in symbols}))
     requested_contracts = tuple(contracts)
     requested_types = tuple(request_types)
-    runtime_file = os.environ.get(
-        "RUNTIME_ENV_FILE", "/etc/institutional-signal-engine/runtime.env"
-    )
-    settings = (
-        Settings.from_env_file(runtime_file)
-        if os.path.exists(runtime_file)
-        else Settings.from_env()
-    )
+    if composition is None:
+        runtime_file = os.environ.get(
+            "RUNTIME_ENV_FILE", "/etc/institutional-signal-engine/runtime.env"
+        )
+        settings = (
+            Settings.from_env_file(runtime_file)
+            if os.path.exists(runtime_file)
+            else Settings.from_env()
+        )
+    else:
+        settings = composition.settings
     if settings.trading_enabled:
         raise RuntimeError("signal-only smoke refuses trading-enabled configuration")
     recorder.emit("configuration_loaded")
 
-    alpaca = AlpacaEquitiesProvider(
-        settings.alpaca_data_url,
-        _secret(settings.alpaca_key_id),
-        _secret(settings.alpaca_secret_key),
+    alpaca = (
+        composition.alpaca
+        if composition is not None
+        else AlpacaEquitiesProvider(
+            settings.alpaca_data_url,
+            _secret(settings.alpaca_key_id),
+            _secret(settings.alpaca_secret_key),
+        )
     )
     sector_by_symbol = {symbol: "XLK" for symbol in pilot_symbols}
     historical_symbols = (*pilot_symbols, "SPY", *sorted(set(sector_by_symbol.values())))
     historical = await bounded_startup(
         alpaca.historical_bootstrap(
-            historical_symbols, datetime.now(ZoneInfo("America/New_York")).date()
+            historical_symbols,
+            (
+                composition.clock()
+                if composition is not None
+                else datetime.now(ZoneInfo("America/New_York"))
+            ).date(),
         ),
         recorder,
         "alpaca_historical_bootstrap",
@@ -142,16 +179,31 @@ async def run(
     def provider_stage(stage: StageRecord) -> None:
         recorder.emit_record(stage)
 
-    theta = ThetaDataOptionsProvider(
-        settings.theta_events_url,
-        _secret(settings.theta_api_key),
-        contracts=requested_contracts,
-        request_types=requested_types,
-        diagnostic_membership=diagnostic_membership,
-        stage_callback=provider_stage,
+    theta = (
+        composition.theta_factory(
+            contracts=requested_contracts,
+            request_types=requested_types,
+            diagnostic_membership=diagnostic_membership,
+            stage_callback=provider_stage,
+        )
+        if composition is not None
+        else ThetaDataOptionsProvider(
+            settings.theta_events_url,
+            _secret(settings.theta_api_key),
+            contracts=requested_contracts,
+            request_types=requested_types,
+            diagnostic_membership=diagnostic_membership,
+            stage_callback=provider_stage,
+        )
     )
     repository = (
-        PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
+        composition.repository
+        if composition is not None
+        else (
+            PostgresRepository(settings.database_url)
+            if settings.database_url
+            else InMemoryRepository()
+        )
     )
     if isinstance(repository, PostgresRepository):
         await bounded_startup(
@@ -161,14 +213,24 @@ async def run(
             startup_remaining(),
         )
     recorder.emit("database_connected")
-    writer = AsyncAuditWriter(
-        repository,
-        soft_limit=settings.persistence_soft_limit,
-        hard_limit=settings.persistence_hard_limit,
-        batch_size=settings.persistence_batch_size,
-        flush_interval=float(settings.persistence_flush_interval),
+    writer = (
+        composition.writer_factory(repository)
+        if composition is not None and composition.writer_factory is not None
+        else AsyncAuditWriter(
+            repository,
+            soft_limit=settings.persistence_soft_limit,
+            hard_limit=settings.persistence_hard_limit,
+            batch_size=settings.persistence_batch_size,
+            flush_interval=float(settings.persistence_flush_interval),
+        )
     )
     writer.start()
+    pipeline_run_id = run_id or UUID(int=0)
+    impact_engine = (
+        ShadowImpactEngine(pipeline_run_id, impact_baselines)
+        if impact_baselines is not None
+        else None
+    )
     pipeline = SignalPipeline(
         settings,
         repository=repository,
@@ -176,6 +238,9 @@ async def run(
         indicator_calculator=IndicatorCalculator(historical),
         symbols=pilot_symbols,
         sector_by_symbol=sector_by_symbol,
+        run_id=pipeline_run_id,
+        impact_engine=impact_engine,
+        now=composition.clock if composition is not None else None,
     )
 
     def process(event: CanonicalEvent) -> None:
@@ -415,6 +480,7 @@ async def run(
         "quotes_consumed": pipeline.quote_book.metrics.quotes_consumed,
         "quotes_pending_at_shutdown": pipeline.quote_book.quotes_pending_at_shutdown,
         "evaluations_triggered": pipeline.metrics.evaluations_triggered,
+        "decisions_persisted": len(pipeline.decisions),
         "evaluations_skipped": pipeline.metrics.evaluations_skipped,
         "trigger_reason_counts": dict(
             Counter(
@@ -474,6 +540,13 @@ async def run(
         "executable_candidates": decision.counters.executable_candidates if decision else 0,
         "orders_constructed": 0,
         "orders_submitted": 0,
+        "shadow_impact_model": "SHADOW_IMPACT_V1" if impact_engine is not None else None,
+        "shadow_impact_live_scoring": (
+            "ENABLED" if impact_engine is not None else SHADOW_IMPACT_LIVE_SCORING_STATUS
+        ),
+        "shadow_impact_offline_replay_model": IMPACT_MODEL_VERSION,
+        "shadow_impact_clusters": pipeline.impact_results,
+        "shadow_impact_sessions": impact_engine.sessions if impact_engine is not None else [],
     }
 
 

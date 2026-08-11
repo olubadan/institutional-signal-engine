@@ -8,12 +8,20 @@ import subprocess
 from asyncio import Semaphore
 from collections import Counter
 from datetime import datetime, timedelta
+from pathlib import Path
 from time import monotonic
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .contract_mapping import AlpacaOptionContract, map_alpaca_contract, round_trip_validate
+from .impact import SHADOW_IMPACT_LIVE_SCORING_ENABLED
+from .impact_coverage import (
+    PILOT_COVERAGE_POPULATION_VERSION,
+    build_coverage_plan,
+    build_pilot_coverage_candidates,
+)
+from .lineage import RunUniverseFinalization, build_contract_transitions, replay_finalization
 from .liquidity import PHASE4_OBSERVATION_SPREAD_POLICY_VERSION, finalize_liquidity
 from .live_smoke import _secret
 from .live_smoke import run as run_signal_smoke
@@ -33,7 +41,8 @@ from .universe import (
     PILOT_SYMBOLS,
     AlpacaContractSelector,
     UniverseManifest,
-    allocate_subscription_capacity,
+    UniverseSelection,
+    format_subscription_plan,
 )
 
 
@@ -56,6 +65,10 @@ async def run(
     skip_oi_diagnostic: bool = False,
     startup_timeout_seconds: float | None = None,
     stage_callback: StageCallback | None = None,
+    run_id: UUID | None = None,
+    prepare_only: bool = False,
+    plan_output: Path | None = None,
+    prepared_plan: Path | None = None,
 ) -> dict[str, object]:
     recorder = StageRecorder(stage_callback)
     settings = _load_settings()
@@ -75,7 +88,7 @@ async def run(
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
     )
-    run_id = uuid4()
+    run_id = run_id or uuid4()
     as_of = datetime.now(ZoneInfo("America/New_York")).date()
     try:
         recorder.emit(
@@ -119,6 +132,12 @@ async def run(
             "orders_constructed": 0,
             "orders_submitted": 0,
         }
+    historical = await bounded_startup(
+        alpaca.historical_bootstrap((*PILOT_SYMBOLS, "SPY", "XLK"), as_of),
+        recorder,
+        "alpaca_historical_bootstrap",
+        startup_remaining(),
+    )
     mapping_results = tuple(
         round_trip_validate(map_alpaca_contract(contract)) for contract in discovered
     )
@@ -279,14 +298,81 @@ async def run(
         spread_policy_version=PHASE4_OBSERVATION_SPREAD_POLICY_VERSION,
     )
     selections = enrichment.selections
-    allocation = allocate_subscription_capacity(
-        selections,
-        prices,
+    baseline_symbols = frozenset(
+        str(key[0]).upper()
+        for key in historical.impact_baselines
+        if isinstance(key, tuple) and len(key) == 2
+    )
+    coverage_candidates = build_pilot_coverage_candidates(selections, baseline_symbols)
+    coverage_plan = build_coverage_plan(
+        coverage_candidates,
         trade_limit=settings.phase4_trade_subscription_limit,
         quote_limit=settings.phase4_quote_subscription_limit,
         max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
     )
-    plan = allocation.selected
+    coverage_selected = {
+        (candidate.symbol, candidate.expiration, candidate.strike, candidate.right)
+        for candidate in coverage_plan.selected
+    }
+    coverage_selections = tuple(
+        UniverseSelection(
+            selection.symbol,
+            bool(
+                selection.included
+                and any(
+                    (contract.root, contract.expiration, contract.strike, contract.right)
+                    in coverage_selected
+                    for contract in selection.contracts
+                )
+            ),
+            selection.expiration,
+            tuple(
+                contract
+                for contract in selection.contracts
+                if (contract.root, contract.expiration, contract.strike, contract.right)
+                in coverage_selected
+            ),
+            selection.rejection_reasons,
+            (*selection.provenance, "coverage_plan"),
+            selection.provider_responses,
+            selection.contract_evidence,
+            selection.symbol_liquidity_evidence_source,
+            selection.symbol_liquidity_verified,
+            selection.policy_version,
+        )
+        for selection in selections
+    )
+    plan = tuple(
+        ThetaContract(
+            candidate.symbol,
+            candidate.expiration,
+            candidate.strike,
+            candidate.right,
+        )
+        for candidate in coverage_plan.selected
+    )
+    allocation = format_subscription_plan(
+        plan,
+        trade_limit=settings.phase4_trade_subscription_limit,
+        quote_limit=settings.phase4_quote_subscription_limit,
+        max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
+    )
+    if allocation.selected != plan:
+        raise RuntimeError("planner_allocation_mismatch")
+    if prepared_plan is not None:
+        expected = json.loads(prepared_plan.read_text(encoding="utf-8"))
+        expected_plan = expected.get("selected_plan", [])
+        actual_plan = [
+            {
+                "root": item.root,
+                "expiration": item.expiration,
+                "strike": item.strike,
+                "right": item.right,
+            }
+            for item in plan
+        ]
+        if expected_plan != actual_plan:
+            raise RuntimeError("prepared_plan_mismatch")
     recorder.emit("selection_completed", completed_items=len(plan), remaining_items=0)
     recorder.emit("subscription_planning_completed", completed_items=len(plan), remaining_items=0)
     selected_contracts = set(plan)
@@ -348,6 +434,8 @@ async def run(
         synchronization_symbols=tuple(
             selection.symbol for selection in selections if selection.included
         ),
+        coverage_plan=coverage_plan.as_dict(),
+        coverage_candidate_population_version=PILOT_COVERAGE_POPULATION_VERSION,
     )
     repository = (
         PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
@@ -381,6 +469,7 @@ async def run(
         "alpaca_contracts_received": len(discovered),
         "contracts_accepted": sum(1 for result in mapping_results if result.accepted),
         "contracts_rejected": sum(1 for result in mapping_results if not result.accepted),
+        "coverage": coverage_plan.as_dict(),
         "mapping_failures": [
             {"field": field, "reason": reason, "count": count}
             for (field, reason), count in sorted(
@@ -470,6 +559,41 @@ async def run(
         "orders_constructed": 0,
         "orders_submitted": 0,
     }
+    if plan_output is not None:
+        plan_output.parent.mkdir(parents=True, exist_ok=True)
+        plan_output.write_text(
+            json.dumps(
+                {
+                    "run_id": str(run_id),
+                    "selected_plan": [
+                        {
+                            "root": item.root,
+                            "expiration": item.expiration,
+                            "strike": item.strike,
+                            "right": item.right,
+                        }
+                        for item in plan
+                    ],
+                    "coverage": coverage_plan.as_dict(),
+                    "subscription_counts": {
+                        "trade_submitted": len(allocation.trade_plan),
+                        "quote_submitted": len(allocation.quote_plan),
+                        "selected": len(allocation.selected),
+                    },
+                    "manifest": manifest.record(),
+                },
+                sort_keys=True,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(plan_output, 0o600)
+        report["prepared_plan"] = str(plan_output)
+    if prepare_only:
+        report["status"] = "preflight_plan_ready" if plan else "blocked_no_contracts_selected"
+        report["observation_started"] = False
+        recorder.emit("report_emitted", status=report["status"])
+        return report
     if not plan:
         report["status"] = "blocked_no_contracts_selected"
         report["reason"] = "quote_observation_evidence_unavailable"
@@ -478,13 +602,22 @@ async def run(
     try:
         signal_report = await run_signal_smoke(
             seconds,
-            symbols=tuple(selection.symbol for selection in selections if selection.included),
+            symbols=tuple(
+                selection.symbol for selection in coverage_selections if selection.included
+            ),
             contracts=plan,
             request_types=("TRADE", "QUOTE"),
             contract_metadata=contract_metadata,
             diagnostic_membership=diagnostic_membership,
             startup_timeout_seconds=startup_timeout,
             stage_callback=recorder.emit_record,
+            # The deterministic benchmark exceeded the approved 5% live
+            # budget. Shared evidence remains persisted for post-session
+            # impact/control replay; live shadow scoring is explicitly off.
+            impact_baselines=(
+                historical.impact_baselines if SHADOW_IMPACT_LIVE_SCORING_ENABLED else None
+            ),
+            run_id=run_id,
         )
     except ProviderError as exc:
         recorder.emit("report_emitted", status="blocked_provider", error_category=exc.category)
@@ -517,6 +650,44 @@ async def run(
         if isinstance(raw_acknowledgement, dict)
         else []
     )
+    request_records = tuple(item for item in raw_acknowledgements if isinstance(item, dict))
+    transitions = build_contract_transitions(
+        run_id,
+        mapping_results,
+        coarse_selections,
+        coarse_exclusions,
+        enrichment.records,
+        coverage_plan,
+        request_records,
+    )
+    final_allocation = tuple(
+        {
+            "root": contract.root,
+            "expiration": contract.expiration,
+            "strike": contract.strike,
+            "right": contract.right,
+        }
+        for contract in plan
+    )
+    finalization = RunUniverseFinalization(
+        run_id=run_id,
+        session_date=as_of,
+        transitions=transitions,
+        coverage_plan=coverage_plan.as_dict(),
+        final_allocation=final_allocation,
+        trade_requests=tuple(
+            item for item in request_records if item.get("request_type") == "TRADE"
+        ),
+        quote_requests=tuple(
+            item for item in request_records if item.get("request_type") == "QUOTE"
+        ),
+        acknowledgements=request_records,
+        engine_commit=engine_commit,
+        policy_versions={
+            "coverage": str(coverage_plan.as_dict().get("coverage_version", "")),
+            "universe": "phase4-universe-v1",
+        },
+    )
     final_manifest = UniverseManifest(
         run_id,
         as_of,
@@ -535,6 +706,10 @@ async def run(
         rejected_event_diagnostics=tuple(
             item for item in raw_rejected_diagnostics if isinstance(item, dict)
         ),
+        coverage_plan=coverage_plan.as_dict(),
+        coverage_candidate_population_version=PILOT_COVERAGE_POPULATION_VERSION,
+        contract_transitions=transitions,
+        finalization=finalization.record(),
     )
     repository.record_universe(final_manifest.record())
     if isinstance(repository, PostgresRepository):
@@ -561,6 +736,11 @@ async def run(
                 }
             )
     report["status"] = "live_observation_complete"
+    finalization_record = finalization.record()
+    report["universe_finalization"] = finalization_record
+    report["universe_finalization_replay_equal"] = (
+        replay_finalization(finalization_record) == finalization_record
+    )
     recorder.emit("observation_completed", status=report["status"])
     recorder.emit("persistence_drained")
     recorder.emit("report_emitted", status=report["status"])
@@ -572,6 +752,9 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--skip-oi-diagnostic", action="store_true")
     parser.add_argument("--startup-timeout-seconds", type=float, default=None)
+    parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--plan-output", type=Path)
+    parser.add_argument("--prepared-plan", type=Path)
     arguments = parser.parse_args()
     try:
         result = asyncio.run(
@@ -580,6 +763,9 @@ def main() -> None:
                     arguments.seconds,
                     arguments.skip_oi_diagnostic,
                     arguments.startup_timeout_seconds,
+                    prepare_only=arguments.prepare_only,
+                    plan_output=arguments.plan_output,
+                    prepared_plan=arguments.prepared_plan,
                 ),
                 timeout=(arguments.seconds + 2 * (arguments.startup_timeout_seconds or 120) + 30),
             )

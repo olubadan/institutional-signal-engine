@@ -16,6 +16,7 @@ import httpx
 import websockets
 
 from ..historical import HistoricalBootstrap
+from ..impact import calculate_five_minute_baselines
 from ..indicators import ET, PreviousClose
 from ..schemas import CanonicalEvent, EventKind
 from .common import ProviderError, reconnecting_stream
@@ -196,6 +197,7 @@ class AlpacaEquitiesProvider:
         previous: dict[str, PreviousClose] = {}
         highs: dict[str, dict[str, Decimal]] = {}
         profiles: dict[str, dict[int, tuple[Decimal, ...]]] = {}
+        impact_baselines = {}
         for symbol in requested:
             daily_rows = sorted(daily[symbol], key=lambda row: str(row.get("t", "")))
             completed: list[tuple[str, Decimal, Decimal]] = []
@@ -237,6 +239,22 @@ class AlpacaEquitiesProvider:
                     for volumes in by_day.values()
                 )
             profiles[symbol] = profile
+            impact_baselines.update(
+                calculate_five_minute_baselines(
+                    symbol,
+                    tuple(
+                        {
+                            "timestamp": row["t"],
+                            "volume": row.get("v", 0),
+                            "close": row.get("c"),
+                        }
+                        for row in minute[symbol]
+                    ),
+                    session,
+                    "split",
+                    "alpaca:stocks/bars:completed-regular-sessions",
+                )
+            )
         return HistoricalBootstrap(
             session=session.isoformat(),
             previous_closes=previous,
@@ -244,6 +262,7 @@ class AlpacaEquitiesProvider:
             completed_highs=highs,
             adjustment="split",
             source_provenance="alpaca:stocks/bars:completed-regular-sessions",
+            impact_baselines=impact_baselines,
         )
 
     async def current_prices(self, symbols: Iterable[str]) -> dict[str, Decimal]:

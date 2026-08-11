@@ -1,5 +1,6 @@
 """Typed option-universe selection and reconciliation."""
 
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
@@ -146,6 +147,10 @@ class UniverseManifest:
     synchronization_symbols: tuple[str, ...] = ()
     incomplete_state_reasons: dict[str, tuple[str, ...]] | None = None
     rejected_event_diagnostics: tuple[dict[str, object], ...] = ()
+    coverage_plan: dict[str, object] | None = None
+    coverage_candidate_population_version: str | None = None
+    contract_transitions: tuple[dict[str, object], ...] = ()
+    finalization: dict[str, object] | None = None
 
     def record(self) -> dict[str, object]:
         return {
@@ -181,6 +186,10 @@ class UniverseManifest:
                 for symbol, reasons in (self.incomplete_state_reasons or {}).items()
             },
             "rejected_event_diagnostics": list(self.rejected_event_diagnostics),
+            "coverage_plan": self.coverage_plan or {},
+            "coverage_candidate_population_version": self.coverage_candidate_population_version,
+            "contract_transitions": list(self.contract_transitions),
+            "finalization": self.finalization or {},
         }
 
 
@@ -443,13 +452,44 @@ class AlpacaContractSelector:
             raise ValueError("max_per_symbol must be positive")
         candidates: dict[str, list[MappingResult]] = {}
         exclusions: list[dict[str, object]] = []
+        seen_canonical: set[ThetaContract] = set()
+
+        def exclusion_record(
+            result: MappingResult, reason: str, **extra: object
+        ) -> dict[str, object]:
+            canonical = result.canonical
+            return {
+                "symbol": result.source.underlying_symbol,
+                "provider_symbol": result.source.occ_symbol,
+                "canonical_identity": (
+                    {
+                        "root": canonical.root,
+                        "expiration": canonical.expiration,
+                        "strike": canonical.strike,
+                        "right": canonical.right,
+                    }
+                    if canonical is not None
+                    else None
+                ),
+                "canonical_identity_available": canonical is not None,
+                "selection_stage": "COARSE_SHORTLIST",
+                "reason": reason,
+                **extra,
+            }
+
         for result in results:
             symbol = result.source.underlying_symbol
             reason: str | None = None
             if not result.accepted or result.canonical is None or result.theta_contract is None:
-                reason = result.rejection_reason or "mapping_rejected"
+                reason = (
+                    "CANONICAL_IDENTITY_UNAVAILABLE"
+                    if result.canonical is None
+                    else result.rejection_reason or "mapping_rejected"
+                )
             elif result.canonical.right != "C":
                 reason = "calls_only"
+            elif result.theta_contract in seen_canonical:
+                reason = "DUPLICATE_CANONICAL_IDENTITY"
             elif not self.min_days <= (result.source.expiration - as_of).days <= self.max_days:
                 reason = "expiration_outside_configured_window"
             elif symbol not in underlying_prices or underlying_prices[symbol] <= 0:
@@ -462,15 +502,10 @@ class AlpacaContractSelector:
                 ):
                     reason = "moneyness_outside_configured_range"
             if reason is not None:
-                exclusions.append(
-                    {
-                        "symbol": symbol,
-                        "provider_symbol": result.source.occ_symbol,
-                        "selection_stage": "COARSE_SHORTLIST",
-                        "reason": reason,
-                    }
-                )
+                exclusions.append(exclusion_record(result, reason))
             else:
+                assert result.theta_contract is not None
+                seen_canonical.add(result.theta_contract)
                 candidates.setdefault(symbol, []).append(result)
         expected = {symbol.upper() for symbol in symbols}
         selections: list[UniverseSelection] = []
@@ -498,14 +533,17 @@ class AlpacaContractSelector:
             chosen = eligible[:max_per_symbol]
             for rank, item in enumerate(eligible[max_per_symbol:], max_per_symbol + 1):
                 exclusions.append(
-                    {
-                        "symbol": symbol,
-                        "provider_symbol": item.source.occ_symbol,
-                        "selection_stage": "COARSE_SHORTLIST",
-                        "rank": rank,
-                        "reason": "COARSE_SHORTLIST_CAPACITY_EXCLUDED",
-                    }
+                    exclusion_record(
+                        item,
+                        "COARSE_SHORTLIST_CAPACITY_EXCLUDED",
+                        rank=rank,
+                    )
                 )
+            for item in ordered:
+                if item not in eligible:
+                    exclusions.append(
+                        exclusion_record(item, "COARSE_SHORTLIST_EXPIRATION_EXCLUDED")
+                    )
             contracts = tuple(item.theta_contract for item in chosen if item.theta_contract)
             evidence = tuple(
                 {
@@ -570,72 +608,48 @@ def allocate_subscription_capacity(
     selections: tuple[UniverseSelection, ...],
     underlying_prices: dict[str, Decimal],
     trade_limit: int = 15_000,
-    quote_limit: int = 15_000,
+    quote_limit: int = 10_000,
     max_contracts_per_symbol: int = 1_000,
 ) -> CapacityAllocation:
-    """Allocate Standard subscriptions deterministically without truncation."""
+    """Format the planner's final selection; never make a second decision."""
+    del underlying_prices
+    selected_tuple = tuple(
+        contract
+        for selection in selections
+        if selection.included
+        for contract in selection.contracts
+    )
+    return format_subscription_plan(
+        selected_tuple,
+        trade_limit=trade_limit,
+        quote_limit=quote_limit,
+        max_contracts_per_symbol=max_contracts_per_symbol,
+    )
+
+
+def format_subscription_plan(
+    selected: tuple[ThetaContract, ...],
+    trade_limit: int = 15_000,
+    quote_limit: int = 10_000,
+    max_contracts_per_symbol: int = 1_000,
+) -> CapacityAllocation:
+    """Format and validate an already-selected planner allocation."""
     if min(trade_limit, quote_limit, max_contracts_per_symbol) < 1:
         raise ValueError("subscription limits must be positive")
-    candidates: dict[str, list[ThetaContract]] = {}
-    for selection in selections:
-        if not selection.included:
-            continue
-        price = underlying_prices.get(selection.symbol)
-        if price is None or price <= 0:
-            continue
-        candidates[selection.symbol] = sorted(
-            set(selection.contracts),
-            key=lambda contract: (
-                contract.expiration,
-                abs(Decimal(contract.strike) / Decimal(1000) - price),
-                contract.strike,
-                contract.right,
-            ),
-        )
-    requested = tuple(contract for symbol in sorted(candidates) for contract in candidates[symbol])
-    selected: list[ThetaContract] = []
-    excluded: list[dict[str, object]] = []
-    indices = {symbol: 0 for symbol in candidates}
-    selected_per_symbol = {symbol: 0 for symbol in candidates}
-    rank_by_symbol = {symbol: 0 for symbol in candidates}
-    capacity = min(trade_limit, quote_limit)
-    while True:
-        progressed = False
-        for symbol in sorted(candidates):
-            index = indices[symbol]
-            if index >= len(candidates[symbol]):
-                continue
-            contract = candidates[symbol][index]
-            indices[symbol] += 1
-            rank_by_symbol[symbol] += 1
-            progressed = True
-            if len(selected) >= capacity or selected_per_symbol[symbol] >= max_contracts_per_symbol:
-                excluded.append(
-                    {
-                        "symbol": symbol,
-                        "root": contract.root,
-                        "expiration": contract.expiration,
-                        "strike": contract.strike,
-                        "right": contract.right,
-                        "rank": rank_by_symbol[symbol],
-                        "reason": "SUBSCRIPTION_CAPACITY_EXCLUDED",
-                        "trade_limit": trade_limit,
-                        "quote_limit": quote_limit,
-                        "max_contracts_per_symbol": max_contracts_per_symbol,
-                    }
-                )
-            else:
-                selected.append(contract)
-                selected_per_symbol[symbol] += 1
-        if not progressed:
-            break
     selected_tuple = tuple(selected)
+    if len(set(selected_tuple)) != len(selected_tuple):
+        raise ValueError("duplicate_subscription_contract")
+    if len(selected_tuple) > min(trade_limit, quote_limit):
+        raise ValueError("subscription_capacity_exceeded")
+    per_symbol = Counter(contract.root for contract in selected_tuple)
+    if any(count > max_contracts_per_symbol for count in per_symbol.values()):
+        raise ValueError("subscription_symbol_capacity_exceeded")
     return CapacityAllocation(
-        requested=requested,
+        requested=selected_tuple,
         selected=selected_tuple,
         trade_plan=selected_tuple,
         quote_plan=selected_tuple,
-        capacity_excluded=tuple(excluded),
+        capacity_excluded=(),
     )
 
 

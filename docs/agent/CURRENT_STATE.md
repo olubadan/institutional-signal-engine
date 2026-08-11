@@ -5,21 +5,17 @@
   a replaceable external options-data provider, synchronized normalized events,
   formal S/F/R/E gates, deterministic ranking, traceable persistence,
   observability, replay, and reproducible Vast.ai operation.
-- **Current phase:** Phase 4 — live multi-symbol universe validation complete;
-  PR #4 is ready for owner merge authorization
+- **Current phase:** Phase 4 merged; Phase 4B mathematical footprint validation
+  is in weekend preparation on a draft branch; Phase 5 has not started
 - **Completed phases:** Phase 0 — Ground the Current State; Phase 1 — canonical
   documentation baseline; Phase 2 — reproducible Vast environment verified with
   documented Ubuntu 22.04/finite-duration exception and merged in PR #2
-- **Active branch:** `feat/phase-4-live-universe`
-- **Validated implementation head:** `88763d451bf7b07033eaec999d106879ecfaa285`
-- **Latest authoritative main commit:** `a3b34c5166040797123e943c23f0428344198ac3`.
-  Phase 2 implementation is verified through
-  `1b2920ce7a6a305c9b9cfa4f395b4f06862d1a68`; the active branch head after
-  session closure is the journal-close commit containing this snapshot.
-- **Pull-request state:** PRs #1, #2, and #3 are merged into `main`; Phase 4 PR
-  [#4](https://github.com/olubadan/institutional-signal-engine/pull/4) is open,
-  ready for review, cleanly mergeable, and unmerged at the validated closure
-  head. The owner must authorize the merge.
+- **Active branch:** `feat/phase-4b-impact-shadow`
+- **Phase 4 merge:** PR #4 is merged into `main` at
+  `b62d017dc572fd4dfbef99afccfc3f01b4399840`; resulting-main CI run
+  `31209185798` passed.
+- **Pull-request state:** Phase 4B draft PR #5 is open from
+  `feat/phase-4b-impact-shadow`; Phase 4 PR #4 is closed and merged.
 - **Current architecture:** Phase 3 now includes typed stateful indicator
   primitives, fail-closed missing-data reasons, continuous event processing,
   correlated Standard exact-contract requests, dynamic-universe selection ports,
@@ -83,9 +79,76 @@
   with field-by-field equality. This proof applies to this corrected run under
   its recorded engine, configuration and condition-mapping versions; it does
   not claim that every historical run is replayable.
-- **Next action:** Owner review and merge authorization for PR #4. No additional
-  Phase 4 observation is required. Phase 5 begins only after PR #4 is merged
-  and the owner explicitly approves it.
+- **Next action:** Complete weekend Phase 4B verification and exact-head CI;
+  Monday requires only deployment preflight and explicit live-observation
+  authorization. Phase 5 begins only after Phase 4B scope is complete and the
+  owner explicitly approves it.
+
+## Phase 4B weekend preparation — SESSION-0022
+
+- `SHADOW_IMPACT_V1` is a research-only mathematical detector attached to the
+  existing shared normalized-event, quote-classification, sweep, and audit
+  pipeline. It does not run a second live engine and cannot alter `CONTROL_V1`.
+- The implemented formulas use Decimal premium, signed/gross delta-equivalent
+  demand, coherence, five-minute Alpaca historical baselines, separate
+  `impact_coefficient=1` (`RESEARCH_ASSUMPTION_V1`) and
+  `target_move=0.0025` (`OWNER_SELECTED_TARGET_UNDERLYING_MOVE`), one-second
+  clusters, and 30-minute decayed session demand. Missing delta or numeric
+  delta without recognized versioned provenance fail closed with explicit
+  reasons and retain raw evidence.
+- Conditional coverage uses `U_M`, `U_X`, and `U_R`, separate 15,000 TRADE and
+  10,000 QUOTE capacities, versioned bounded priority factors, and persisted
+  capacity exclusions. The planner is now connected to the bounded 20-symbol
+  pilot runner; only capacity-selected U* members reach paired subscription.
+  Pilot prospective delta-demand bounds remain unavailable, so the current
+  pilot evidence is honestly classified as U_R rather than U_X. No universal
+  zero-miss claim is made.
+- Fixture verification: 156 hermetic tests pass, including shared-pipeline
+  shadow persistence, Decimal boundary arithmetic, session decay/expiry,
+  baseline provenance, conditional capacity, and async audit draining. Ruff
+  format/lint and strict mypy pass. No live market/provider session was run.
+- The deterministic benchmark used 256 clusters, three warmup samples, and 15
+  measured samples. Shared/control processing was 6.746 ms p50 and combined
+  processing was 18.255 ms p50, for 169.36% incremental p50 overhead. This
+  exceeds the approved 5% budget, so the approved fallback is active: the
+  shared feature vector and sweep evidence are persisted, while live shadow
+  scoring is disabled pending optimization; shadow and CONTROL_V1 scoring are
+  post-session replay work only.
+- No genuine mathematical footprint has been validated yet. The existing
+  Phase 4 observation remains unchanged: zero qualifying fixed-dollar sweeps
+  was an observed market result, not a pipeline failure. Trading is disabled;
+  orders remain `0/0`.
+- RAID: `docs/governance/RAID.md`; Monday runbook:
+  `docs/phase4b/MONDAY_RUNBOOK.md`; design:
+  `docs/phase4b/README.md`.
+- Published draft PR [#5](https://github.com/olubadan/institutional-signal-engine/pull/5)
+  at the current branch tip. Exact-head push and pull-request CI both pass;
+  the final run IDs are recorded on GitHub and in the closing PR evidence.
+
+## Ignition harness correction — SESSION-0024
+
+- The first Monday Phase 4B launch was fail-closed. The five reported failures
+  were probe/composition mismatches: host `pg_isready` did not address the
+  containerized application DSN, Alpaca ignition bypassed the typed provider,
+  persistence was inferred rather than enqueued and drained, and the plan
+  checks did not run the production discovery/enrichment/planner path.
+- The correction uses the application `Settings` and `PostgresRepository`,
+  `AlpacaEquitiesProvider.current_prices()`, the typed MDDS status adapter, and
+  a reversible `AsyncAuditWriter` probe. The live runner now supports a
+  prepare-only planner pass and exact prepared-plan validation before stream
+  consumption. Trading remains disabled and orders remain `0/0`.
+- Exact-head CI passed on correction head `a9a7bace1c991776eafeaa65b85f3036dcaef21a`;
+  ignition passed on the VM and produced a protected 40-contract plan
+  (`U_M=0`, `U_X=0`, `U_R=40`, `U*=40`). The recovery command then failed
+  before WebSocket connection because the repeated discovery/enrichment pass
+  did not reproduce the prepared plan (`911` versus `912` completed quote
+  results), yielding the runner's `prepared_plan_mismatch` failure point.
+- Run `0950e1c9-0e67-42b2-9f55-98d545650e52` is the ignition/preflight run,
+  not a live observation: its scope has zero events, decisions, quotes,
+  clusters, and finalization. No live Phase 4B session counts toward the
+  five-session/30-footprint requirement. Trading remains disabled and orders
+  remain `0/0`; Tuesday is blocked pending an authoritative prepared-plan
+  handoff correction.
 
 ## Final engineering review — 20260805
 
@@ -195,6 +258,28 @@
   indication appeared in the inspected Terminal log window. Multi-second age
   measurements remain reported without clamping; plan-level throttling was not
   established from official documentation or support confirmation.
+
+## Work Package 1 correction — SESSION-0026
+
+- The declarative certificate at `639a071` was replaced by an executable
+  deterministic scenario executor. It consumes virtual-time actions in order,
+  invokes the production signal composition boundary with deterministic
+  provider/clock/persistence ports, runs real coverage planning across epochs,
+  executes normalized events, impact evaluation, persistence, replay, and
+  lifecycle observations, and derives every invariant from trace/state.
+- The signal runner gained an optional deterministic composition interface;
+  default production construction is unchanged. The Phase 4 outer runner was
+  not repaired. Its missing composition interface is recorded as an observed
+  failed invariant, so the certificate remains honestly `FAIL`.
+- JSON Schema validation uses `jsonschema` Draft 2020-12 with format checking;
+  negative schema and anti-cheating tests cover mutation, duplicate events,
+  capacities, constants, nested fields, UUID/SHA formats, and extra fields.
+- Runtime output is external-only at `/tmp/phase4b-certification/CERTIFICATE.json`;
+  the committed `PHASE4B_CERT_V1.example.json` is explicitly not evidence.
+  The correction commit is `4366407ad62ace1b24989493e22780935370cafd`; the
+  runtime certificate identifies the exact clean checked-out head at execution.
+  Trading remains disabled; orders are `0/0`; no providers ran; Phase 5 remains
+  unopened.
 
 ## Owner-authorized sweep closure — 20260805
 
@@ -581,3 +666,39 @@
 - PR #4 is open, ready for owner review, mergeable, and unmerged. The next
   action is owner review and merge authorization; Phase 5 begins only after
   the owner explicitly authorizes and completes the merge.
+
+### SESSION-0023 Phase 4B system-integration closure — 20260809
+
+- The outer Phase 4B runner now owns one run ID, carried through discovery,
+  coverage, ordered allocation, requests, acknowledgements, and persisted
+  finalization. The planner is the sole allocator; the subscription formatter
+  only validates and serializes its ordered result.
+- Every discovered contract receives immutable transition evidence, including
+  later-expiration, duplicate-canonical, mapping, enrichment, U_X, planner,
+  capacity, request, and acknowledgement outcomes. Canonical-null records
+  carry `CANONICAL_IDENTITY_UNAVAILABLE`.
+- Finalization replay validates the persisted selection, allocation, request
+  subsets, acknowledgement lineage, and transition order. The read-only
+  `python -m institutional_signal_engine.ignition` command provides sanitized,
+  fail-closed deployment checks and never starts an observation.
+- Closure verification is hermetic: 162 tests pass, Ruff format/lint and
+  strict mypy pass. No provider ran in this session. Remaining follow-up is
+  expanded failure injection and live validation; market-wide cataloging and
+  a universal Q-delta bound remain out of scope. Trading is disabled and
+  orders remain `0/0`.
+
+### SESSION-0025 Phase 4B deterministic certification harness — 20260810
+
+- Work Package 1 adds the versioned `PHASE4B_CERT_V1` contract, JSON Schema,
+  deterministic accelerated-RTH scenario, offline certificate runner, focused
+  tests, and concise certification boundary document.
+- Command: `uv run python -m institutional_signal_engine.phase4b_certify`.
+  The expected current result is nonzero `FAIL`; the certificate identifies
+  planner epoch immutability, exact planner-epoch consumption, and duplicate
+  discovery/enrichment as failed production integration invariants.
+- The harness exercises production impact scoring, coverage allocation, async
+  in-memory persistence, and replay without running live providers. Trading is
+  disabled and orders remain `0/0`.
+- Verification: Ruff, strict mypy, and 168 hermetic tests passed; focused
+  schema/structural checks, secret scan, and diff check passed. `jsonschema`
+  was not installed; dependency-free certificate schema validation passed.
