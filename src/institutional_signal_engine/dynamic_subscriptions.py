@@ -1,19 +1,26 @@
-"""Incremental subscription management for the Phase 4B orchestration shell."""
+"""Incremental subscription management with owned WebSocket control channel.
+
+The DynamicSubscriptionAdapter owns a live ThetaData WebSocket connection
+and transmits actual STREAM add/remove payloads. It never manipulates
+ThetaDataOptionsProvider private fields — it uses its own connection,
+request registry, and acknowledgement state.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
-from .providers.thetadata import SubscriptionRequest, ThetaContract, ThetaDataOptionsProvider
+import websockets
 
-# Max time to wait for a single acknowledgement batch.
+from .providers.common import ProviderError
+from .providers.thetadata import SubscriptionRequest, ThetaContract
+
 DEFAULT_ACK_TIMEOUT = 30.0
-# Max retry attempts for a subscription request.
-DEFAULT_MAX_RETRIES = 3
-# Base delay for retry backoff.
-DEFAULT_BASE_RETRY_DELAY = 0.5
+DEFAULT_CONNECT_TIMEOUT = 10.0
 
 
 @dataclass
@@ -34,194 +41,189 @@ class SubscriptionAcknowledgement:
 
 @dataclass
 class DynamicSubscriptionAdapter:
-    """Wraps a ThetaDataOptionsProvider for incremental subscription management.
+    """Owns a live ThetaData WebSocket for incremental subscription control.
 
-    Supports mid-session add, remove, acknowledgement correlation, timeout,
-    rejection, retry, and idempotent application. Events from unacknowledged
-    or removed contracts are rejected with auditable diagnostics.
+    This adapter maintains its own WebSocket connection, request registry,
+    and acknowledgement state. It sends STREAM add/remove messages and
+    correlates REQ_RESPONSE acknowledgements. It does not access
+    ThetaDataOptionsProvider private fields.
 
-    This adapter wraps, rather than replaces, the existing provider. The
-    underlying provider's normalisation and acknowledgement logic is reused.
+    Events from unacknowledged or removed contracts are rejected.
     """
 
     events_url: str
     api_key: str
-    contracts: tuple[ThetaContract, ...] = ()
     request_types: tuple[str, ...] = ("TRADE", "QUOTE")
-    timeout: float = 10.0
-    diagnostic_membership: dict[str, set[ThetaContract]] | None = None
+    connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
     stage_callback: Callable[[dict[str, object]], None] | None = None
 
-    # Internal state
-    _provider: ThetaDataOptionsProvider | None = field(default=None, init=False)
+    # Internal mutable state
+    _ws: Any = field(default=None, init=False)
     _connected: bool = field(default=False, init=False)
-    _pending_additions: dict[int, SubscriptionRequest] = field(default_factory=dict, init=False)
-    _pending_removals: dict[int, SubscriptionRequest] = field(default_factory=dict, init=False)
-    _ack_timeout: float = field(default=DEFAULT_ACK_TIMEOUT, init=False)
-    _max_retries: int = field(default=DEFAULT_MAX_RETRIES, init=False)
-    _base_retry_delay: float = field(default=DEFAULT_BASE_RETRY_DELAY, init=False)
-    _awaiting_ack: asyncio.Event | None = field(default=None, init=False)
-    _last_ack_result: SubscriptionAcknowledgement | None = field(default=None, init=False)
+    _next_request_id: int = field(default=1, init=False)
+    _connection_generation: int = field(default=0, init=False)
+    _request_registry: dict[int, SubscriptionRequest] = field(default_factory=dict, init=False)
+    _acknowledged_ids: set[int] = field(default_factory=set, init=False)
+    _acknowledged_contracts: set[ThetaContract] = field(default_factory=set, init=False)
+    _outstanding: dict[int, SubscriptionRequest] = field(default_factory=dict, init=False)
+    _diagnostics: list[str] = field(default_factory=list, init=False)
+    _pending_ack_event: asyncio.Event = field(default_factory=asyncio.Event, init=False)
 
-    @property
-    def provider(self) -> ThetaDataOptionsProvider:
-        if self._provider is None:
-            raise RuntimeError("DynamicSubscriptionAdapter not initialised — call initialise()")
-        return self._provider
+    # ---- connection lifecycle ----
+
+    async def connect(self) -> None:
+        """Open the WebSocket and send initial subscription payloads."""
+        if self._connected:
+            return
+        try:
+            self._ws = await websockets.connect(
+                self.events_url,
+                open_timeout=self.connect_timeout,
+                ping_interval=20,
+                ping_timeout=10,
+            )
+        except (TimeoutError, OSError) as exc:
+            raise ProviderError("thetadata", "connection_failed", True) from exc
+        self._connected = True
+        self._connection_generation += 1
+        if self.stage_callback is not None:
+            self.stage_callback({"stage": "websocket_connected"})
+
+    async def disconnect(self) -> None:
+        """Close the WebSocket."""
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except (OSError, RuntimeError):
+                self._diagnostics.append("disconnect_close_error")
+        self._connected = False
+        self._ws = None
 
     @property
     def connected(self) -> bool:
         return self._connected
 
     @property
+    def connection_generation(self) -> int:
+        return self._connection_generation
+
+    @property
     def acknowledged_contracts(self) -> set[ThetaContract]:
-        if self._provider is None:
-            return set()
-        return self._provider.acknowledged_contracts
+        return self._acknowledged_contracts
 
     @property
     def acknowledged_ids(self) -> set[int]:
-        if self._provider is None:
-            return set()
-        return self._provider.acknowledged_ids
+        return self._acknowledged_ids
 
     @property
     def request_registry(self) -> dict[int, SubscriptionRequest]:
-        if self._provider is None:
-            return {}
-        return self._provider.request_registry
+        return dict(self._request_registry)
 
-    def initialise(self) -> None:
-        """Create the underlying provider with the initial contract set."""
-        self._provider = ThetaDataOptionsProvider(
-            self.events_url,
-            self.api_key,
-            timeout=self.timeout,
-            contracts=self.contracts,
-            request_types=self.request_types,
-            diagnostic_membership=self.diagnostic_membership,
-            stage_callback=self._on_provider_stage,
-        )
+    @property
+    def subscription_acknowledged(self) -> bool:
+        return len(self._outstanding) == 0 and len(self._acknowledged_ids) > 0
 
-    async def connect_and_subscribe(self) -> None:
-        """Connect to the provider and send current subscription set."""
-        # The provider sends subscription payloads inside its connection loop.
-        # We need to iterate the event stream at least until acknowledgements arrive.
-        # This is handled by the orchestration shell which creates the event task.
-
-    def current_subscriptions(self) -> tuple[ThetaContract, ...]:
-        """Return the currently-desired subscription set."""
-        return tuple(
-            sorted(
-                self.acknowledged_contracts
-                | {req.contract for req in self._pending_additions.values() if req.add}
-                - {req.contract for req in self._pending_removals.values() if not req.add},
-                key=lambda v: (v.root, v.expiration, v.strike, v.right),
-            )
-        )
+    # ---- subscription commands ----
 
     async def add_subscriptions(self, contracts: tuple[ThetaContract, ...]) -> tuple[int, ...]:
-        """Request incremental subscription additions.
+        """Send paired TRADE+QUOTE STREAM add requests for every contract.
 
-        Returns request IDs. Call acknowledge() to wait for provider responses.
+        Returns the request IDs for later acknowledgement correlation.
         """
-        if self._provider is None:
-            raise RuntimeError("Adapter not initialised")
+        if not self._connected or self._ws is None:
+            raise ProviderError("thetadata", "not_connected", True)
+
         request_ids: list[int] = []
         for contract in contracts:
-            if contract in self.acknowledged_contracts:
-                continue  # already subscribed
-            # Build an add subscription payload and send it
-            request_id = self._provider._next_request_id
-            self._provider._next_request_id += 1
-            self._provider.subscription_ids.append(request_id)
-            request = SubscriptionRequest(
-                request_id, contract, "TRADE", True, self._provider.connection_generation
-            )
-            self._provider.outstanding[request_id] = request
-            self._provider.request_registry[request_id] = request
-            self._pending_additions[request_id] = request
-            request_ids.append(request_id)
+            if contract in self._acknowledged_contracts:
+                continue
+            for req_type in self.request_types:
+                rid = self._next_request_id
+                self._next_request_id += 1
+                payload = contract.payload(rid, add=True, req_type=req_type)
+                request = SubscriptionRequest(
+                    rid, contract, req_type, True, self._connection_generation
+                )
+                self._outstanding[rid] = request
+                self._request_registry[rid] = request
+                request_ids.append(rid)
+                await self._ws.send(json.dumps(payload))
         return tuple(request_ids)
 
     async def remove_subscriptions(self, contracts: tuple[ThetaContract, ...]) -> tuple[int, ...]:
-        """Request incremental subscription removals.
+        """Send paired TRADE+QUOTE STREAM remove requests for every contract.
 
-        Returns request IDs. Call acknowledge() to wait for provider responses.
+        Returns the request IDs for later acknowledgement correlation.
         """
-        if self._provider is None:
-            raise RuntimeError("Adapter not initialised")
+        if not self._connected or self._ws is None:
+            raise ProviderError("thetadata", "not_connected", True)
+
         request_ids: list[int] = []
         for contract in contracts:
-            if contract not in self.acknowledged_contracts:
-                continue  # not subscribed
-            request_id = self._provider._next_request_id
-            self._provider._next_request_id += 1
-            request = SubscriptionRequest(
-                request_id, contract, "TRADE", False, self._provider.connection_generation
-            )
-            self._provider.outstanding[request_id] = request
-            self._provider.request_registry[request_id] = request
-            self._pending_removals[request_id] = request
-            request_ids.append(request_id)
+            if contract not in self._acknowledged_contracts:
+                continue
+            for req_type in self.request_types:
+                rid = self._next_request_id
+                self._next_request_id += 1
+                payload = contract.payload(rid, add=False, req_type=req_type)
+                request = SubscriptionRequest(
+                    rid, contract, req_type, False, self._connection_generation
+                )
+                self._outstanding[rid] = request
+                self._request_registry[rid] = request
+                request_ids.append(rid)
+                await self._ws.send(json.dumps(payload))
         return tuple(request_ids)
 
     async def acknowledge(
         self, expected_request_ids: tuple[int, ...], timeout: float | None = None
     ) -> SubscriptionAcknowledgement:
-        """Wait for acknowledgements on the given request IDs.
+        """Wait for REQ_RESPONSE acknowledgements on the given request IDs.
 
-        Returns a SubscriptionAcknowledgement with the results. Does not raise
-        on timeout — callers must check the result.
+        Does not raise on timeout — callers check the result.
         """
-        timeout = timeout or self._ack_timeout
+        timeout = timeout or DEFAULT_ACK_TIMEOUT
         deadline = asyncio.get_event_loop().time() + timeout
         acknowledged: list[int] = []
         timed_out: list[int] = []
         rejected: list[dict[str, object]] = []
 
         while asyncio.get_event_loop().time() < deadline:
-            if self._provider is None:
-                break
             all_done = True
             for rid in expected_request_ids:
-                if rid in self._provider.acknowledged_ids:
+                if rid in self._acknowledged_ids:
                     if rid not in acknowledged:
                         acknowledged.append(rid)
-                        self._pending_additions.pop(rid, None)
-                        self._pending_removals.pop(rid, None)
-                elif rid in self._provider.outstanding:
+                        self._outstanding.pop(rid, None)
+                elif rid in self._outstanding:
                     all_done = False
+                elif rid in self._request_registry:
+                    request = self._request_registry[rid]
+                    rejected.append(
+                        {
+                            "request_id": rid,
+                            "contract": {
+                                "root": request.contract.root,
+                                "expiration": request.contract.expiration,
+                                "strike": request.contract.strike,
+                                "right": request.contract.right,
+                            },
+                            "req_type": request.req_type,
+                            "reason": "rejected_or_unmatched",
+                        }
+                    )
+                    self._outstanding.pop(rid, None)
                 else:
-                    # Request was neither acknowledged nor outstanding — check diagnostics
-                    request = self._provider.request_registry.get(rid)
-                    if request is not None:
-                        rejected.append(
-                            {
-                                "request_id": rid,
-                                "contract": {
-                                    "root": request.contract.root,
-                                    "expiration": request.contract.expiration,
-                                    "strike": request.contract.strike,
-                                    "right": request.contract.right,
-                                },
-                                "req_type": request.req_type,
-                                "reason": "rejected_or_unmatched",
-                            }
-                        )
-                        self._pending_additions.pop(rid, None)
-                        self._pending_removals.pop(rid, None)
-                    acknowledged.append(rid)  # mark as done
+                    timed_out.append(rid)
             if all_done:
                 break
             await asyncio.sleep(0.05)
 
-        # Any still-pending IDs timed out
         for rid in expected_request_ids:
             if rid not in acknowledged and rid not in [r["request_id"] for r in rejected]:
-                timed_out.append(rid)
-                self._pending_additions.pop(rid, None)
-                self._pending_removals.pop(rid, None)
+                if rid not in timed_out:
+                    timed_out.append(rid)
+                self._outstanding.pop(rid, None)
 
         partial = len(acknowledged) < len(expected_request_ids)
         accepted = not partial and len(rejected) == 0 and len(timed_out) == 0
@@ -231,7 +233,7 @@ class DynamicSubscriptionAdapter:
             else f"partial: {len(acknowledged)}/{len(expected_request_ids)} ack, "
             f"{len(rejected)} rejected, {len(timed_out)} timed_out"
         )
-        result = SubscriptionAcknowledgement(
+        return SubscriptionAcknowledgement(
             acknowledged=tuple(acknowledged),
             rejected=tuple(rejected),
             timed_out=tuple(timed_out),
@@ -239,72 +241,86 @@ class DynamicSubscriptionAdapter:
             accepted=accepted,
             diagnostic=diagnostic,
         )
-        self._last_ack_result = result
-        return result
+
+    # ---- control message processing ----
+
+    def observe_control(self, raw_message: str) -> bool:
+        """Process a raw WebSocket message as a potential control frame.
+
+        Returns True if the message was consumed as a control frame.
+        Returns False if it should be treated as a data event.
+        """
+        try:
+            message: dict[str, Any] = json.loads(raw_message)
+        except (json.JSONDecodeError, TypeError):
+            return True  # Consume unparseable messages
+
+        header = message.get("header", {})
+        message_type = header.get("type")
+        status = str(header.get("status", "unknown")).lower()
+
+        if message_type == "REQ_RESPONSE":
+            return self._handle_req_response(header)
+        if message_type == "STATUS":
+            return True  # Consume keepalive status frames
+        if message_type == "ERROR":
+            self._diagnostics.append(f"stream_error:{status}")
+            return True
+        if header.get("status") in {"ERROR", "UNAUTHORIZED", "DENIED"}:
+            self._diagnostics.append(f"stream_rejected:{status}")
+            return True
+        return False
+
+    def _handle_req_response(self, header: dict[str, Any]) -> bool:
+        response = str(header.get("response", "")).upper()
+        req_id = header.get("req_id")
+        if not isinstance(req_id, int) or req_id not in self._request_registry:
+            self._diagnostics.append("unmatched_request_response")
+            return True
+        if req_id in self._acknowledged_ids:
+            self._diagnostics.append("duplicate_request_response")
+            return True
+        request = self._request_registry[req_id]
+        if response == "SUBSCRIBED":
+            self._outstanding.pop(req_id, None)
+            self._acknowledged_ids.add(req_id)
+            self._acknowledged_contracts.add(request.contract)
+        elif response in {"ERROR", "MAX_STREAMS_REACHED", "INVALID_PERMS"}:
+            self._diagnostics.append(f"request_rejected:{response.lower()}")
+        else:
+            self._diagnostics.append("unknown_request_response")
+        return True
+
+    # ---- event acceptance ----
 
     def is_event_accepted(self, contract: ThetaContract) -> bool:
         """Check whether events for a contract should be accepted.
 
-        Events are accepted only if the contract is in the acknowledged set
-        and not in the pending removal set.
+        Events are accepted only if the contract is in the acknowledged set.
         """
-        if contract in {req.contract for req in self._pending_removals.values() if not req.add}:
-            return False
-        return contract in self.acknowledged_contracts
+        return contract in self._acknowledged_contracts
+
+    # ---- reconnect and restoration ----
 
     async def restore_epoch(self, desired: tuple[ThetaContract, ...]) -> None:
         """After reconnect, restore subscriptions to match the desired epoch.
 
-        Computes the diff between currently-acknowledged and desired, then
-        sends add/remove requests. After reconnect, the underlying provider
-        resets its acknowledged set, so we re-subscribe all desired contracts.
+        Reconnects, then re-subscribes all desired contracts.
         """
-        if self._provider is None:
-            raise RuntimeError("Adapter not initialised")
-        current = self.acknowledged_contracts
-        desired_set = set(desired)
-        to_add = desired_set - current
-        to_remove = current - desired_set
-
-        if to_add:
-            await self.add_subscriptions(
-                tuple(sorted(to_add, key=lambda v: (v.root, v.expiration, v.strike, v.right)))
-            )
-        if to_remove:
-            await self.remove_subscriptions(
-                tuple(sorted(to_remove, key=lambda v: (v.root, v.expiration, v.strike, v.right)))
-            )
-
-    def _on_provider_stage(self, record: dict[str, object]) -> None:
-        """Forward provider stage events, tracking connection state."""
-        stage = record.get("stage")
-        if stage == "websocket_connected":
-            self._connected = True
-        if self.stage_callback is not None:
-            self.stage_callback(record)
+        if self._connected:
+            await self.disconnect()
+        await self.connect()
+        await self.add_subscriptions(desired)
 
     def diagnostics(self) -> dict[str, object]:
         """Return diagnostic evidence for the current subscription state."""
-        if self._provider is None:
-            return {"status": "not_initialised"}
         return {
             "connected": self._connected,
-            "acknowledged_contract_count": len(self.acknowledged_contracts),
-            "pending_additions": len(self._pending_additions),
-            "pending_removals": len(self._pending_removals),
-            "total_requests": len(self.request_registry),
-            "acknowledged_request_count": len(self.acknowledged_ids),
-            "provider_diagnostics": list(self._provider.diagnostics),
-            "rejected_event_diagnostics": list(self._provider.rejected_event_diagnostics),
-            "last_ack_result": (
-                {
-                    "acknowledged": len(self._last_ack_result.acknowledged),
-                    "rejected": len(self._last_ack_result.rejected),
-                    "timed_out": len(self._last_ack_result.timed_out),
-                    "accepted": self._last_ack_result.accepted,
-                    "diagnostic": self._last_ack_result.diagnostic,
-                }
-                if self._last_ack_result is not None
-                else None
-            ),
+            "connection_generation": self._connection_generation,
+            "acknowledged_contract_count": len(self._acknowledged_contracts),
+            "total_requests": len(self._request_registry),
+            "acknowledged_request_count": len(self._acknowledged_ids),
+            "outstanding_count": len(self._outstanding),
+            "subscription_acknowledged": self.subscription_acknowledged,
+            "adapter_diagnostics": list(self._diagnostics),
         }

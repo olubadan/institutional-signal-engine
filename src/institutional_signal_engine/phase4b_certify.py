@@ -173,7 +173,25 @@ class ScenarioExecutor:
 
         clock = now
 
-        # Deterministic event stream: yields a fixed set of events
+        # Deterministic Discovery port
+        class FixtureDiscovery:
+            async def discover(self, symbols: object, as_of: object) -> tuple[object, ...]:
+                return ()
+
+            async def prices(self, symbols: object) -> dict[str, Decimal]:
+                return {}
+
+        # Deterministic Enrichment port
+        class FixtureEnrichment:
+            async def enrich(
+                self,
+                discovered: tuple[object, ...],
+                prices: dict[str, Decimal],
+                as_of: datetime,
+            ) -> tuple[Any, ...]:
+                return ()
+
+        # Deterministic EventStream port
         class FixtureEventStream:
             def __init__(self) -> None:
                 event_id_1 = UUID("4b000000-0000-4000-8000-000000000001")
@@ -216,13 +234,11 @@ class ScenarioExecutor:
                         },
                     ),
                 ]
-                self._idx = 0
 
             def events(self) -> Any:
                 async def _gen() -> Any:
                     for evt in self._events:
                         yield evt
-                    # Yield one sentinel then stop
                     await asyncio.sleep(0.01)
 
                 return _gen()
@@ -230,15 +246,11 @@ class ScenarioExecutor:
             async def health(self) -> dict[str, object]:
                 return {"status": "healthy"}
 
-        # Deterministic subscription adapter
+        # No pre-seeding — adapter starts empty
         adapter = DynamicSubscriptionAdapter(
             events_url="ws://127.0.0.1:25520/v1/events",
             api_key="fixture-theta",
         )
-        adapter.initialise()
-        # Manually ensure contracts appear acknowledged for the test scenario
-        adapter.provider.acknowledged_contracts = {contract_aaa}
-        adapter.provider.subscription_acknowledged = True
 
         config = OrchestrationConfig(
             run_id=RUN_ID,
@@ -253,8 +265,8 @@ class ScenarioExecutor:
             config=config,
             settings=settings,
             clock=lambda: clock,
-            discovery=None,
-            enrichment=None,
+            discovery=FixtureDiscovery(),
+            enrichment=FixtureEnrichment(),
             planner=ProductionPlanner(trade_limit=15000, quote_limit=10000),
             subscription_adapter=adapter,
             event_stream=FixtureEventStream(),

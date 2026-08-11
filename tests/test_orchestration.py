@@ -438,8 +438,7 @@ def test_event_from_unacknowledged_subscription():
         events_url="ws://127.0.0.1:25520/v1/events",
         api_key="fixture",
     )
-    adapter.initialise()
-    # Nothing is acknowledged initially
+    # Nothing is acknowledged initially (no connect needed for rejection check)
     unacked = ThetaContract("ZZZZ", 20260821, 500000, "C")
     assert not adapter.is_event_accepted(unacked)
 
@@ -812,15 +811,13 @@ def test_orchestration_shell_accepts_deterministic_ports(config, settings):
 
 
 def test_production_entry_point_wires_orchestration_shell():
-    """phase4_live_smoke.py production entry point has _run_orchestrated wired."""
+    """phase4_live_smoke.py production entry point has _run_orchestrated_async wired."""
     from institutional_signal_engine import phase4_live_smoke
 
-    assert hasattr(phase4_live_smoke, "_run_orchestrated"), (
-        "Production entry point must have _run_orchestrated function"
+    assert hasattr(phase4_live_smoke, "_run_orchestrated_async"), (
+        "Production entry point must have _run_orchestrated_async function"
     )
-    assert hasattr(phase4_live_smoke, "_run_legacy"), (
-        "Legacy path must remain as _run_legacy for backward compatibility"
-    )
+    assert hasattr(phase4_live_smoke, "_run_smoke"), "Smoke test path must remain as _run_smoke"
 
     # Verify OrchestrationShell is importable through the production wiring path
     from institutional_signal_engine.orchestration import OrchestrationShell, ProductionPlanner
@@ -832,8 +829,12 @@ def test_production_entry_point_wires_orchestration_shell():
     import inspect
 
     main_source = inspect.getsource(phase4_live_smoke.main)
-    assert "_run_orchestrated" in main_source, (
-        "Production main() must call _run_orchestrated by default"
+    assert "_run_orchestrated_async" in main_source, (
+        "Production main() must call _run_orchestrated_async by default"
+    )
+    # --legacy-frozen-universe must not appear (one production authority)
+    assert "--legacy-frozen-universe" not in main_source, (
+        "Legacy CLI flag must be removed from production CLI"
     )
 
 
@@ -849,6 +850,10 @@ def test_competing_plan_authority_removed():
     )
     # plan-output is still available as a diagnostic-only output
     assert "--plan-output" in main_source, "Diagnostic --plan-output should remain available"
+    # --legacy-frozen-universe must also be removed (single production authority)
+    assert "--legacy-frozen-universe" not in main_source, (
+        "Legacy runner must not be selectable from production CLI"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -921,12 +926,16 @@ def test_scheduler_returns_none_past_rth_stop():
     """Scheduler returns None when past RTH stop."""
     scheduler = ReevaluationScheduler(
         rth_start=datetime(2026, 8, 10, 13, 30, tzinfo=UTC),
-        rth_stop=datetime(2026, 8, 10, 20, 0, tzinfo=UTC),
+        rth_stop=datetime(2026, 8, 10, 13, 40, tzinfo=UTC),  # Short window
         interval=timedelta(minutes=5),
     )
-    # Well past RTH stop
-    result = scheduler.next_reevaluation(datetime(2026, 8, 10, 21, 0, tzinfo=UTC))
-    assert result is None
+    # First due time (13:35) is before stop
+    result = scheduler.next_reevaluation(datetime(2026, 8, 10, 13, 31, tzinfo=UTC))
+    assert result == datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
+    # After recording, compute next — it's past stop, so None
+    scheduler.record_reevaluation(result)
+    result2 = scheduler.next_reevaluation(datetime(2026, 8, 10, 13, 36, tzinfo=UTC))
+    assert result2 is None
 
 
 def test_scheduler_returns_first_scheduled_time():
@@ -936,38 +945,43 @@ def test_scheduler_returns_first_scheduled_time():
         rth_stop=datetime(2026, 8, 10, 20, 0, tzinfo=UTC),
         interval=timedelta(minutes=5),
     )
-    # Just after RTH start
     now = datetime(2026, 8, 10, 13, 31, tzinfo=UTC)
     result = scheduler.next_reevaluation(now)
-    assert result is not None
     assert result == datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
+    # Idempotent — calling again returns the same
+    result2 = scheduler.next_reevaluation(now)
+    assert result2 == result
 
 
-def test_scheduler_skips_past_times():
-    """Scheduler skips intervals that are already in the past."""
+def test_scheduler_is_due_only_at_or_past_due_time():
+    """is_due returns True only when clock >= due time."""
     scheduler = ReevaluationScheduler(
         rth_start=datetime(2026, 8, 10, 13, 30, tzinfo=UTC),
         rth_stop=datetime(2026, 8, 10, 20, 0, tzinfo=UTC),
         interval=timedelta(minutes=5),
     )
-    # Well into RTH, past several intervals
-    now = datetime(2026, 8, 10, 14, 0, tzinfo=UTC)
-    result = scheduler.next_reevaluation(now)
-    assert result is not None
-    assert result == datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    # Before due time
+    assert not scheduler.is_due(datetime(2026, 8, 10, 13, 34, tzinfo=UTC))
+    # At due time
+    assert scheduler.is_due(datetime(2026, 8, 10, 13, 35, tzinfo=UTC))
+    # Past due time
+    assert scheduler.is_due(datetime(2026, 8, 10, 13, 36, tzinfo=UTC))
 
 
-def test_scheduler_records_evaluations():
-    """Scheduler tracks completed evaluations."""
+def test_scheduler_records_and_advances():
+    """Scheduler advances to next interval after record_reevaluation()."""
     scheduler = ReevaluationScheduler(
         rth_start=datetime(2026, 8, 10, 13, 30, tzinfo=UTC),
         rth_stop=datetime(2026, 8, 10, 20, 0, tzinfo=UTC),
         interval=timedelta(minutes=5),
     )
-    now = datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
-    result = scheduler.next_reevaluation(now)
-    scheduler.record_reevaluation(result)
+    assert scheduler.evaluations_completed == 0
+    first = scheduler.next_reevaluation(datetime(2026, 8, 10, 13, 31, tzinfo=UTC))
+    assert first == datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
+    scheduler.record_reevaluation(first)
     assert scheduler.evaluations_completed == 1
+    second = scheduler.next_reevaluation(datetime(2026, 8, 10, 13, 36, tzinfo=UTC))
+    assert second == datetime(2026, 8, 10, 13, 40, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

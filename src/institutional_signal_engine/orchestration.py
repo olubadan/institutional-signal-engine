@@ -299,29 +299,42 @@ class ReevaluationScheduler:
     rth_start: datetime
     rth_stop: datetime
     interval: timedelta = timedelta(seconds=DEFAULT_REEVALUATION_INTERVAL_SECONDS)
-    _next_index: int = field(default=1, init=False)
+    _next_due: datetime | None = field(default=None, init=False)
     _last_effective: datetime | None = field(default=None, init=False)
+    _evaluations_completed: int = field(default=0, init=False)
 
-    def next_reevaluation(self, now: datetime) -> datetime | None:
-        """Return the next scheduled reevaluation time, or None if past RTH stop."""
-        candidate = self.rth_start + self.interval * self._next_index
-        # Skip times that are already in the past
-        while candidate <= now + timedelta(seconds=MAX_SCHEDULE_DRIFT_SECONDS):
-            if candidate >= self.rth_stop:
-                return None
-            self._next_index += 1
-            candidate = self.rth_start + self.interval * self._next_index
+    def _compute_next_due(self) -> datetime | None:
+        """Compute the next due time based on completed evaluations."""
+        candidate = self.rth_start + self.interval * (self._evaluations_completed + 1)
         if candidate >= self.rth_stop:
             return None
         return candidate
 
+    def next_reevaluation(self, now: datetime) -> datetime | None:
+        """Return the next scheduled reevaluation time, or None if past RTH stop.
+
+        Does NOT mutate state. Idempotent — only record_reevaluation() advances.
+        """
+        if self._next_due is None:
+            self._next_due = self._compute_next_due()
+        return self._next_due
+
+    def is_due(self, now: datetime) -> bool:
+        """Check if a reevaluation is due at `now`. Does not mutate state."""
+        due = self.next_reevaluation(now)
+        if due is None:
+            return False
+        return now >= due
+
     def record_reevaluation(self, effective_at: datetime) -> None:
-        """Record that a reevaluation occurred at effective_at."""
+        """Record that a reevaluation occurred and advance to next interval."""
         self._last_effective = effective_at
+        self._evaluations_completed += 1
+        self._next_due = self._compute_next_due()
 
     @property
     def evaluations_completed(self) -> int:
-        return max(0, self._next_index - 1)
+        return self._evaluations_completed
 
 
 # ---------------------------------------------------------------------------
@@ -436,8 +449,36 @@ class OrchestrationShell:
             await self._verify_provider_readiness()
 
             # 3. Initial discovery and enrichment → Epoch 1
+            # Fail closed: production requires discovery, enrichment, and event stream
+            if self._discovery is None or self._enrichment is None:
+                return SessionResult(
+                    run_id=self.config.run_id,
+                    status="blocked_missing_production_ports",
+                    epochs=(),
+                    event_count=0,
+                    decision_count=0,
+                    trading_enabled=False,
+                    orders_constructed=0,
+                    orders_submitted=0,
+                    replay_equal=False,
+                    diagnostics={"reason": "discovery_and_enrichment_ports_required"},
+                )
+            if self._event_stream is None:
+                return SessionResult(
+                    run_id=self.config.run_id,
+                    status="blocked_missing_event_stream",
+                    epochs=(),
+                    event_count=0,
+                    decision_count=0,
+                    trading_enabled=False,
+                    orders_constructed=0,
+                    orders_submitted=0,
+                    replay_equal=False,
+                    diagnostics={"reason": "event_stream_port_required"},
+                )
+
             epoch1 = await self._create_initial_epoch()
-            if epoch1 is None:
+            if epoch1 is None or epoch1.contract_count == 0:
                 return SessionResult(
                     run_id=self.config.run_id,
                     status="blocked_no_contracts_selected",
@@ -447,7 +488,7 @@ class OrchestrationShell:
                     trading_enabled=False,
                     orders_constructed=0,
                     orders_submitted=0,
-                    replay_equal=True,
+                    replay_equal=False,
                     diagnostics={"reason": "no_contracts_selected_at_startup"},
                 )
 
@@ -530,7 +571,7 @@ class OrchestrationShell:
     async def _verify_provider_readiness(self) -> None:
         """Verify providers are ready before proceeding."""
         if self._subscription_adapter is not None:
-            self._subscription_adapter.initialise()
+            await self._subscription_adapter.connect()
         if self._event_stream is not None:
             health = await self._event_stream.health()
             if health.get("status") == "unavailable":
@@ -539,43 +580,42 @@ class OrchestrationShell:
 
     async def _create_initial_epoch(self) -> PlannerEpoch | None:
         """Run initial discovery and enrichment, produce Epoch 1."""
-        if self._discovery is None or self._enrichment is None:
-            # Without discovery/enrichment ports, create a minimal epoch
-            # (used in tests with injected contracts)
-            return PlannerEpoch.create(
-                sequence=1,
-                effective_at=datetime.now(UTC),
-                candidate_population_version=PILOT_COVERAGE_POPULATION_VERSION,
-                selected_contracts=(),
-                previous_contracts=(),
-            )
+        assert self._discovery is not None, "discovery port required"
+        assert self._enrichment is not None, "enrichment port required"
 
+        symbolic_now = self._clock()
         self._recorder.emit("universe_discovery_started")
-        # Discovery is performed by the injected port.
-        # For production, this would use Alpaca catalog + prices.
-        self._recorder.emit("universe_discovery_completed")
+        prices = await self._discovery.prices(PILOT_SYMBOLS)
+        discovered = await self._discovery.discover(PILOT_SYMBOLS, symbolic_now)
+        self._recorder.emit(
+            "universe_discovery_completed",
+            completed_items=len(discovered),
+            remaining_items=0,
+        )
 
         self._recorder.emit("enrichment_started")
-        # Enrichment is performed by the injected port.
-        self._recorder.emit("enrichment_completed")
+        selections = await self._enrichment.enrich(discovered, prices, symbolic_now)
+        self._recorder.emit(
+            "enrichment_completed",
+            completed_items=len(selections),
+            remaining_items=0,
+        )
 
-        # In a full production path, the Phase 4 runner's discovery/enrichment
-        # logic is called. The thin shell delegates to existing components here.
         baseline_symbols = frozenset(
             str(key[0]).upper()
             for key in self._historical_baselines
             if isinstance(key, tuple) and len(key) == 2
         )
 
-        # The planner is always available (defaults to ProductionPlanner).
         epoch = self._planner.plan(
-            selections=(),  # Populated by actual discovery
+            selections=selections,
             sequence=1,
-            effective_at=datetime.now(UTC),
+            effective_at=symbolic_now,
             previous_contracts=(),
             baseline_symbols=baseline_symbols,
         )
-        if epoch.contract_count == 0 and self._discovery is not None:
+        if epoch.contract_count == 0:
+            return None
             return None
         return epoch
 
@@ -733,10 +773,7 @@ class OrchestrationShell:
 
     def _should_reevaluate(self, now: datetime) -> bool:
         """Check if a scheduled reevaluation is due."""
-        next_time = self._scheduler.next_reevaluation(now)
-        if next_time is None:
-            return False
-        return now >= next_time
+        return self._scheduler.is_due(now)
 
     def _is_event_accepted(self, event: CanonicalEvent) -> bool:
         """Check whether an event should be accepted under the active epoch."""
@@ -785,13 +822,22 @@ class OrchestrationShell:
         self._recorder.emit("observation_completed")
 
     def _verify_replay(self) -> bool:
-        """Verify that persisted events replay deterministically."""
+        """Verify that persisted events and epochs replay deterministically."""
         if isinstance(self._repository, InMemoryRepository):
-            replayed = tuple(self._repository.replay_events(self.config.run_id))
-            # For a full verification, we'd also replay decisions and compare.
-            # The certification harness does this exhaustively.
-            return len(replayed) == len(getattr(self._repository, "events", []))
-        return True  # Postgres replay is verified separately
+            original_events = getattr(self._repository, "events", [])
+            replayed_events = tuple(self._repository.replay_events(self.config.run_id))
+            if len(replayed_events) != len(original_events):
+                return False
+            for orig, repl in zip(
+                sorted(original_events, key=lambda e: str(e.event_id)),
+                sorted(replayed_events, key=lambda e: str(e.event_id)),
+            ):
+                if orig.event_id != repl.event_id:
+                    return False
+            # Verify epoch history was persisted
+            replayed_universe = tuple(self._repository.replay_universe(self.config.run_id))
+            return len(replayed_universe) >= len(self._epochs)
+        return False  # Must be verified through actual replay, not assumed
 
     def _build_diagnostics(self) -> dict[str, object]:
         """Build diagnostic evidence for the completed session."""
