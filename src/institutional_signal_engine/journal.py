@@ -1,4 +1,4 @@
-"""Tamper-evident causal journal and verified-journal boundary."""
+"""Non-authoritative journal, receipt, hashing, and verification primitives."""
 
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ def persistence_object_identity(run_id: UUID, serialized: str) -> str:
 
 @dataclass(frozen=True)
 class AcceptanceContract:
-    """Immutable acceptance authority: expected values and rules, never observations."""
+    """Immutable contract value; construction alone grants no certification authority."""
 
     contract_version: str
     certificate_version: str
@@ -187,6 +187,8 @@ class InMemoryJournalRepository(JournalRepository):
 
 @dataclass(frozen=True)
 class PersistenceReceipt:
+    """Untrusted persistence claim unless derived inside the authoritative operation."""
+
     contract_version: str
     run_id: UUID
     journal_root_digest: str
@@ -256,6 +258,8 @@ class PersistenceReceipt:
 
 @dataclass(frozen=True)
 class ReplayReceipt:
+    """Untrusted replay claim unless derived inside the authoritative operation."""
+
     contract_version: str
     run_id: UUID
     persistence_identity: str
@@ -442,7 +446,7 @@ class JournalSeal:
 
 @dataclass(frozen=True)
 class VerifiedJournal:
-    """Immutable capability produced only by complete production verification."""
+    """Low-level verified value, never a certificate capability or authority token."""
 
     run_id: UUID
     contract_version: str
@@ -1003,6 +1007,7 @@ def verify_semantics(journal: Journal, contract: AcceptanceContract) -> None:
 
 
 def verify_complete(journal: Journal, contract: AcceptanceContract) -> VerifiedJournal:
+    """Low-level structural/semantic verification; never authoritative certification."""
     if journal.run_id != contract.expected_run_id:
         raise JournalFailure("CONTRACT_RUN_BINDING_MISMATCH")
     verify_structural(journal)
@@ -1023,7 +1028,7 @@ def persist_verified_journal(
     journal: VerifiedJournal,
     repository: JournalRepository,
 ) -> PersistenceReceipt:
-    """Persist the already sealed canonical J and issue P only after save succeeds."""
+    """Low-level save/claim helper; its result is not authoritative certification."""
     if journal.contract_version != contract.contract_version:
         raise JournalFailure("CONTRACT_VERSION_MISMATCH")
     if journal.run_id != contract.expected_run_id:

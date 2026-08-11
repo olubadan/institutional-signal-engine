@@ -816,3 +816,40 @@
 - No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
   unchanged; PR #6 remains draft and unmerged. Exact-head publication and CI are
   confirmed externally after the single correction commit is pushed.
+
+### SESSION-0031 complete certification-authority closure — 20260811
+
+- The sole authoritative interface is now
+  `generate_phase4b_certification(output_paths) -> CertificationArtifacts`.
+  Its only input contains four presentation destinations. It accepts no
+  contract, J/P/R, repository, factory, scenario, event, expectation, callback,
+  cached value, capability, certificate, or result.
+- One call reads the exact fixed package contract bytes and verifies pinned
+  SHA-256
+  `a68e3d894bd29e1ace5dd84dfefab87fe8609c2adae93e9c640c105426e23c9a`,
+  fully validates the contract, verifies the checked-in scenario digest
+  `05ac756c035d8aca12fe8ff5d9016024ef814b512166c8ceecaed40a318b593f`,
+  constructs the scenario and owned repository, runs the real orchestration,
+  seals/verifies J, saves/reloads P, reconstructs and independently verifies R,
+  immediately projects the certificate, then stages and publishes J/P/R before
+  publishing the certificate last.
+- The certificate visibly binds the contract and scenario identities, run,
+  journal root/bytes/count/seal, persistence identity/receipt, replay receipt,
+  reconstructed root/bytes/count/projections/equality, observed projection,
+  schema version, and canonical certificate commitment. Build-envelope facts
+  remain outside runtime evidence.
+- Former caller-driven certify/composition/replay/load/write paths are absent.
+  Journal/contract/receipt constructors, deserializers, hashing, and low-level
+  verifiers are explicitly non-authoritative and have no certificate consumer.
+  `validate_certificate_schema` remains shape-only; no production artifact
+  reader relabels a manual document authoritative.
+- The final focused suite has 65 tests and the complete hermetic suite has 279.
+  Two fresh post-implementation construction-graph enumerations found no new
+  bypass. Two independent executions produced byte-identical J/P/R/certificate
+  hashes respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `e5e1286264614184c7a80cbe23426eff4b0ae7616fb57a2588230679d36ce5e8`.
+- No provider ran. Trading remains disabled; orders remain `0/0`; PR #5 remains
+  unchanged; PR #6 remains draft and unmerged; Phase 5 has not started.

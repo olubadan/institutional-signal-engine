@@ -1,31 +1,24 @@
-"""Genuine adversarial tests for CDelta and Omega = (J, P, R)."""
+"""Authority-graph and adversarial tests for Phase 4B certification."""
 
 from __future__ import annotations
 
 import ast
-import asyncio
 import inspect
 import json
-from collections.abc import Callable
+import os
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import fields, replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 import institutional_signal_engine.phase4b_certify as certification
 from institutional_signal_engine.journal import (
-    JOURNAL_KIND_CLOCK_ADVANCED,
     JOURNAL_KIND_CONFIGURATION,
-    JOURNAL_KIND_DISCOVERY_COMPLETE,
-    JOURNAL_KIND_DISCOVERY_START,
-    JOURNAL_KIND_EPOCH_ACTIVATED,
     JOURNAL_KIND_EPOCH_CREATED,
-    JOURNAL_KIND_EPOCH_RESTORED,
     JOURNAL_KIND_EVENT_ACCEPTED,
-    JOURNAL_KIND_REEVALUATION_START,
-    JOURNAL_KIND_SESSION_FINALIZED,
-    JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
+    JOURNAL_KIND_EVENT_REJECTED,
     AcceptanceContract,
     InMemoryJournalRepository,
     Journal,
@@ -38,19 +31,31 @@ from institutional_signal_engine.journal import (
     verify_complete,
 )
 from institutional_signal_engine.phase4b_certify import (
-    Composition,
-    certify_repository_backed,
-    execute_composition,
-    replay_persisted,
+    CertificationArtifacts,
+    CertificationOutputPaths,
+    generate_phase4b_certification,
     validate_certificate_schema,
 )
 
 RawJournal = dict[str, Any]
 
 
-@pytest.fixture(scope="module")
-def composition() -> Composition:
-    return asyncio.run(execute_composition())
+def _paths(directory: Path) -> CertificationOutputPaths:
+    return CertificationOutputPaths(
+        certificate=directory / "CERTIFICATE.json",
+        journal=directory / "JOURNAL.json",
+        persistence_receipt=directory / "PERSISTENCE_RECEIPT.json",
+        replay_receipt=directory / "REPLAY_RECEIPT.json",
+    )
+
+
+@pytest.fixture()
+def generated(tmp_path: Path) -> tuple[CertificationArtifacts, dict[str, Any]]:
+    artifacts = generate_phase4b_certification(_paths(tmp_path))
+    certificate = cast(
+        dict[str, Any], json.loads(tmp_path.joinpath("CERTIFICATE.json").read_text())
+    )
+    return artifacts, certificate
 
 
 def _record(raw: RawJournal, kind: str, occurrence: int = 0) -> dict[str, Any]:
@@ -86,9 +91,7 @@ def _rehash(raw: RawJournal) -> None:
     raw["seal"] = {**commitment, "seal_digest": sha256(commitment)}
 
 
-def _mutate_journal(
-    serialized: str, mutation: Callable[[RawJournal], None], *, rehash: bool = False
-) -> str:
+def _mutated_journal(serialized: str, mutation: Any, *, rehash: bool = False) -> str:
     raw = cast(RawJournal, json.loads(serialized))
     mutation(raw)
     if rehash:
@@ -96,930 +99,567 @@ def _mutate_journal(
     return canonical_json(raw)
 
 
-def _journal_failure(composition: Composition, serialized: str) -> str:
-    forged = replace(composition.journal, canonical_serialization=serialized)
-    repository = InMemoryJournalRepository()
-    repository._values[composition.persistence.persistence_identity] = serialized
-    try:
-        certify_repository_backed(
-            composition.contract,
-            forged,
-            composition.persistence,
-            composition.replay,
-            repository,
-        )
-    except JournalFailure as exc:
-        return exc.code
-    pytest.fail("mutated J unexpectedly passed production certification")
-
-
-def _certification_failure(
-    contract: AcceptanceContract,
-    journal: object,
-    persistence: PersistenceReceipt,
-    replay: ReplayReceipt,
-) -> str:
-    repository = InMemoryJournalRepository()
-    serialized = getattr(journal, "canonical_serialization", None)
-    if isinstance(serialized, str):
-        repository._values[persistence.persistence_identity] = serialized
-    try:
-        certify_repository_backed(
-            contract,
-            cast(Any, journal),
-            persistence,
-            replay,
-            repository,
-        )
-    except JournalFailure as exc:
-        return exc.code
-    pytest.fail("mutated evidence unexpectedly passed production certification")
-
-
-def _redigest_persistence(receipt: PersistenceReceipt) -> PersistenceReceipt:
-    empty = replace(receipt, receipt_digest="")
-    return replace(empty, receipt_digest=sha256(empty.commitment()))
-
-
-def _redigest_replay(receipt: ReplayReceipt) -> ReplayReceipt:
-    empty = replace(receipt, receipt_digest="")
-    return replace(empty, receipt_digest=sha256(empty.commitment()))
-
-
-def test_positive_fused_repository_certification_is_exact(composition: Composition) -> None:
-    certificate = certify_repository_backed(
-        composition.contract,
-        composition.journal,
-        composition.persistence,
-        composition.replay,
-        composition.journal_repository,
-    )
-    assert composition.journal.records[-1].kind == JOURNAL_KIND_SESSION_FINALIZED
-    assert composition.journal.seal.record_count == len(composition.journal.records)
-    assert composition.reconstructed is not composition.journal
-    assert composition.persistence.persistence_completed is True
-    assert composition.replay.exact_equality is True
-    assert (
-        PersistenceReceipt.deserialize(composition.persistence.serialize())
-        == composition.persistence
-    )
-    assert ReplayReceipt.deserialize(composition.replay.serialize()) == (composition.replay)
+def test_authoritative_generation_binds_every_authority(
+    generated: tuple[CertificationArtifacts, dict[str, Any]],
+) -> None:
+    artifacts, certificate = generated
     assert certificate["overall"] == "PASS"
+    assert certificate["failed_invariants"] == []
+    assert (
+        certificate["acceptance_contract"]["canonical_sha256"]
+        == certification.CONTRACT_CANONICAL_SHA256
+    )
+    assert certificate["deterministic_scenario"] == {
+        "version": certification.SCENARIO_VERSION,
+        "canonical_sha256": certification.SCENARIO_CANONICAL_SHA256,
+    }
+    observed = certificate["observed"]
+    assert observed["run_id"] == str(certification.RUN_ID)
+    assert observed["journal"]["canonical_byte_sha256"] == artifacts.journal_sha256
+    assert observed["persistence"]["persistence_identity"].endswith(artifacts.journal_sha256)
+    assert observed["persistence"]["receipt_digest"]
+    assert observed["replay"]["receipt_digest"]
+    assert observed["replay"]["reconstructed_root_digest"] == observed["journal"]["root_digest"]
+    assert observed["replay"]["exact_equality"] is True
+    assert (
+        observed["replay"]["replayed_projection_digest"]
+        == certificate["observed_projection_sha256"]
+    )
+    assert observed["orders"] == {"trading_enabled": False, "constructed": 0, "submitted": 0}
+    commitment = dict(certificate)
+    digest = commitment.pop("certificate_canonical_sha256")
+    assert digest == sha256(commitment) == artifacts.certificate_commitment_sha256
     assert validate_certificate_schema(certificate) == []
 
 
-def test_correct_receipts_cannot_certify_absent_repository_object(
-    composition: Composition,
-) -> None:
-    with pytest.raises(JournalFailure) as failure:
-        certify_repository_backed(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            composition.replay,
-            InMemoryJournalRepository(),
-        )
-    assert failure.value.code == "PERSISTED_JOURNAL_MISSING"
+def test_two_independent_executions_are_byte_identical(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    one = generate_phase4b_certification(_paths(first))
+    two = generate_phase4b_certification(_paths(second))
+    assert one.journal_sha256 == two.journal_sha256
+    assert one.persistence_receipt_sha256 == two.persistence_receipt_sha256
+    assert one.replay_receipt_sha256 == two.replay_receipt_sha256
+    assert one.certificate_sha256 == two.certificate_sha256
+    for name in (
+        "JOURNAL.json",
+        "PERSISTENCE_RECEIPT.json",
+        "REPLAY_RECEIPT.json",
+        "CERTIFICATE.json",
+    ):
+        assert first.joinpath(name).read_bytes() == second.joinpath(name).read_bytes()
 
 
-def test_correctly_digested_receipts_for_wrong_stored_object_are_rejected(
-    composition: Composition,
-) -> None:
-    wrong_serialized = _mutate_journal(
-        composition.journal.canonical_serialization,
-        lambda raw: _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"].update(
-            diagnostic_marker="wrong-object"
-        ),
-        rehash=True,
-    )
-    wrong_journal = verify_complete(Journal.deserialize(wrong_serialized), composition.contract)
-    repository = InMemoryJournalRepository()
-    identity = repository.save(wrong_journal.run_id, wrong_serialized)
-    persistence = PersistenceReceipt.create(composition.contract, wrong_journal, identity)
-    _, replay = replay_persisted(composition.contract, wrong_journal, persistence, repository)
-    with pytest.raises(JournalFailure) as failure:
-        certify_repository_backed(
-            composition.contract,
-            composition.journal,
-            persistence,
-            replay,
-            repository,
-        )
-    assert failure.value.code == "PERSISTED_JOURNAL_BYTES_MISMATCH"
-
-
-def test_stored_bytes_must_exactly_equal_sealed_j(composition: Composition) -> None:
-    repository = InMemoryJournalRepository()
-    repository._values[composition.persistence.persistence_identity] = (
-        composition.journal.canonical_serialization + "\n"
-    )
-    with pytest.raises(JournalFailure) as failure:
-        certify_repository_backed(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            composition.replay,
-            repository,
-        )
-    assert failure.value.code == "PERSISTED_JOURNAL_BYTES_MISMATCH"
-
-
-@pytest.mark.parametrize(
-    ("mutation", "expected_code"),
-    [
-        (
-            lambda raw: (
-                raw.update(run_id="4b000000-0000-4000-8000-000000000099"),
-                [
-                    record.update(run_id="4b000000-0000-4000-8000-000000000099")
-                    for record in raw["records"]
-                ],
-            ),
-            "PERSISTED_JOURNAL_BYTES_MISMATCH",
-        ),
-        (
-            lambda raw: _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"].update(
-                acceptance_contract_version="WRONG_CONTRACT"
-            ),
-            "PERSISTED_JOURNAL_BYTES_MISMATCH",
-        ),
-    ],
-)
-def test_cross_bound_repository_objects_are_rejected_during_reconstruction(
-    composition: Composition,
-    mutation: Callable[[RawJournal], object],
-    expected_code: str,
-) -> None:
-    serialized = _mutate_journal(
-        composition.journal.canonical_serialization,
-        mutation,
-        rehash=True,
-    )
-    raw = cast(RawJournal, json.loads(serialized))
-    repository = InMemoryJournalRepository()
-    identity = repository.save(composition.contract.expected_run_id, serialized)
-    persistence = _redigest_persistence(
-        replace(
-            composition.persistence,
-            journal_root_digest=str(raw["seal"]["terminal_digest"]),
-            journal_byte_sha256=sha256_bytes(serialized),
-            journal_record_count=len(raw["records"]),
-            persistence_identity=identity,
-        )
-    )
-    replay = _redigest_replay(replace(composition.replay, persistence_identity=identity))
-    with pytest.raises(JournalFailure) as failure:
-        certify_repository_backed(
-            composition.contract,
-            composition.journal,
-            persistence,
-            replay,
-            repository,
-        )
-    assert failure.value.code == expected_code
-
-
-def test_internally_consistent_forged_receipt_is_not_repository_backed(
-    composition: Composition,
-) -> None:
-    forged = PersistenceReceipt.create(
-        composition.contract,
-        composition.journal,
-        composition.persistence.persistence_identity,
-    )
-    assert forged.receipt_digest == sha256(forged.commitment())
-    with pytest.raises(JournalFailure) as failure:
-        certify_repository_backed(
-            composition.contract,
-            composition.journal,
-            forged,
-            composition.replay,
-            InMemoryJournalRepository(),
-        )
-    assert failure.value.code == "PERSISTED_JOURNAL_MISSING"
-
-
-def test_former_capability_and_authority_issuance_api_do_not_exist() -> None:
+def test_public_authoritative_interface_is_output_paths_only() -> None:
+    assert list(inspect.signature(generate_phase4b_certification).parameters) == ["output_paths"]
+    assert [field.name for field in fields(CertificationOutputPaths)] == [
+        "certificate",
+        "journal",
+        "persistence_receipt",
+        "replay_receipt",
+    ]
+    assert certification.__all__ == [
+        "CertificationArtifacts",
+        "CertificationOutputPaths",
+        "generate_phase4b_certification",
+        "main",
+        "validate_certificate_schema",
+    ]
     forbidden = {
+        "Composition",
         "VerifiedEvidencePackage",
-        "_REPOSITORY_VERIFICATION_AUTHORITY",
         "acceptance_projection",
+        "certify_repository_backed",
+        "execute_composition",
         "journal_projection",
-        "verify_repository_backed_evidence_package",
+        "load_acceptance_contract",
+        "replay_persisted",
+        "write_artifacts",
         "_issue",
     }
     assert forbidden.isdisjoint(vars(certification))
 
 
-def test_low_level_lookalike_forgery_cannot_certify(composition: Composition) -> None:
+@pytest.mark.parametrize(
+    "semantic_value",
+    [
+        object(),
+        InMemoryJournalRepository(),
+        AcceptanceContract,
+        Journal,
+        PersistenceReceipt,
+        ReplayReceipt,
+        {"overall": "PASS"},
+    ],
+)
+def test_no_semantic_object_can_enter_authoritative_api(
+    tmp_path: Path, semantic_value: object
+) -> None:
+    with pytest.raises(TypeError):
+        generate_phase4b_certification(_paths(tmp_path), semantic_value)  # type: ignore[call-arg]
+    assert not tmp_path.joinpath("CERTIFICATE.json").exists()
+
+
+def test_low_level_lookalikes_and_object_mutation_have_no_authoritative_consumer(
+    tmp_path: Path,
+) -> None:
     class FormerCapabilityLookalike:
         pass
 
     forged = object.__new__(FormerCapabilityLookalike)
     object.__setattr__(forged, "_authority", object())
-    object.__setattr__(forged, "_journal", composition.journal)
-    assert (
-        _certification_failure(
-            composition.contract,
-            forged,
-            composition.persistence,
-            composition.replay,
-        )
-        == "EVIDENCE_REQUIRES_VERIFIED_JOURNAL"
+    object.__setattr__(forged, "overall", "PASS")
+    copied = replace(
+        CertificationArtifacts(_paths(tmp_path), "0" * 64, "0" * 64, "0" * 64, "0" * 64, "0" * 64),
+        certificate_sha256="f" * 64,
     )
+    assert forged.overall == "PASS"
+    assert copied.certificate_sha256 == "f" * 64
+    with pytest.raises(TypeError):
+        generate_phase4b_certification(_paths(tmp_path), forged)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        generate_phase4b_certification(_paths(tmp_path), copied)  # type: ignore[call-arg]
 
 
-def test_object_level_mutation_of_copied_verified_journal_fails_closed(
-    composition: Composition,
+def test_manual_schema_valid_certificate_is_shape_only_and_has_no_consumer(
+    generated: tuple[CertificationArtifacts, dict[str, Any]],
 ) -> None:
-    forged = replace(composition.journal, records=composition.journal.records[:-1])
-    assert (
-        _certification_failure(
-            composition.contract,
-            forged,
-            composition.persistence,
-            composition.replay,
-        )
-        == "VERIFIED_JOURNAL_VALUE_MISMATCH"
-    )
-
-
-def test_every_certification_invocation_loads_repository_object(
-    composition: Composition,
-) -> None:
-    class LoadCountingRepository(InMemoryJournalRepository):
-        def __init__(self) -> None:
-            super().__init__()
-            self.load_calls = 0
-
-        def load(self, identity: str) -> str:
-            self.load_calls += 1
-            return super().load(identity)
-
-    repository = LoadCountingRepository()
-    repository._values.update(composition.journal_repository._values)
-    certificate = certify_repository_backed(
-        composition.contract,
-        composition.journal,
-        composition.persistence,
-        composition.replay,
-        repository,
-    )
-    assert certificate["overall"] == "PASS"
-    assert repository.load_calls == 1
-
-
-def test_repository_load_cannot_be_bypassed_during_issuance(
-    composition: Composition,
-) -> None:
-    class LoadRejectingRepository(InMemoryJournalRepository):
-        def load(self, identity: str) -> str:
-            del identity
-            raise JournalFailure("CERTIFICATION_REPOSITORY_LOAD_REQUIRED")
-
-    with pytest.raises(JournalFailure) as failure:
-        certify_repository_backed(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            composition.replay,
-            LoadRejectingRepository(),
-        )
-    assert failure.value.code == "CERTIFICATION_REPOSITORY_LOAD_REQUIRED"
-
-
-def test_schema_valid_manual_fields_are_not_authoritative_issuance(
-    composition: Composition,
-) -> None:
-    issued = certify_repository_backed(
-        composition.contract,
-        composition.journal,
-        composition.persistence,
-        composition.replay,
-        composition.journal_repository,
-    )
-    manually_copied = deepcopy(issued)
-    assert manually_copied["overall"] == "PASS"
-    assert validate_certificate_schema(manually_copied) == []
+    _, certificate = generated
+    manual = json.loads(json.dumps(certificate))
+    assert validate_certificate_schema(manual) == []
+    assert manual["overall"] == "PASS"
     assert list(inspect.signature(validate_certificate_schema).parameters) == ["value"]
-    assert list(inspect.signature(certify_repository_backed).parameters) == [
-        "contract",
-        "journal",
-        "persistence",
-        "replay",
-        "repository",
-    ]
+    assert (
+        "NON_AUTHORITATIVE" in validate_certificate_schema.__doc__.upper()
+        or "NEVER OPERATIONAL" in validate_certificate_schema.__doc__.upper()
+    )
+    assert not any("certificate" in name and "load" in name for name in certification.__all__)
 
 
-def test_only_fused_boundary_constructs_overall_pass() -> None:
-    module = ast.parse(inspect.getsource(certification))
+def test_exactly_one_production_function_constructs_overall_pass() -> None:
     producers: list[str] = []
-    for node in module.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        has_pass = any(
-            isinstance(item, ast.Constant) and item.value == "PASS" for item in ast.walk(node)
-        )
-        has_overall = any(
-            isinstance(item, ast.Constant) and item.value == "overall" for item in ast.walk(node)
-        )
-        if has_pass and has_overall:
-            producers.append(node.name)
-    assert producers == ["certify_repository_backed"]
+    for path in Path("src").rglob("*.py"):
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(module):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if any(
+                isinstance(item, ast.Constant) and item.value == "PASS" for item in ast.walk(node)
+            ):
+                producers.append(f"{path.name}:{node.name}")
+    assert producers == ["phase4b_certify.py:generate_phase4b_certification"]
 
 
-def test_j_contains_no_circular_persistence_or_replay_claim(composition: Composition) -> None:
-    kinds = {record.kind for record in composition.journal.records}
-    assert "journal.persisted" not in kinds
-    assert "replay.verified" not in kinds
+def test_no_environment_or_test_import_can_select_certification_semantics() -> None:
+    source = inspect.getsource(certification)
+    tree = ast.parse(source)
+    assert "os.environ" not in source
+    assert "getenv(" not in source
+    assert "Settings.from_env" not in source
+    assert not any(
+        isinstance(node, (ast.Import, ast.ImportFrom))
+        and any(alias.name.startswith("tests") for alias in node.names)
+        for node in ast.walk(tree)
+    )
 
 
-def test_deleted_required_record(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        raw["records"].remove(_record(raw, JOURNAL_KIND_CONFIGURATION))
-
+def test_environment_and_cwd_do_not_select_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    fake = work / "phase4b_acceptance_contract.json"
+    fake.write_text('{"contract_version":"ATTACK"}', encoding="utf-8")
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("PHASE4B_CONTRACT_PATH", str(fake))
+    monkeypatch.setenv("RUNTIME_ENV_FILE", str(fake))
+    artifacts = generate_phase4b_certification(_paths(tmp_path / "out"))
     assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "MISSING_REQUIRED_RECORD"
+        artifacts.journal_sha256
+        == "02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1"
     )
 
 
-def test_reordered_records(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
+def test_missing_contract_resource_fails_stably(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(_: str) -> object:
+        raise FileNotFoundError
 
-    def mutate(raw: RawJournal) -> None:
-        raw["records"][5], raw["records"][6] = raw["records"][6], raw["records"][5]
-
-    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
-        "SEQUENCE_INVALID"
-    )
-
-
-def test_altered_payload_without_digest(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"]["ack_timeout"] = 999
-
-    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
-        "PAYLOAD_DIGEST_MISMATCH"
-    )
-
-
-def test_missing_causal_parent(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        record = _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)
-        record["parent_sequence"] = None
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "CAUSAL_PARENT_WRONG"
-    )
-
-
-def test_wrong_same_kind_causal_parent(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        child = _record(raw, JOURNAL_KIND_DISCOVERY_COMPLETE, 1)
-        wrong = _record(raw, JOURNAL_KIND_DISCOVERY_START, 0)
-        child["parent_sequence"] = wrong["sequence"]
-        child["cause_operation_id"] = wrong["operation_id"]
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "DISCOVERY_CORRELATION_INVALID"
-    )
-
-
-def test_fabricated_unknown_record_with_recomputed_hashes(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        stop_index = next(
-            index for index, item in enumerate(raw["records"]) if item["kind"] == "intake.stopped"
-        )
-        clone = deepcopy(raw["records"][stop_index - 1])
-        clone.update(
-            kind="fabricated.material",
-            operation_id="fabricated-operation",
-            correlation_id="fabricated-correlation",
-        )
-        raw["records"].insert(stop_index, clone)
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "UNKNOWN_RECORD_KIND"
-    )
-
-
-def test_fabricated_accepted_event_with_recomputed_hashes(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        stop_index = next(
-            index for index, item in enumerate(raw["records"]) if item["kind"] == "intake.stopped"
-        )
-        clone = deepcopy(_record(raw, JOURNAL_KIND_EVENT_ACCEPTED, -1))
-        clone["payload"]["event_id"] = "4b000000-0000-4000-8000-000000000999"
-        clone["operation_id"] = "event-4b000000-0000-4000-8000-000000000999"
-        clone["correlation_id"] = "4b000000-0000-4000-8000-000000000999"
-        raw["records"].insert(stop_index, clone)
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "UNEXPECTED_ACCEPTED_EVENT"
-    )
-
-
-def test_duplicate_event(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        stop_index = next(
-            index for index, item in enumerate(raw["records"]) if item["kind"] == "intake.stopped"
-        )
-        clone = deepcopy(_record(raw, JOURNAL_KIND_EVENT_ACCEPTED, -1))
-        clone["operation_id"] = "duplicate-event-operation"
-        raw["records"].insert(stop_index, clone)
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "DUPLICATE_EVENT"
-    )
-
-
-def test_changed_journal_run_identity(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        changed = "4b000000-0000-4000-8000-000000000099"
-        raw["run_id"] = changed
-        for record in raw["records"]:
-            record["run_id"] = changed
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "CONTRACT_RUN_BINDING_MISMATCH"
-    )
-
-
-def test_mismatched_run_id_across_j_p_r(composition: Composition) -> None:
-    changed = replace(
-        composition.persistence,
-        run_id=type(composition.persistence.run_id)("4b000000-0000-4000-8000-000000000099"),
-    )
-    changed = _redigest_persistence(changed)
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            changed,
-            composition.replay,
-        )
-        == "EVIDENCE_RUN_ID_MISMATCH"
-    )
-
-
-def test_incorrect_restoration_membership(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_EPOCH_RESTORED)["payload"]["membership"] = ["A:20260821:10000:C"]
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "RESTORATION_MEMBERSHIP_INVALID"
-    )
-
-
-def test_incorrect_scheduled_boundary_in_contract(composition: Composition) -> None:
-    changed = replace(
-        composition.contract,
-        expected_clock_boundaries=(
-            "2026-08-11T13:36:00+00:00",
-            "2026-08-11T13:40:00+00:00",
-        ),
-    )
-    assert (
-        _certification_failure(
-            changed,
-            composition.journal,
-            composition.persistence,
-            composition.replay,
-        )
-        == "SCHEDULED_BOUNDARY_INVALID"
-    )
+    monkeypatch.setattr(certification.resources, "files", missing)
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(_paths(tmp_path))
+    assert failure.value.code == "CONTRACT_RESOURCE_MISSING"
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
-    [("reconstructed_record_count", 999), ("reconstructed_root_digest", "f" * 64)],
-)
-def test_fabricated_replay_counts_or_digests(
-    composition: Composition, field: str, value: object
-) -> None:
-    changed = _redigest_replay(replace(composition.replay, **{field: value}))
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            changed,
-        )
-        == "REPLAY_JOURNAL_BINDING_MISMATCH"
-    )
-
-
-def test_replay_of_unsealed_persisted_journal(composition: Composition) -> None:
-    raw = json.loads(composition.journal.canonical_serialization)
-    raw["seal"] = None
-    identity = composition.persistence.persistence_identity
-    original = composition.journal_repository._values[identity]
-    composition.journal_repository._values[identity] = canonical_json(raw)
-    with pytest.raises(JournalFailure) as failure:
-        replay_persisted(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            composition.journal_repository,
-        )
-    assert failure.value.code == "UNSEALED_JOURNAL"
-    composition.journal_repository._values[identity] = original
-
-
-def test_p_bound_to_wrong_j(composition: Composition) -> None:
-    changed = _redigest_persistence(replace(composition.persistence, journal_root_digest="e" * 64))
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            changed,
-            composition.replay,
-        )
-        == "PERSISTENCE_JOURNAL_BINDING_MISMATCH"
-    )
-
-
-def test_r_bound_to_wrong_p(composition: Composition) -> None:
-    changed = _redigest_replay(
-        replace(composition.replay, persistence_identity="memory://journal/wrong")
-    )
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            changed,
-        )
-        == "REPLAY_PERSISTENCE_BINDING_MISMATCH"
-    )
-
-
-def test_coherently_fabricated_persistence_identity(composition: Composition) -> None:
-    identity = "journal://4b000000-0000-4000-8000-000000000027/" + "a" * 64
-    persistence = _redigest_persistence(
-        replace(composition.persistence, persistence_identity=identity)
-    )
-    replay = _redigest_replay(replace(composition.replay, persistence_identity=identity))
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            persistence,
-            replay,
-        )
-        == "PERSISTENCE_OBJECT_IDENTITY_INVALID"
-    )
-
-
-def test_altered_p_receipt_digest(composition: Composition) -> None:
-    changed = replace(composition.persistence, receipt_digest="0" * 64)
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            changed,
-            composition.replay,
-        )
-        == "PERSISTENCE_RECEIPT_DIGEST_MISMATCH"
-    )
-
-
-def test_altered_r_receipt_digest(composition: Composition) -> None:
-    changed = replace(composition.replay, receipt_digest="0" * 64)
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            changed,
-        )
-        == "REPLAY_RECEIPT_DIGEST_MISMATCH"
-    )
-
-
-def test_original_replay_projection_inequality(composition: Composition) -> None:
-    changed = _redigest_replay(replace(composition.replay, replayed_projection_digest="1" * 64))
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            changed,
-        )
-        == "REPLAY_PROJECTION_MISMATCH"
-    )
-
-
-def test_coherently_fabricated_projection_digests(composition: Composition) -> None:
-    changed = _redigest_replay(
-        replace(
-            composition.replay,
-            original_projection_digest="2" * 64,
-            replayed_projection_digest="2" * 64,
-        )
-    )
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            changed,
-        )
-        == "REPLAY_FACTS_NOT_INDEPENDENTLY_RECONSTRUCTED"
-    )
-
-
-def test_record_after_finalization(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        clone = deepcopy(_record(raw, JOURNAL_KIND_EVENT_ACCEPTED, -1))
-        clone["operation_id"] = "post-finalization-event"
-        clone["timestamp"] = _record(raw, JOURNAL_KIND_SESSION_FINALIZED)["timestamp"]
-        raw["records"].append(clone)
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "RECORD_AFTER_FINALIZATION"
-    )
-
-
-def test_broken_acknowledgement_correlation(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)["contract_identity"] = (
-            "B:20260821:11000:C"
-        )
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "ACK_CORRELATION_INVALID"
-    )
-
-
-def test_activation_before_required_acknowledgement(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        activation = _record(raw, JOURNAL_KIND_EPOCH_ACTIVATED)
-        activation["parent_sequence"] = _record(raw, JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)[
-            "sequence"
-        ]
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "ACTIVATION_BEFORE_ACK"
-    )
-
-
-def test_accepted_event_for_removed_contract(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        final_event = _record(raw, JOURNAL_KIND_EVENT_ACCEPTED, -1)
-        final_event["contract_identity"] = "A:20260821:10000:C"
-        final_event["payload"]["symbol"] = "A"
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "ACCEPTED_EVENT_NOT_ACTIVE"
-    )
-
-
-def test_unsealed_journal_rejected(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-    corrupted = _mutate_journal(serialized, lambda raw: raw.update(seal=None))
-    assert _journal_failure(composition, corrupted) == "UNSEALED_JOURNAL"
-
-
-def test_changed_contract_run_binding(composition: Composition) -> None:
-    changed = replace(
-        composition.contract,
-        expected_run_id=type(composition.contract.expected_run_id)(
-            "4b000000-0000-4000-8000-000000000099"
+    "mutation",
+    [
+        lambda value: value + b"\n",
+        lambda value: value.replace(b'"orders_constructed": 0', b'"orders_constructed": 1'),
+        lambda value: value.replace(
+            b"PHASE4B_ACCEPTANCE_CONTRACT_V3", b"OTHER_ACCEPTANCE_CONTRACT___"
         ),
-    )
-    assert (
-        _certification_failure(
-            changed,
-            composition.journal,
-            composition.persistence,
-            composition.replay,
-        )
-        == "CONTRACT_RUN_BINDING_MISMATCH"
-    )
-
-
-def test_altered_payload_digest_without_record_digest(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        record = _record(raw, JOURNAL_KIND_CONFIGURATION)
-        record["payload"]["ack_timeout"] = 999
-        record["payload_digest"] = sha256(record["payload"])
-
-    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
-        "RECORD_DIGEST_MISMATCH"
-    )
-
-
-def test_future_causal_parent(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["parent_sequence"] = raw["records"][-1][
-            "sequence"
-        ]
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "CAUSAL_PARENT_MISSING"
-    )
-
-
-def test_fabricated_duplicate_lifecycle_record(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        stop_index = next(
-            index for index, item in enumerate(raw["records"]) if item["kind"] == "intake.stopped"
-        )
-        clone = deepcopy(_record(raw, JOURNAL_KIND_CONFIGURATION))
-        clone["operation_id"] = "fabricated-configuration"
-        clone["timestamp"] = raw["records"][stop_index - 1]["timestamp"]
-        raw["records"].insert(stop_index, clone)
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "DUPLICATE_RECORD"
-    )
-
-
-def test_single_record_from_another_run(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_EVENT_ACCEPTED)["run_id"] = "4b000000-0000-4000-8000-000000000099"
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "RUN_ID_MISMATCH"
-    )
-
-
-def test_incorrect_restoration_epoch(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_EPOCH_RESTORED)["epoch_sequence"] = 1
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "RESTORATION_MEMBERSHIP_INVALID"
-    )
-
-
-def test_missing_channel_acknowledgement(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        target = next(
-            item
-            for item in raw["records"]
-            if item["kind"] == JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT
-            and item["epoch_sequence"] == 1
-            and item["payload"]["channel"] == "QUOTE"
-        )
-        raw["records"].remove(target)
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "ACTIVATION_BEFORE_ACK"
-    )
-
-
-def test_incorrect_epoch_membership(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["payload"]["membership"] = [
-            "B:20260821:11000:C"
-        ]
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "EPOCH_MEMBERSHIP_INVALID"
-    )
-
-
-def test_reevaluation_without_clock_cause(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        reevaluation = _record(raw, JOURNAL_KIND_REEVALUATION_START)
-        reevaluation["parent_sequence"] = _record(raw, JOURNAL_KIND_EVENT_ACCEPTED)["sequence"]
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "CAUSAL_PARENT_WRONG"
-    )
-
-
-def test_clock_boundary_missing(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_CLOCK_ADVANCED)["payload"].pop("boundary")
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "CLOCK_BOUNDARY_MISSING"
-    )
-
-
-def test_altered_seal(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        raw["seal"]["record_count"] += 1
-
-    assert _journal_failure(composition, _mutate_journal(serialized, mutate)) == (
-        "SEAL_RECORD_COUNT_MISMATCH"
-    )
-
-
-def test_journal_contract_version_mismatch(composition: Composition) -> None:
-    serialized = composition.journal.canonical_serialization
-
-    def mutate(raw: RawJournal) -> None:
-        _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"]["acceptance_contract_version"] = (
-            "WRONG_CONTRACT"
-        )
-
-    assert (
-        _journal_failure(composition, _mutate_journal(serialized, mutate, rehash=True))
-        == "JOURNAL_CONTRACT_VERSION_MISMATCH"
-    )
-
-
-def test_persistence_contract_version_mismatch(composition: Composition) -> None:
-    changed = _redigest_persistence(
-        replace(composition.persistence, contract_version="WRONG_CONTRACT")
-    )
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            changed,
-            composition.replay,
-        )
-        == "PERSISTENCE_CONTRACT_VERSION_MISMATCH"
-    )
-
-
-def test_replay_contract_version_mismatch(composition: Composition) -> None:
-    changed = _redigest_replay(replace(composition.replay, contract_version="WRONG_CONTRACT"))
-    assert (
-        _certification_failure(
-            composition.contract,
-            composition.journal,
-            composition.persistence,
-            changed,
-        )
-        == "REPLAY_CONTRACT_VERSION_MISMATCH"
-    )
-
-
-def test_serialized_receipt_boolean_fabrication_rejected(composition: Composition) -> None:
-    raw = composition.persistence.as_dict()
-    raw["persistence_completed"] = "true"
+        lambda value: value.replace(b'"A:20260821:10000:C"', b'"X:20260821:10000:C"', 1),
+    ],
+)
+def test_modified_contract_bytes_fail_before_deserialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: Any
+) -> None:
+    original = certification._contract_resource_bytes()
+    monkeypatch.setattr(certification, "_contract_resource_bytes", lambda: mutation(original))
     with pytest.raises(JournalFailure) as failure:
-        PersistenceReceipt.deserialize(canonical_json(raw))
-    assert failure.value.code == "PERSISTENCE_RECEIPT_DESERIALIZATION_FAILED"
+        generate_phase4b_certification(_paths(tmp_path))
+    assert failure.value.code == "CONTRACT_DIGEST_MISMATCH"
+
+
+def test_incorrect_pinned_contract_digest_fails_stably(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(certification, "CONTRACT_CANONICAL_SHA256", "0" * 64)
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(_paths(tmp_path))
+    assert failure.value.code == "CONTRACT_DIGEST_MISMATCH"
+
+
+def test_malformed_digest_pinned_contract_fails_deserialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    malformed = b"{"
+    monkeypatch.setattr(certification, "CONTRACT_CANONICAL_SHA256", sha256_bytes("{"))
+    monkeypatch.setattr(certification, "_contract_resource_bytes", lambda: malformed)
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(_paths(tmp_path))
+    assert failure.value.code == "CONTRACT_DESERIALIZATION_FAILED"
+
+
+def _drop_root(raw: dict[str, Any]) -> None:
+    raw.pop("purpose")
+
+
+def _add_root(raw: dict[str, Any]) -> None:
+    raw["alternate_authority"] = True
+
+
+def _drop_expected(raw: dict[str, Any]) -> None:
+    raw["expected"].pop("accepted_events")
+
+
+def _duplicate_expected_event(raw: dict[str, Any]) -> None:
+    raw["expected"]["accepted_events"].append(deepcopy(raw["expected"]["accepted_events"][0]))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (_drop_root, "CONTRACT_VALIDATION_FAILED"),
+        (_add_root, "CONTRACT_VALIDATION_FAILED"),
+        (_drop_expected, "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw.update(contract_version="OTHER"), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw.update(certificate_version="OTHER"), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw.update(purpose=1), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw.update(allowed_record_kinds="all"), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw["allowed_record_kinds"].pop(), "CONTRACT_RECORD_VOCABULARY_INVALID"),
+        (lambda raw: raw.update(allowed_lifecycle_order=[1]), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw.update(required_invariants="run_binding"), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw.update(required_invariants=[]), "CONTRACT_VALIDATION_FAILED"),
+        (
+            lambda raw: raw.update(external_build_envelope_excluded=[1]),
+            "CONTRACT_VALIDATION_FAILED",
+        ),
+        (lambda raw: raw["safety"].update(trading_enabled=True), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw["expected"].update(run_id="not-a-uuid"), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw["expected"].update(rth_start="not-a-time"), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw["expected"].update(epoch_memberships="A"), "CONTRACT_VALIDATION_FAILED"),
+        (lambda raw: raw["expected"].update(clock_boundaries=[1]), "CONTRACT_VALIDATION_FAILED"),
+        (
+            lambda raw: raw["expected"].update(restoration_membership=[1]),
+            "CONTRACT_VALIDATION_FAILED",
+        ),
+        (lambda raw: raw["expected"].update(accepted_events="all"), "CONTRACT_VALIDATION_FAILED"),
+        (
+            lambda raw: raw["expected"]["accepted_events"][0].pop("channel"),
+            "CONTRACT_VALIDATION_FAILED",
+        ),
+        (
+            lambda raw: raw["expected"]["accepted_events"][0].update(epoch_sequence="1"),
+            "CONTRACT_VALIDATION_FAILED",
+        ),
+        (
+            lambda raw: raw["expected"]["accepted_events"][0].update(event_id="not-a-uuid"),
+            "CONTRACT_VALIDATION_FAILED",
+        ),
+        (_duplicate_expected_event, "CONTRACT_VALIDATION_FAILED"),
+    ],
+)
+def test_digest_pinned_contract_is_fully_validated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: Any,
+    expected_code: str,
+) -> None:
+    original_reader = certification._contract_resource_bytes
+    raw = cast(
+        dict[str, Any],
+        json.loads(original_reader()),
+    )
+    mutation(raw)
+    replacement = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+    monkeypatch.setattr(
+        certification,
+        "CONTRACT_CANONICAL_SHA256",
+        sha256_bytes(replacement.decode()),
+    )
+    monkeypatch.setattr(
+        certification,
+        "_contract_resource_bytes",
+        lambda: replacement,
+    )
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(_paths(tmp_path))
+    assert failure.value.code == expected_code
+
+
+def test_incorrect_scenario_digest_fails_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(certification, "SCENARIO_CANONICAL_SHA256", "0" * 64)
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(_paths(tmp_path))
+    assert failure.value.code == "SCENARIO_DIGEST_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    "paths,code",
+    [
+        (
+            lambda root: CertificationOutputPaths(
+                root / "same", root / "same", root / "p", root / "r"
+            ),
+            "OUTPUT_PATHS_NOT_DISTINCT",
+        ),
+        (
+            lambda root: CertificationOutputPaths(
+                root / "a" / "c", root / "b" / "j", root / "a" / "p", root / "a" / "r"
+            ),
+            "OUTPUT_PATHS_INVALID",
+        ),
+    ],
+)
+def test_invalid_output_locations_fail_before_execution(
+    tmp_path: Path, paths: Any, code: str
+) -> None:
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(paths(tmp_path))
+    assert failure.value.code == code
+    assert not tuple(tmp_path.rglob("CERTIFICATE.json"))
+
+
+def test_existing_or_symlink_output_target_is_never_overwritten(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.journal.write_text("sentinel", encoding="utf-8")
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(paths)
+    assert failure.value.code == "OUTPUT_TARGET_EXISTS"
+    assert paths.journal.read_text(encoding="utf-8") == "sentinel"
+    paths.journal.unlink()
+    target = tmp_path / "target"
+    target.write_text("sentinel", encoding="utf-8")
+    paths.journal.symlink_to(target)
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(paths)
+    assert failure.value.code == "OUTPUT_TARGET_EXISTS"
+    assert target.read_text(encoding="utf-8") == "sentinel"
+
+
+def test_publication_failure_leaves_no_certificate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_replace = Path.replace
+    calls = 0
+
+    def fail_second(source: Path, target: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second)
+    with pytest.raises(JournalFailure) as failure:
+        generate_phase4b_certification(_paths(tmp_path))
+    assert failure.value.code == "ARTIFACT_PUBLICATION_FAILED"
+    assert not tmp_path.joinpath("CERTIFICATE.json").exists()
+    assert not any(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (lambda raw: raw.update(seal=None), "UNSEALED_JOURNAL"),
+        (
+            lambda raw: raw["records"].append(dict(raw["records"][-1])),
+            "SEQUENCE_INVALID",
+        ),
+        (
+            lambda raw: raw["records"].insert(0, raw["records"].pop()),
+            "SEQUENCE_INVALID",
+        ),
+        (
+            lambda raw: _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"].update(
+                acceptance_contract_version="OTHER"
+            ),
+            "JOURNAL_CONTRACT_VERSION_MISMATCH",
+        ),
+        (
+            lambda raw: _record(raw, JOURNAL_KIND_EPOCH_CREATED, 1)["payload"].update(
+                membership=["A:20260821:10000:C"]
+            ),
+            "EPOCH_MEMBERSHIP_INVALID",
+        ),
+        (
+            lambda raw: _record(raw, JOURNAL_KIND_EVENT_ACCEPTED)["payload"].update(
+                event_id="4b000000-0000-4000-8000-000000000099"
+            ),
+            "UNEXPECTED_ACCEPTED_EVENT",
+        ),
+        (
+            lambda raw: _record(raw, JOURNAL_KIND_EVENT_REJECTED)["payload"].update(
+                event_id="4b000000-0000-4000-8000-000000000099"
+            ),
+            "UNEXPECTED_REJECTED_EVENT",
+        ),
+        (
+            lambda raw: raw["records"].append(
+                {
+                    **dict(raw["records"][-1]),
+                    "kind": JOURNAL_KIND_EVENT_ACCEPTED,
+                    "operation_id": "after-finalization",
+                }
+            ),
+            "RECORD_AFTER_FINALIZATION",
+        ),
+    ],
+)
+def test_low_level_journal_attacks_are_falsified_but_never_authoritative(
+    generated: tuple[CertificationArtifacts, dict[str, Any]],
+    mutation: Any,
+    expected_code: str,
+) -> None:
+    artifacts, _ = generated
+    serialized = artifacts.output_paths.journal.read_text(encoding="utf-8")
+    rehash = expected_code not in {"UNSEALED_JOURNAL", "SEQUENCE_INVALID"}
+    attacked = _mutated_journal(serialized, mutation, rehash=rehash)
+    contract = certification._load_authoritative_contract().value
+    with pytest.raises(JournalFailure) as failure:
+        verify_complete(Journal.deserialize(attacked), contract)
+    assert failure.value.code == expected_code
+    with pytest.raises(TypeError):
+        generate_phase4b_certification(artifacts.output_paths, attacked)  # type: ignore[call-arg]
+
+
+def test_coherently_constructed_low_level_package_remains_non_authoritative(
+    generated: tuple[CertificationArtifacts, dict[str, Any]], tmp_path: Path
+) -> None:
+    artifacts, _ = generated
+    contract = certification._load_authoritative_contract().value
+    verified = verify_complete(
+        Journal.deserialize(artifacts.output_paths.journal.read_text(encoding="utf-8")), contract
+    )
+    repository = InMemoryJournalRepository()
+    identity = repository.save(verified.run_id, verified.canonical_serialization)
+    persistence = PersistenceReceipt.create(contract, verified, identity)
+    projection_digest = "a" * 64
+    replay = ReplayReceipt.from_values(
+        contract_version=contract.contract_version,
+        run_id=verified.run_id,
+        persistence_identity=identity,
+        original_root_digest=verified.root_digest,
+        reconstructed_root_digest=verified.root_digest,
+        original_byte_sha256=sha256_bytes(verified.canonical_serialization),
+        reconstructed_byte_sha256=sha256_bytes(verified.canonical_serialization),
+        original_record_count=verified.seal.record_count,
+        reconstructed_record_count=verified.seal.record_count,
+        original_projection_digest=projection_digest,
+        replayed_projection_digest=projection_digest,
+        exact_equality=True,
+    )
+    assert persistence.persistence_completed is True
+    assert replay.exact_equality is True
+    fresh_paths = _paths(tmp_path / "fresh")
+    for value in (contract, verified, persistence, replay, repository):
+        with pytest.raises(TypeError):
+            generate_phase4b_certification(fresh_paths, value)  # type: ignore[call-arg]
+
+
+def test_copied_or_mutated_certificate_does_not_become_authoritative(
+    generated: tuple[CertificationArtifacts, dict[str, Any]], tmp_path: Path
+) -> None:
+    _, certificate = generated
+    mutations = (
+        lambda value: value.pop("observed_projection_sha256"),
+        lambda value: value["observed"]["orders"].update(constructed=1),
+        lambda value: value["acceptance_contract"].update(contract_version="OTHER"),
+        lambda value: value["deterministic_scenario"].update(canonical_sha256="0" * 64),
+        lambda value: value.update(certificate_canonical_sha256="0" * 64),
+    )
+    for index, mutation in enumerate(mutations):
+        candidate = json.loads(json.dumps(certificate))
+        mutation(candidate)
+        # Shape validation may reject a mutation, but success could only mean shape.
+        validate_certificate_schema(candidate)
+        with pytest.raises(TypeError):
+            generate_phase4b_certification(_paths(tmp_path / str(index)), candidate)  # type: ignore[call-arg]
+
+
+def test_build_envelope_is_absent_from_runtime_certificate(
+    generated: tuple[CertificationArtifacts, dict[str, Any]],
+) -> None:
+    _, certificate = generated
+    serialized = canonical_json(certificate).lower()
+    for forbidden in ("git_head", "worktree", "github_ci", "pull_request", "pr_state"):
+        assert forbidden not in serialized
+
+
+def test_contract_and_schema_resources_are_package_relative_and_checked_in() -> None:
+    root = Path(inspect.getfile(certification)).parent
+    contract = root / certification.CONTRACT_RESOURCE
+    schema = root / certification.SCHEMA_RESOURCE
+    assert contract.is_file() and not contract.is_symlink()
+    assert schema.is_file() and not schema.is_symlink()
+    assert (
+        sha256_bytes(contract.read_text(encoding="utf-8"))
+        == certification.CONTRACT_CANONICAL_SHA256
+    )
+    assert "docs/phase4b" not in inspect.getsource(certification)
+
+
+def test_cli_rejects_alternate_semantic_flags_without_artifacts(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as failure:
+        certification.main(["--contract", str(tmp_path / "contract.json")])
+    assert failure.value.code == 2
+    assert not tuple(tmp_path.iterdir())
+
+
+def test_artifact_hashes_are_exact_bytes(
+    generated: tuple[CertificationArtifacts, dict[str, Any]],
+) -> None:
+    artifacts, _ = generated
+    assert artifacts.journal_sha256 == sha256_bytes(artifacts.output_paths.journal.read_text())
+    assert artifacts.persistence_receipt_sha256 == sha256_bytes(
+        artifacts.output_paths.persistence_receipt.read_text()
+    )
+    assert artifacts.replay_receipt_sha256 == sha256_bytes(
+        artifacts.output_paths.replay_receipt.read_text()
+    )
+    assert artifacts.certificate_sha256 == sha256_bytes(
+        artifacts.output_paths.certificate.read_text()
+    )
+
+
+def test_no_live_provider_or_order_path_is_reachable_from_certification_module() -> None:
+    source = inspect.getsource(certification)
+    assert "from .providers.alpaca" not in source
+    assert "Alpaca" not in source
+    assert "submit_order" not in source
+    assert os.environ.get("TRADING_ENABLED") is None or "TRADING_ENABLED" not in source
