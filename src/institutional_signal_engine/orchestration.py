@@ -52,21 +52,16 @@ from .journal import (
     JOURNAL_KIND_EVENT_ACCEPTED,
     JOURNAL_KIND_EVENT_REJECTED,
     JOURNAL_KIND_INTAKE_STOPPED,
-    JOURNAL_KIND_JOURNAL_PERSISTED,
     JOURNAL_KIND_PERSISTENCE_DRAINED,
     JOURNAL_KIND_PROVIDER_DISCONNECTED,
     JOURNAL_KIND_PROVIDER_READY,
     JOURNAL_KIND_PROVIDER_RECONNECTED,
     JOURNAL_KIND_REEVALUATION_START,
-    JOURNAL_KIND_REPLAY_VERIFIED,
     JOURNAL_KIND_SESSION_FINALIZED,
     JOURNAL_KIND_SESSION_START,
     JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
     JOURNAL_KIND_SUBSCRIPTION_COMMAND,
-    FileJournalRepository,
     Journal,
-    JournalRepository,
-    sha256,
 )
 from .persistence import InMemoryRepository
 from .persistence_async import AsyncAuditWriter
@@ -256,6 +251,7 @@ class OrchestrationConfig:
     control_model_version: str = "CONTROL_V1"
     shadow_model_version: str = "SHADOW_IMPACT_V1"
     coverage_version: str = PILOT_COVERAGE_POPULATION_VERSION
+    acceptance_contract_version: str = "PRODUCTION_INVOCATION_CONTRACT_UNSET"
 
     @classmethod
     def from_settings(cls, settings: Settings, run_id: UUID | None = None) -> OrchestrationConfig:
@@ -460,7 +456,7 @@ class OrchestrationShell:
        c. Disconnect detection → reconnect → idempotent restoration
     7. Intake stop at configured boundary
     8. Persistence drain → finalization
-    9. Post-session replay and evidence
+    9. Terminal journal seal; P/R evidence follows outside J
 
     The shell accepts deterministic ports for testing. The same composition
     root is used by the production command and by hermetic tests.
@@ -482,7 +478,6 @@ class OrchestrationShell:
         stage_callback: StageCallback | None = None,
         journal: Journal | None = None,
         session_driver: SessionDriverPort | None = None,
-        journal_repository: JournalRepository | None = None,
     ) -> None:
         self.config = config
         self.settings = settings
@@ -501,8 +496,6 @@ class OrchestrationShell:
         self._stage_callback = stage_callback
         self._journal = journal or Journal(config.run_id, clock=self._clock)
         self._session_driver = session_driver
-        self._journal_repository = journal_repository or FileJournalRepository()
-        self._journal_identity: str | None = None
 
         # Mutable session state
         self._active_epoch: PlannerEpoch | None = None
@@ -634,6 +627,8 @@ class OrchestrationShell:
                 JOURNAL_KIND_EPOCH_ACTIVATED,
                 timestamp=self._clock(),
                 parent_sequence=self._journal.sequence - 1,
+                operation_id=f"epoch-e{epoch1.sequence}-activated",
+                correlation_id=f"epoch-e{epoch1.sequence}",
                 epoch_sequence=epoch1.sequence,
                 epoch_id=epoch1.epoch_id,
                 content_hash=epoch1.content_hash,
@@ -656,13 +651,9 @@ class OrchestrationShell:
             # 9. Finalization
             await self._finalize()
 
-            # 10. Persist, reconstruct, and verify the causal journal through its boundary.
-            replay_equal = self._persist_and_verify_journal()
-
-            # The terminal replay record is now present; seal and persist the canonical value.
+            # 10. Seal J with finalization as its terminal action. Persistence and
+            # replay are subsequent evidence-bundle operations and cannot append to J.
             self._journal.seal()
-            assert self._journal_identity is not None
-            self._journal_repository.save(self.config.run_id, self._journal.serialize())
 
             return SessionResult(
                 run_id=self.config.run_id,
@@ -673,7 +664,7 @@ class OrchestrationShell:
                 trading_enabled=False,
                 orders_constructed=0,
                 orders_submitted=0,
-                replay_equal=replay_equal,
+                replay_equal=False,
                 diagnostics=self._build_diagnostics(),
             )
         except Exception as exc:
@@ -701,6 +692,8 @@ class OrchestrationShell:
         self._journal.append(
             JOURNAL_KIND_SESSION_START,
             timestamp=now,
+            operation_id="session-start",
+            correlation_id="session-lifecycle",
             session_date=self.config.session_date,
             rth_start=self.config.rth_start.isoformat(),
             rth_stop=self.config.rth_stop.isoformat(),
@@ -709,13 +702,18 @@ class OrchestrationShell:
             orders_constructed=0,
             orders_submitted=0,
             scenario_version=self.config.scenario_version,
+            acceptance_contract_version=self.config.acceptance_contract_version,
         )
         self._journal.append(
             JOURNAL_KIND_CONFIGURATION,
             timestamp=now,
             parent_sequence=0,
+            operation_id="configuration-load",
+            correlation_id="session-lifecycle",
             reevaluation_interval_seconds=self.config.reevaluation_interval.total_seconds(),
             ack_timeout=self.config.ack_timeout,
+            rth_start=self.config.rth_start.isoformat(),
+            rth_stop=self.config.rth_stop.isoformat(),
             intake_stop=self.config.intake_stop.isoformat(),
             trading_enabled=False,
             orders_constructed=0,
@@ -724,6 +722,7 @@ class OrchestrationShell:
             control_model_version=self.config.control_model_version,
             shadow_model_version=self.config.shadow_model_version,
             coverage_version=self.config.coverage_version,
+            acceptance_contract_version=self.config.acceptance_contract_version,
         )
         self._recorder.emit("configuration_loaded")
         self._recorder.emit("pre_open_initialization_complete")
@@ -740,6 +739,8 @@ class OrchestrationShell:
             JOURNAL_KIND_PROVIDER_READY,
             timestamp=self._clock(),
             parent_sequence=self._journal.sequence - 1,
+            operation_id="provider-ready",
+            correlation_id="session-lifecycle",
             adapter_connected=(
                 self._subscription_adapter.connected
                 if self._subscription_adapter is not None
@@ -760,6 +761,9 @@ class OrchestrationShell:
             JOURNAL_KIND_DISCOVERY_START,
             timestamp=symbolic_now,
             parent_sequence=parent_seq,
+            operation_id="discovery-e1-start",
+            correlation_id="discovery-e1",
+            epoch_sequence=1,
             symbols=list(PILOT_SYMBOLS),
         )
         self._recorder.emit("universe_discovery_started")
@@ -769,6 +773,9 @@ class OrchestrationShell:
             JOURNAL_KIND_DISCOVERY_COMPLETE,
             timestamp=self._clock(),
             parent_sequence=parent_seq + 1,
+            operation_id="discovery-e1-complete",
+            correlation_id="discovery-e1",
+            epoch_sequence=1,
             completed_items=len(discovered),
             remaining_items=0,
         ).sequence
@@ -782,6 +789,9 @@ class OrchestrationShell:
             JOURNAL_KIND_ENRICHMENT_START,
             timestamp=self._clock(),
             parent_sequence=disc_seq,
+            operation_id="enrichment-e1-start",
+            correlation_id="enrichment-e1",
+            epoch_sequence=1,
             symbol_count=len(discovered),
         )
         self._recorder.emit("enrichment_started")
@@ -790,6 +800,9 @@ class OrchestrationShell:
             JOURNAL_KIND_ENRICHMENT_COMPLETE,
             timestamp=self._clock(),
             parent_sequence=disc_seq + 1,
+            operation_id="enrichment-e1-complete",
+            correlation_id="enrichment-e1",
+            epoch_sequence=1,
             completed_items=len(selections),
             remaining_items=0,
         ).sequence
@@ -817,6 +830,8 @@ class OrchestrationShell:
                 JOURNAL_KIND_EPOCH_CREATED,
                 timestamp=self._clock(),
                 parent_sequence=enrich_seq,
+                operation_id="epoch-e1-created",
+                correlation_id="epoch-e1",
                 epoch_sequence=1,
                 contract_count=0,
                 lifecycle="empty",
@@ -826,6 +841,8 @@ class OrchestrationShell:
             JOURNAL_KIND_EPOCH_CREATED,
             timestamp=self._clock(),
             parent_sequence=enrich_seq,
+            operation_id=f"epoch-e{epoch.sequence}-created",
+            correlation_id=f"epoch-e{epoch.sequence}",
             epoch_sequence=epoch.sequence,
             epoch_id=epoch.epoch_id,
             content_hash=epoch.content_hash,
@@ -867,6 +884,8 @@ class OrchestrationShell:
                 JOURNAL_KIND_SUBSCRIPTION_COMMAND,
                 timestamp=self._clock(),
                 parent_sequence=epoch_created.sequence,
+                operation_id=command_id,
+                correlation_id=command_id,
                 epoch_sequence=epoch.sequence,
                 epoch_id=epoch.epoch_id,
                 contract_identity=contract_identity(contract),
@@ -880,6 +899,8 @@ class OrchestrationShell:
                 JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
                 timestamp=self._clock(),
                 parent_sequence=command.sequence,
+                operation_id=f"ack-{request_id}",
+                correlation_id=command_id,
                 epoch_sequence=epoch.sequence,
                 epoch_id=epoch.epoch_id,
                 contract_identity=contract_identity(contract),
@@ -927,6 +948,8 @@ class OrchestrationShell:
                     JOURNAL_KIND_CLOCK_ADVANCED,
                     timestamp=signal.timestamp,
                     parent_sequence=self._active_epoch_record_sequence,
+                    operation_id=f"clock-{signal.timestamp.isoformat()}",
+                    correlation_id=f"boundary-{signal.timestamp.isoformat()}",
                     epoch_sequence=(self._active_epoch.sequence if self._active_epoch else None),
                     epoch_id=(self._active_epoch.epoch_id if self._active_epoch else None),
                     boundary=signal.timestamp.isoformat(),
@@ -966,6 +989,8 @@ class OrchestrationShell:
                 JOURNAL_KIND_EVENT_REJECTED,
                 timestamp=now,
                 parent_sequence=self._active_epoch_record_sequence,
+                operation_id=f"event-{event_id}",
+                correlation_id=event_id,
                 epoch_sequence=self._active_epoch.sequence,
                 epoch_id=self._active_epoch.epoch_id,
                 contract_identity=identity,
@@ -982,6 +1007,8 @@ class OrchestrationShell:
             JOURNAL_KIND_EVENT_ACCEPTED,
             timestamp=now,
             parent_sequence=self._active_epoch_record_sequence,
+            operation_id=f"event-{event_id}",
+            correlation_id=event_id,
             epoch_sequence=self._active_epoch.sequence,
             epoch_id=self._active_epoch.epoch_id,
             contract_identity=identity,
@@ -1001,6 +1028,8 @@ class OrchestrationShell:
             JOURNAL_KIND_REEVALUATION_START,
             timestamp=now,
             parent_sequence=clock_sequence,
+            operation_id=f"reevaluation-{now.isoformat()}",
+            correlation_id=f"boundary-{now.isoformat()}",
             epoch_sequence=self._active_epoch.sequence,
             epoch_id=self._active_epoch.epoch_id,
             boundary=now.isoformat(),
@@ -1014,6 +1043,8 @@ class OrchestrationShell:
             JOURNAL_KIND_DISCOVERY_START,
             timestamp=now,
             parent_sequence=parent_seq,
+            operation_id=f"discovery-e{self._active_epoch.sequence + 1}-start",
+            correlation_id=f"discovery-e{self._active_epoch.sequence + 1}",
             epoch_sequence=self._active_epoch.sequence + 1,
             symbols=list(PILOT_SYMBOLS),
         )
@@ -1023,6 +1054,8 @@ class OrchestrationShell:
             JOURNAL_KIND_DISCOVERY_COMPLETE,
             timestamp=self._clock(),
             parent_sequence=discovery_start.sequence,
+            operation_id=f"discovery-e{self._active_epoch.sequence + 1}-complete",
+            correlation_id=f"discovery-e{self._active_epoch.sequence + 1}",
             epoch_sequence=self._active_epoch.sequence + 1,
             completed_items=len(discovered),
         )
@@ -1030,6 +1063,8 @@ class OrchestrationShell:
             JOURNAL_KIND_ENRICHMENT_START,
             timestamp=self._clock(),
             parent_sequence=discovery_complete.sequence,
+            operation_id=f"enrichment-e{self._active_epoch.sequence + 1}-start",
+            correlation_id=f"enrichment-e{self._active_epoch.sequence + 1}",
             epoch_sequence=self._active_epoch.sequence + 1,
             discovered_count=len(discovered),
         )
@@ -1038,6 +1073,8 @@ class OrchestrationShell:
             JOURNAL_KIND_ENRICHMENT_COMPLETE,
             timestamp=self._clock(),
             parent_sequence=enrichment_start.sequence,
+            operation_id=f"enrichment-e{self._active_epoch.sequence + 1}-complete",
+            correlation_id=f"enrichment-e{self._active_epoch.sequence + 1}",
             epoch_sequence=self._active_epoch.sequence + 1,
             completed_items=len(selections),
         )
@@ -1055,6 +1092,8 @@ class OrchestrationShell:
                 "reevaluation.noop",
                 timestamp=self._clock(),
                 parent_sequence=parent_seq,
+                operation_id=f"reevaluation-noop-{now.isoformat()}",
+                correlation_id=f"boundary-{now.isoformat()}",
                 epoch_sequence=new_epoch.sequence,
             )
             self._recorder.emit("reevaluation_noop", sequence=new_epoch.sequence)
@@ -1065,6 +1104,8 @@ class OrchestrationShell:
             JOURNAL_KIND_EPOCH_CREATED,
             timestamp=self._clock(),
             parent_sequence=enrichment_complete.sequence,
+            operation_id=f"epoch-e{new_epoch.sequence}-created",
+            correlation_id=f"epoch-e{new_epoch.sequence}",
             epoch_sequence=new_epoch.sequence,
             epoch_id=new_epoch.epoch_id,
             content_hash=new_epoch.content_hash,
@@ -1092,6 +1133,8 @@ class OrchestrationShell:
             JOURNAL_KIND_EPOCH_ACTIVATED,
             timestamp=self._clock(),
             parent_sequence=self._journal.sequence - 1,
+            operation_id=f"epoch-e{new_epoch.sequence}-activated",
+            correlation_id=f"epoch-e{new_epoch.sequence}",
             epoch_sequence=new_epoch.sequence,
             epoch_id=new_epoch.epoch_id,
             content_hash=new_epoch.content_hash,
@@ -1142,6 +1185,8 @@ class OrchestrationShell:
                     JOURNAL_KIND_SUBSCRIPTION_COMMAND,
                     timestamp=self._clock(),
                     parent_sequence=created.sequence,
+                    operation_id=command_id,
+                    correlation_id=command_id,
                     epoch_sequence=epoch.sequence,
                     epoch_id=epoch.epoch_id,
                     contract_identity=contract_identity(contract),
@@ -1155,6 +1200,8 @@ class OrchestrationShell:
                     JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
                     timestamp=self._clock(),
                     parent_sequence=command.sequence,
+                    operation_id=f"ack-{request_id}",
+                    correlation_id=command_id,
                     epoch_sequence=epoch.sequence,
                     epoch_id=epoch.epoch_id,
                     contract_identity=contract_identity(contract),
@@ -1175,10 +1222,14 @@ class OrchestrationShell:
         if self._subscription_adapter is None or self._active_epoch is None:
             return
 
+        cycle_number = 1 + len(self._journal.records_by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED))
+        cycle_id = f"disconnect-cycle-{cycle_number}"
         disc_seq = self._journal.append(
             JOURNAL_KIND_PROVIDER_DISCONNECTED,
             timestamp=self._clock(),
             parent_sequence=self._journal.sequence - 1,
+            operation_id=f"{cycle_id}-disconnected",
+            correlation_id=cycle_id,
             epoch_sequence=self._active_epoch.sequence,
             epoch_id=self._active_epoch.epoch_id,
             adapter_connected=(
@@ -1195,6 +1246,8 @@ class OrchestrationShell:
             JOURNAL_KIND_PROVIDER_RECONNECTED,
             timestamp=self._clock(),
             parent_sequence=disc_seq,
+            operation_id=f"{cycle_id}-reconnected",
+            correlation_id=cycle_id,
             epoch_sequence=self._active_epoch.sequence,
             epoch_id=self._active_epoch.epoch_id,
             adapter_connected=self._subscription_adapter.connected,
@@ -1204,6 +1257,8 @@ class OrchestrationShell:
             JOURNAL_KIND_EPOCH_RESTORED,
             timestamp=self._clock(),
             parent_sequence=reconnect.sequence,
+            operation_id=f"{cycle_id}-restored",
+            correlation_id=cycle_id,
             epoch_sequence=self._active_epoch.sequence,
             epoch_id=self._active_epoch.epoch_id,
             contract_count=len(self._active_epoch.selected_contracts),
@@ -1243,6 +1298,8 @@ class OrchestrationShell:
             JOURNAL_KIND_EPOCH_PERSISTED,
             timestamp=self._clock(),
             parent_sequence=self._journal.sequence - 1,
+            operation_id=f"epoch-e{epoch.sequence}-persisted",
+            correlation_id=f"epoch-e{epoch.sequence}",
             epoch_sequence=epoch.sequence,
             epoch_id=epoch.epoch_id,
             content_hash=epoch.content_hash,
@@ -1251,10 +1308,13 @@ class OrchestrationShell:
     async def _stop_intake(self) -> None:
         """Stop event intake at the configured boundary."""
         self._intake_stopped = True
+        configuration = self._journal.records_by_kind(JOURNAL_KIND_CONFIGURATION)[0]
         self._journal.append(
             JOURNAL_KIND_INTAKE_STOPPED,
             timestamp=self._clock(),
-            parent_sequence=self._journal.sequence - 1,
+            parent_sequence=configuration.sequence,
+            operation_id="intake-stop",
+            correlation_id="shutdown-chain",
             event_count=self._event_count,
             boundary=self.config.intake_stop.isoformat(),
         )
@@ -1269,6 +1329,8 @@ class OrchestrationShell:
             JOURNAL_KIND_PERSISTENCE_DRAINED,
             timestamp=self._clock(),
             parent_sequence=self._journal.sequence - 1,
+            operation_id="persistence-drain",
+            correlation_id="shutdown-chain",
             event_count=self._event_count,
             repository_events=(
                 len(getattr(self._repository, "events", []))
@@ -1290,6 +1352,8 @@ class OrchestrationShell:
             JOURNAL_KIND_SESSION_FINALIZED,
             timestamp=self._clock(),
             parent_sequence=self._journal.sequence - 1,
+            operation_id="session-finalize",
+            correlation_id="shutdown-chain",
             epoch_count=len(self._epochs),
             event_count=self._event_count,
             trading_enabled=False,
@@ -1297,45 +1361,6 @@ class OrchestrationShell:
             orders_submitted=0,
         )
         self._recorder.emit("observation_completed")
-
-    def _persist_and_verify_journal(self) -> bool:
-        """Persist and reconstruct the journal through its repository boundary."""
-        finalized_sequence = self._journal.sequence - 1
-        drain = self._journal.records_by_kind(JOURNAL_KIND_PERSISTENCE_DRAINED)[0]
-        prefix = self._journal.serialize()
-        identity = self._journal_repository.save(self.config.run_id, prefix)
-        self._journal_identity = identity
-        persisted = self._journal.append(
-            JOURNAL_KIND_JOURNAL_PERSISTED,
-            timestamp=self._clock(),
-            parent_sequence=finalized_sequence,
-            persisted_identity=identity,
-            persisted_digest=sha256(prefix),
-            persisted_record_count=len(self._journal.records),
-            queue_depth_final=drain.payload["queue_depth_final"],
-        )
-        persisted_value = self._journal.serialize()
-        self._journal_repository.save(self.config.run_id, persisted_value)
-        loaded = self._journal_repository.load(identity)
-        reconstructed = Journal.deserialize(loaded)
-        exact_equal = (
-            loaded == persisted_value
-            and reconstructed.serialize() == persisted_value
-            and reconstructed.records == self._journal.records
-        )
-        self._journal.append(
-            JOURNAL_KIND_REPLAY_VERIFIED,
-            timestamp=self._clock(),
-            parent_sequence=persisted.sequence,
-            persisted_identity=identity,
-            persisted_digest=sha256(persisted_value),
-            original_record_count=len(self._journal.records),
-            replayed_record_count=len(reconstructed.records),
-            original_terminal_digest=self._journal.records[-1].record_digest,
-            replayed_terminal_digest=reconstructed.records[-1].record_digest,
-            exact_equal=exact_equal,
-        )
-        return exact_equal
 
     def _build_diagnostics(self) -> dict[str, object]:
         """Build diagnostic evidence for the completed session."""

@@ -1,26 +1,46 @@
-# Final causal-journal correction handoff
+# Final evidence-bundle correction handoff
 
-The recovery branch now has one production and deterministic orchestration path.
-Its driver independently selects the next provider event, scheduled reevaluation,
-disconnect/reconnect input, or intake-stop boundary. Deterministic time no longer
-advances as a side effect of market-event delivery.
+The recovery branch retains one production and deterministic orchestration path.
+Its driver independently selects provider events, scheduled reevaluations,
+disconnect/reconnect input, or the intake-stop boundary. The journal records the
+causal runtime actions through finalization and is sealed with finalization as
+its terminal record.
 
-Every material action is appended at execution time to one immutable,
-chain-committed journal. The terminal seal commits to run ID, count, terminal
-sequence, and terminal digest. Structural and semantic production verification
-must succeed before the one-input acceptance projection can run.
+The evidence boundary now implements exactly:
 
-The canonical journal is persisted through a repository boundary, read back,
-deserialized, recalculated, and compared. A separately reconstructed sealed
-journal produces an exactly equal runtime certificate. Twenty-five focused tests
-include the positive path and every required genuine journal corruption class;
-no test edits a certificate or assigns a verdict.
+```text
+J = seal(compose(E_det, Σ))
+P = persist(J)
+R = replay(P)
+Ω = (J, P, R)
+Certificate = π_CΔ(Ω)
+```
+
+P and R are separate immutable, recalculably digested receipts. Replay reads the
+persisted object identified by P, reconstructs a new journal, reruns structural
+and contract-driven semantic verification, and compares canonical bytes, record
+counts, root digests, and observed projection digests before R exists.
+
+The closed semantic language requires exact operation/cause/correlation
+identities, exact epoch diffs, paired command acknowledgements, activation only
+after all required acknowledgements, active-event membership, the scheduled
+clock sequence, disconnect-cycle restoration membership, and the terminal
+stop/drain/finalization chain. CΔ owns expected values and rules; J, P, and R own
+observations. Build evidence is separate.
+
+The focused suite mutates J, P, R, CΔ, and persisted bytes and always traverses
+the production verifier and projection. It covers the requested same-kind
+parent, coherent fabrications, duplicates, run and version mismatches,
+restoration/boundary errors, forged receipts, unsealed replay, wrong object
+bindings, projection inequality, and post-finalization records, while retaining
+the earlier genuine chain, seal, epoch, command, acknowledgement, event, clock,
+and lifecycle corruptions.
 
 Runtime artifacts:
 
 - `/tmp/phase4b-certification/JOURNAL.json`
+- `/tmp/phase4b-certification/PERSISTENCE_RECEIPT.json`
+- `/tmp/phase4b-certification/REPLAY_RECEIPT.json`
 - `/tmp/phase4b-certification/CERTIFICATE.json`
 
-Exact Git head, clean-worktree status, CI, and PR state are reported separately
-as build-envelope evidence. Providers are not run; trading is disabled; orders
-remain `0/0`.
+Providers are not run; trading is disabled; orders remain `0/0`.

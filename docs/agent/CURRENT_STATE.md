@@ -726,3 +726,32 @@
   `4cfdd92c51e627d37d117f176e60a558ca5071b5` and both implementation-head CI
   triggers passed. Trading is disabled and orders remain `0/0`; artifact digests
   and the journal-close state are recorded in SESSION-0027.
+
+### SESSION-0028 final evidence-bundle correction — 20260811
+
+- The circular post-finalization journal proof is removed. Runtime evidence now
+  follows `J = seal(compose(E_det, Sigma))`, `P = persist(J)`, `R = replay(P)`,
+  `Omega = (J, P, R)`, and `Certificate = pi_CDelta(Omega)`.
+- J ends at `session.finalized` and contains no persistence or replay success
+  claim. P and R are separate immutable, recalculably digested receipts. P uses
+  a content-addressed repository identity; replay reconstructs from that object
+  and compares exact bytes, counts, roots, and observed projection digests.
+- Immutable `PHASE4B_ACCEPTANCE_CONTRACT_V3` owns expected values and rules.
+  J/P/R own observations. The certificate visibly separates the two and contains
+  no Git, worktree, CI, PR, shell, or environment evidence.
+- Exact operation, cause-operation, and correlation identities plus a closed
+  material vocabulary reject coherent fabrications, wrong same-kind parents,
+  duplicates, contradictions, misplaced records, wrong epochs/restorations/
+  boundaries, forged receipts, cross-run or cross-version evidence, and
+  post-finalization records.
+- Local verification passes: Ruff format/lint, strict mypy, dependency lock,
+  structural and secret checks, 258 hermetic tests, and 44 focused production-
+  path positive/adversarial tests. Three executions produced byte-identical
+  artifacts. J/P/R/certificate SHA-256 values are respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `01dbcdcaca2e367aeac5db63bd9b3b4a1818e357d428215b4af9ec1111e40784`.
+- No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
+  unchanged; PR #6 remains draft and unmerged. The exact journal-closing commit
+  and exact-head CI are recorded in GitHub PR evidence and the terminal handoff.

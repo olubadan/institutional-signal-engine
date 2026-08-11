@@ -1,15 +1,81 @@
 {
-  "contract_version": "PHASE4B_CAUSAL_CERT_V2",
-  "purpose": "Deterministic acceptance projection of a sealed verified causal journal",
-  "command": "uv run python -m institutional_signal_engine.phase4b_certify --output /tmp/phase4b-certification/CERTIFICATE.json --journal-output /tmp/phase4b-certification/JOURNAL.json",
-  "expected_current_result": "PASS",
-  "runtime_evidence_source": "J = compose(E_det, Sigma)",
-  "projection": "acceptance_projection(VerifiedJournal)",
+  "contract_version": "PHASE4B_ACCEPTANCE_CONTRACT_V3",
+  "certificate_version": "PHASE4B_EVIDENCE_BUNDLE_CERT_V3",
+  "purpose": "Immutable expected-value authority for deterministic evidence-bundle acceptance",
+  "expected": {
+    "run_id": "4b000000-0000-4000-8000-000000000027",
+    "rth_start": "2026-08-11T13:30:00+00:00",
+    "rth_stop": "2026-08-11T13:41:00+00:00",
+    "intake_stop": "2026-08-11T13:45:00+00:00",
+    "epoch_memberships": [
+      ["A:20260821:10000:C"],
+      ["A:20260821:10000:C", "B:20260821:11000:C"],
+      ["B:20260821:11000:C"]
+    ],
+    "clock_boundaries": [
+      "2026-08-11T13:35:00+00:00",
+      "2026-08-11T13:40:00+00:00"
+    ],
+    "accepted_events": [
+      {"event_id": "4b000000-0000-4000-8000-000000000001", "epoch_sequence": 1, "contract_identity": "A:20260821:10000:C", "channel": "TRADE"},
+      {"event_id": "4b000000-0000-4000-8000-000000000002", "epoch_sequence": 1, "contract_identity": "A:20260821:10000:C", "channel": "QUOTE"},
+      {"event_id": "4b000000-0000-4000-8000-000000000003", "epoch_sequence": 2, "contract_identity": "A:20260821:10000:C", "channel": "TRADE"},
+      {"event_id": "4b000000-0000-4000-8000-000000000004", "epoch_sequence": 2, "contract_identity": "B:20260821:11000:C", "channel": "QUOTE"},
+      {"event_id": "4b000000-0000-4000-8000-000000000005", "epoch_sequence": 2, "contract_identity": "A:20260821:10000:C", "channel": "QUOTE"},
+      {"event_id": "4b000000-0000-4000-8000-000000000006", "epoch_sequence": 2, "contract_identity": "B:20260821:11000:C", "channel": "TRADE"},
+      {"event_id": "4b000000-0000-4000-8000-000000000008", "epoch_sequence": 3, "contract_identity": "B:20260821:11000:C", "channel": "QUOTE"}
+    ],
+    "rejected_events": [
+      {"event_id": "4b000000-0000-4000-8000-000000000007", "epoch_sequence": 3, "contract_identity": "A:20260821:10000:C", "channel": "TRADE"}
+    ],
+    "restoration_membership": ["A:20260821:10000:C", "B:20260821:11000:C"]
+  },
+  "allowed_record_kinds": [
+    "session.start",
+    "configuration.loaded",
+    "provider.ready",
+    "discovery.start",
+    "discovery.complete",
+    "enrichment.start",
+    "enrichment.complete",
+    "epoch.created",
+    "epoch.persisted",
+    "subscription.command",
+    "subscription.acknowledgement",
+    "epoch.activated",
+    "event.accepted",
+    "event.rejected",
+    "clock.advanced",
+    "reevaluation.start",
+    "reevaluation.noop",
+    "provider.disconnected",
+    "provider.reconnected",
+    "epoch.restored",
+    "intake.stopped",
+    "persistence.drained",
+    "session.finalized"
+  ],
+  "allowed_lifecycle_order": [
+    "session.start",
+    "configuration.loaded",
+    "provider.ready",
+    "intake.stopped",
+    "persistence.drained",
+    "session.finalized"
+  ],
+  "required_invariants": [
+    "run_binding",
+    "epochs_exact",
+    "paired_commands_acknowledged",
+    "clock_boundaries_exact",
+    "disconnect_reconnect_restore",
+    "lifecycle_complete",
+    "journal_sealed_finalization_terminal",
+    "persistence_complete",
+    "replay_exact",
+    "trading_disabled",
+    "orders_zero"
+  ],
   "external_build_envelope_excluded": ["Git head", "worktree status", "GitHub CI", "pull-request state"],
-  "safety": {
-    "trading_enabled": false,
-    "orders_constructed": 0,
-    "orders_submitted": 0,
-    "live_providers": false
-  }
+  "safety": {"trading_enabled": false, "orders_constructed": 0, "orders_submitted": 0, "live_providers": false}
 }

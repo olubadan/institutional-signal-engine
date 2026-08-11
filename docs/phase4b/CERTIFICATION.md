@@ -1,33 +1,53 @@
-# Phase 4B causal-journal certification
+# Phase 4B evidence-bundle certification
 
 Run:
 
 ```text
 uv run python -m institutional_signal_engine.phase4b_certify \
   --output /tmp/phase4b-certification/CERTIFICATE.json \
-  --journal-output /tmp/phase4b-certification/JOURNAL.json
+  --journal-output /tmp/phase4b-certification/JOURNAL.json \
+  --persistence-output /tmp/phase4b-certification/PERSISTENCE_RECEIPT.json \
+  --replay-output /tmp/phase4b-certification/REPLAY_RECEIPT.json
 ```
 
-The runtime evidence authority is the sealed journal produced by one invocation
-of the production `OrchestrationShell` with deterministic injected ports. The
-certificate function accepts exactly one `VerifiedJournal`. It reconstructs and
-re-verifies that value before projecting membership, subscription command and
-acknowledgement correlation, events, independent clock reevaluations, recovery,
-lifecycle, persistence, replay, disabled trading, and zero orders.
+The immutable contract `CΔ` is loaded before execution and defines the expected
+run identity, versions, closed record vocabulary, exact epoch sequence, clock
+boundaries, event observations, restoration membership, lifecycle ordering, and
+required invariants. It contains rules and expected values, not observations.
 
-The journal recalculates payload and complete-record digests, verifies its
-previous-record chain, run and sequence consistency, causal-parent existence and
-order, terminal seal, and lifecycle bounds. Semantic validation checks the
-meaning of discovery, enrichment, epoch, command, acknowledgement, activation,
-event, clock, restoration, stop, drain, finalization, persistence, and replay
-relationships. Failures have stable production codes.
+The runtime evidence lifecycle is:
 
-The persisted artifact is read back through the journal repository, deserialized
-into a new object, verified, and compared canonically. The replayed verified
-journal must produce exactly the same certificate.
+```text
+J = seal(compose(E_det, Σ))
+P = persist(J)
+R = replay(P)
+Ω = (J, P, R)
+Certificate = π_CΔ(Ω)
+```
 
-Git head, clean-worktree status, GitHub CI, and pull-request state are external
-build-envelope evidence and are deliberately absent from the runtime
-certificate. No committed synthetic example certificate is retained. This
-hermetic command runs no live provider, keeps trading disabled, and constructs
-and submits no orders.
+`session.finalized` is the terminal record in J. Sealing prohibits later
+appends. J contains no persistence-success or replay-success claim. P is issued
+only after the exact canonical sealed bytes are saved through the journal
+repository, and binds the CΔ version, run identity, root digest, byte digest,
+record count, persistence identity, completion status, and its own receipt
+digest.
+
+Replay reads P's persistence identity and never reuses the original in-memory
+journal. It deserializes a new object, verifies the seal, payload and record
+digests, chain, closed semantics, and CΔ run binding, then compares exact bytes,
+counts, roots, and observed projections. R binds all original/reconstructed
+values, the persistence identity, exact-equality result, and its own receipt
+digest. R is not appended to J.
+
+Every record has a unique operation identity, exact cause-operation identity,
+and a stable correlation identity. Validation checks the exact parent instance
+and the applicable epoch, command, acknowledgement, boundary, disconnect cycle,
+membership, payload, and lifecycle relationship. Unknown, duplicate,
+contradictory, misplaced, or unexpected material observations fail even when an
+attacker coherently recalculates every structural hash.
+
+`π_CΔ(Ω)` receives only immutable CΔ and a verified Ω. The certificate keeps
+expected contract values visibly separate from observed J/P/R facts. Git head,
+worktree status, GitHub CI, and pull-request state are separate build-envelope
+evidence and never enter the runtime certificate. The command is hermetic, runs
+no live provider, keeps trading disabled, and constructs/submits no orders.

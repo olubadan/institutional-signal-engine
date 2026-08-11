@@ -25,23 +25,27 @@ from .journal import (
     JOURNAL_KIND_EPOCH_RESTORED,
     JOURNAL_KIND_EVENT_ACCEPTED,
     JOURNAL_KIND_EVENT_REJECTED,
-    JOURNAL_KIND_INTAKE_STOPPED,
-    JOURNAL_KIND_JOURNAL_PERSISTED,
-    JOURNAL_KIND_PERSISTENCE_DRAINED,
     JOURNAL_KIND_PROVIDER_DISCONNECTED,
     JOURNAL_KIND_PROVIDER_RECONNECTED,
     JOURNAL_KIND_REEVALUATION_START,
-    JOURNAL_KIND_REPLAY_VERIFIED,
     JOURNAL_KIND_SESSION_FINALIZED,
     JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
     JOURNAL_KIND_SUBSCRIPTION_COMMAND,
+    AcceptanceContract,
     InMemoryJournalRepository,
     Journal,
     JournalFailure,
     JournalRecord,
+    JournalRepository,
+    PersistenceReceipt,
+    ReplayReceipt,
     VerifiedJournal,
+    persist_verified_journal,
     sha256,
+    sha256_bytes,
     verify_complete,
+    verify_persistence_receipt,
+    verify_replay_receipt,
 )
 from .orchestration import (
     DriverSignal,
@@ -54,13 +58,71 @@ from .providers.thetadata import ThetaContract
 from .schemas import CanonicalEvent, EventKind
 from .universe import PlannerEpoch, UniverseSelection
 
-CERTIFICATION_VERSION = "PHASE4B_CAUSAL_CERT_V2"
-SCENARIO_VERSION = "PHASE4B_ACCELERATED_CAUSAL_RTH_V2"
+CERTIFICATION_VERSION = "PHASE4B_EVIDENCE_BUNDLE_CERT_V3"
+CONTRACT_VERSION = "PHASE4B_ACCEPTANCE_CONTRACT_V3"
+SCENARIO_VERSION = "PHASE4B_ACCELERATED_CAUSAL_RTH_V3"
 RUN_ID = UUID("4b000000-0000-4000-8000-000000000027")
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "docs/phase4b/PHASE4B_CERT_V1.schema.json"
+CONTRACT_PATH = ROOT / "docs/phase4b/PHASE4B_CERT_V1.contract.json"
 DEFAULT_OUTPUT = Path("/tmp/phase4b-certification/CERTIFICATE.json")
 DEFAULT_JOURNAL_OUTPUT = Path("/tmp/phase4b-certification/JOURNAL.json")
+DEFAULT_PERSISTENCE_OUTPUT = Path("/tmp/phase4b-certification/PERSISTENCE_RECEIPT.json")
+DEFAULT_REPLAY_OUTPUT = Path("/tmp/phase4b-certification/REPLAY_RECEIPT.json")
+
+
+def load_acceptance_contract(path: Path = CONTRACT_PATH) -> AcceptanceContract:
+    """Load the immutable expected-value authority for this acceptance execution."""
+    try:
+        raw = cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
+        expected = cast(dict[str, object], raw["expected"])
+        return AcceptanceContract(
+            contract_version=str(raw["contract_version"]),
+            certificate_version=str(raw["certificate_version"]),
+            expected_run_id=UUID(str(expected["run_id"])),
+            allowed_record_kinds=frozenset(
+                map(str, cast(list[object], raw["allowed_record_kinds"]))
+            ),
+            expected_epoch_memberships=tuple(
+                tuple(map(str, cast(list[object], membership)))
+                for membership in cast(list[object], expected["epoch_memberships"])
+            ),
+            expected_clock_boundaries=tuple(
+                map(str, cast(list[object], expected["clock_boundaries"]))
+            ),
+            expected_rth_start=str(expected["rth_start"]),
+            expected_rth_stop=str(expected["rth_stop"]),
+            expected_intake_stop=str(expected["intake_stop"]),
+            expected_accepted_events=tuple(
+                (
+                    str(cast(dict[str, object], item)["event_id"]),
+                    int(cast(int, cast(dict[str, object], item)["epoch_sequence"])),
+                    str(cast(dict[str, object], item)["contract_identity"]),
+                    str(cast(dict[str, object], item)["channel"]),
+                )
+                for item in cast(list[object], expected["accepted_events"])
+            ),
+            expected_rejected_events=tuple(
+                (
+                    str(cast(dict[str, object], item)["event_id"]),
+                    int(cast(int, cast(dict[str, object], item)["epoch_sequence"])),
+                    str(cast(dict[str, object], item)["contract_identity"]),
+                    str(cast(dict[str, object], item)["channel"]),
+                )
+                for item in cast(list[object], expected["rejected_events"])
+            ),
+            expected_restoration_membership=tuple(
+                map(str, cast(list[object], expected["restoration_membership"]))
+            ),
+            required_invariants=tuple(map(str, cast(list[object], raw["required_invariants"]))),
+            allowed_lifecycle_order=tuple(
+                map(str, cast(list[object], raw["allowed_lifecycle_order"]))
+            ),
+        )
+    except JournalFailure:
+        raise
+    except Exception as exc:
+        raise JournalFailure("CONTRACT_DESERIALIZATION_FAILED", type(exc).__name__) from exc
 
 
 class MutableClock:
@@ -242,13 +304,180 @@ class DeterministicSessionDriver(SessionDriverPort):
 
 @dataclass(frozen=True)
 class Composition:
-    original: VerifiedJournal
-    replayed: VerifiedJournal
+    contract: AcceptanceContract
+    evidence: VerifiedEvidencePackage
+    reconstructed: VerifiedJournal
     journal_repository: InMemoryJournalRepository
-    journal_identity: str
+
+
+@dataclass(frozen=True)
+class VerifiedEvidencePackage:
+    """Immutable verified capability for Omega = (J, P, R)."""
+
+    journal: VerifiedJournal
+    persistence: PersistenceReceipt
+    replay: ReplayReceipt
+
+
+def journal_projection(journal: VerifiedJournal) -> dict[str, object]:
+    """Observed J facts only; contains neither expectations nor P/R observations."""
+    records = journal.records
+
+    def by_kind(kind: str) -> tuple[JournalRecord, ...]:
+        return tuple(record for record in records if record.kind == kind)
+
+    configuration = by_kind(JOURNAL_KIND_CONFIGURATION)[0]
+    epochs = by_kind(JOURNAL_KIND_EPOCH_CREATED)
+    commands = by_kind(JOURNAL_KIND_SUBSCRIPTION_COMMAND)
+    acknowledgements = {
+        record.command_id: record for record in by_kind(JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)
+    }
+    finalized = by_kind(JOURNAL_KIND_SESSION_FINALIZED)[0]
+    return {
+        "run_id": str(journal.run_id),
+        "configuration_versions": {
+            "scenario": configuration.payload["scenario_version"],
+            "control_model": configuration.payload["control_model_version"],
+            "shadow_model": configuration.payload["shadow_model_version"],
+            "coverage": configuration.payload["coverage_version"],
+        },
+        "epochs": [
+            {
+                "sequence": record.epoch_sequence,
+                "epoch_id": record.epoch_id,
+                "membership": list(cast(list[object], record.payload["membership"])),
+                "operation_id": record.operation_id,
+            }
+            for record in epochs
+        ],
+        "subscriptions": [
+            {
+                "command_id": command.command_id,
+                "epoch_sequence": command.epoch_sequence,
+                "contract_identity": command.contract_identity,
+                "action": command.payload["action"],
+                "channel": command.payload["channel"],
+                "ack_id": acknowledgements[command.command_id].ack_id,
+                "acknowledged": acknowledgements[command.command_id].payload["accepted"],
+                "command_sequence": command.sequence,
+                "ack_sequence": acknowledgements[command.command_id].sequence,
+            }
+            for command in commands
+        ],
+        "events": {
+            kind.split(".", 1)[1]: [
+                {
+                    "event_id": record.payload["event_id"],
+                    "epoch_sequence": record.epoch_sequence,
+                    "contract_identity": record.contract_identity,
+                    "channel": record.payload["event_kind"],
+                }
+                for record in by_kind(kind)
+            ]
+            for kind in (JOURNAL_KIND_EVENT_ACCEPTED, JOURNAL_KIND_EVENT_REJECTED)
+        },
+        "clock": {
+            "boundaries": [
+                record.payload["boundary"] for record in by_kind(JOURNAL_KIND_CLOCK_ADVANCED)
+            ],
+            "reevaluations": len(by_kind(JOURNAL_KIND_REEVALUATION_START)),
+        },
+        "recovery": {
+            "disconnects": len(by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED)),
+            "reconnects": len(by_kind(JOURNAL_KIND_PROVIDER_RECONNECTED)),
+            "restorations": [
+                {
+                    "cycle_id": record.correlation_id,
+                    "epoch_sequence": record.epoch_sequence,
+                    "membership": list(cast(list[object], record.payload["membership"])),
+                }
+                for record in by_kind(JOURNAL_KIND_EPOCH_RESTORED)
+            ],
+        },
+        "lifecycle": [
+            record.kind
+            for record in records
+            if record.kind
+            in {
+                "session.start",
+                "configuration.loaded",
+                "provider.ready",
+                "intake.stopped",
+                "persistence.drained",
+                "session.finalized",
+            }
+        ],
+        "orders": {
+            "trading_enabled": finalized.payload["trading_enabled"],
+            "constructed": finalized.payload["orders_constructed"],
+            "submitted": finalized.payload["orders_submitted"],
+        },
+    }
+
+
+def replay_persisted(
+    contract: AcceptanceContract,
+    original: VerifiedJournal,
+    persistence: PersistenceReceipt,
+    repository: JournalRepository,
+) -> tuple[VerifiedJournal, ReplayReceipt]:
+    """Read P's object, reconstruct a new J, fully verify it, and only then issue R."""
+    verify_persistence_receipt(contract, original, persistence)
+    loaded = repository.load(persistence.persistence_identity)
+    reconstructed = verify_complete(Journal.deserialize(loaded), contract)
+    original_projection_digest = sha256(journal_projection(original))
+    replayed_projection_digest = sha256(journal_projection(reconstructed))
+    original_bytes = sha256_bytes(original.canonical_serialization)
+    reconstructed_bytes = sha256_bytes(loaded)
+    exact = (
+        loaded == original.canonical_serialization
+        and reconstructed.canonical_serialization == original.canonical_serialization
+        and reconstructed.root_digest == original.root_digest
+        and reconstructed.seal.record_count == original.seal.record_count
+        and original_projection_digest == replayed_projection_digest
+    )
+    values: dict[str, object] = {
+        "contract_version": contract.contract_version,
+        "run_id": original.run_id,
+        "persistence_identity": persistence.persistence_identity,
+        "original_root_digest": original.root_digest,
+        "reconstructed_root_digest": reconstructed.root_digest,
+        "original_byte_sha256": original_bytes,
+        "reconstructed_byte_sha256": reconstructed_bytes,
+        "original_record_count": original.seal.record_count,
+        "reconstructed_record_count": reconstructed.seal.record_count,
+        "original_projection_digest": original_projection_digest,
+        "replayed_projection_digest": replayed_projection_digest,
+        "exact_equality": exact,
+    }
+    replay = ReplayReceipt.from_values(**values)
+    return reconstructed, replay
+
+
+def verify_evidence_package(
+    contract: AcceptanceContract,
+    journal: VerifiedJournal,
+    persistence: PersistenceReceipt,
+    replay: ReplayReceipt,
+) -> VerifiedEvidencePackage:
+    if not isinstance(journal, VerifiedJournal):
+        raise JournalFailure("EVIDENCE_REQUIRES_VERIFIED_JOURNAL")
+    independently_verified = verify_complete(
+        Journal.deserialize(journal.canonical_serialization), contract
+    )
+    if independently_verified != journal:
+        raise JournalFailure("VERIFIED_JOURNAL_VALUE_MISMATCH")
+    if journal.contract_version != contract.contract_version:
+        raise JournalFailure("JOURNAL_CONTRACT_VERSION_MISMATCH")
+    verify_persistence_receipt(contract, journal, persistence)
+    verify_replay_receipt(contract, journal, persistence, replay)
+    if replay.original_projection_digest != sha256(journal_projection(journal)):
+        raise JournalFailure("REPLAY_PROJECTION_BINDING_MISMATCH")
+    return VerifiedEvidencePackage(journal, persistence, replay)
 
 
 async def execute_composition() -> Composition:
+    contract = load_acceptance_contract()
     start = datetime(2026, 8, 11, 13, 30, tzinfo=UTC)
     clock = MutableClock(start)
     signals = [
@@ -299,6 +528,7 @@ async def execute_composition() -> Composition:
         intake_stop=start + timedelta(minutes=15),
         reevaluation_interval=timedelta(minutes=5),
         scenario_version=SCENARIO_VERSION,
+        acceptance_contract_version=contract.contract_version,
     )
     shell = OrchestrationShell(
         config=config,
@@ -311,180 +541,91 @@ async def execute_composition() -> Composition:
         event_stream=cast(Any, EmptyEventStream()),
         repository=event_repository,
         session_driver=driver,
-        journal_repository=journal_repository,
     )
     result = await shell.run()
     if result.status != "live_observation_complete":
         raise JournalFailure("COMPOSITION_FAILED", result.status)
-    original = verify_complete(shell.journal)
-    identity = f"memory://journal/{RUN_ID}"
-    replayed = verify_complete(Journal.deserialize(journal_repository.load(identity)))
-    if original.canonical_serialization != replayed.canonical_serialization:
-        raise JournalFailure("PERSISTED_REPLAY_MISMATCH")
-    if acceptance_projection(original) != acceptance_projection(replayed):
-        raise JournalFailure("REPLAY_PROJECTION_MISMATCH")
-    return Composition(original, replayed, journal_repository, identity)
+    original = verify_complete(shell.journal, contract)
+    persistence = persist_verified_journal(contract, original, journal_repository)
+    reconstructed, replay = replay_persisted(contract, original, persistence, journal_repository)
+    evidence = verify_evidence_package(contract, original, persistence, replay)
+    return Composition(contract, evidence, reconstructed, journal_repository)
 
 
-def _require_verified(value: object) -> VerifiedJournal:
-    if not isinstance(value, VerifiedJournal):
-        raise JournalFailure("PROJECTION_REQUIRES_VERIFIED_JOURNAL")
-    reconstructed = Journal.deserialize(value.canonical_serialization)
-    independently_verified = verify_complete(reconstructed)
-    if independently_verified != value:
-        raise JournalFailure("VERIFIED_JOURNAL_VALUE_MISMATCH")
-    return independently_verified
-
-
-def acceptance_projection(journal: VerifiedJournal) -> dict[str, object]:
-    """Project acceptance from exactly one sealed, independently verified input."""
-    verified = _require_verified(journal)
-    records = verified.records
-
-    def by_kind(kind: str) -> tuple[JournalRecord, ...]:
-        return tuple(record for record in records if record.kind == kind)
-
-    configuration = by_kind(JOURNAL_KIND_CONFIGURATION)[0]
-    epochs = by_kind(JOURNAL_KIND_EPOCH_CREATED)
-    commands = by_kind(JOURNAL_KIND_SUBSCRIPTION_COMMAND)
-    acknowledgements = {
-        record.command_id: record for record in by_kind(JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT)
-    }
-    accepted = by_kind(JOURNAL_KIND_EVENT_ACCEPTED)
-    rejected = by_kind(JOURNAL_KIND_EVENT_REJECTED)
-    persisted = by_kind(JOURNAL_KIND_JOURNAL_PERSISTED)[0]
-    replayed = by_kind(JOURNAL_KIND_REPLAY_VERIFIED)[0]
-    finalized = by_kind(JOURNAL_KIND_SESSION_FINALIZED)[0]
-
-    epoch_projection: list[dict[str, object]] = []
-    previous: set[str] = set()
-    for epoch in epochs:
-        membership = set(map(str, cast(list[object], epoch.payload["membership"])))
-        epoch_projection.append(
-            {
-                "sequence": epoch.epoch_sequence,
-                "epoch_id": epoch.epoch_id,
-                "membership": sorted(item.split(":", 1)[0] for item in membership),
-                "admissions": sorted(item.split(":", 1)[0] for item in membership - previous),
-                "removals": sorted(item.split(":", 1)[0] for item in previous - membership),
-                "provenance": epoch.payload["provenance"],
-            }
-        )
-        previous = membership
-
-    subscription_projection: list[dict[str, object]] = [
-        {
-            "command_id": command.command_id,
-            "epoch_sequence": command.epoch_sequence,
-            "contract": cast(str, command.contract_identity).split(":", 1)[0],
-            "action": command.payload["action"],
-            "channel": command.payload["channel"],
-            "ack_id": acknowledgements[command.command_id].ack_id,
-            "acknowledged": acknowledgements[command.command_id].payload["accepted"],
-            "command_sequence": command.sequence,
-            "ack_sequence": acknowledgements[command.command_id].sequence,
-        }
-        for command in commands
-    ]
-
-    def event_projection(values: tuple[JournalRecord, ...]) -> list[dict[str, object]]:
-        return [
-            {
-                "event_id": record.payload["event_id"],
-                "epoch_sequence": record.epoch_sequence,
-                "contract": cast(str, record.contract_identity).split(":", 1)[0],
-                "channel": record.payload["event_kind"],
-            }
-            for record in values
-        ]
-
+def acceptance_projection(
+    contract: AcceptanceContract, evidence: VerifiedEvidencePackage
+) -> dict[str, object]:
+    """Implement pi_CDelta(Omega) from immutable CDelta and verified Omega only."""
+    if not isinstance(contract, AcceptanceContract):
+        raise JournalFailure("PROJECTION_REQUIRES_ACCEPTANCE_CONTRACT")
+    if not isinstance(evidence, VerifiedEvidencePackage):
+        raise JournalFailure("PROJECTION_REQUIRES_VERIFIED_EVIDENCE_PACKAGE")
+    verified = verify_evidence_package(
+        contract, evidence.journal, evidence.persistence, evidence.replay
+    )
+    observed = journal_projection(verified.journal)
+    observed_epochs = tuple(
+        tuple(map(str, cast(list[object], item["membership"])))
+        for item in cast(list[dict[str, object]], observed["epochs"])
+    )
+    clock = cast(dict[str, object], observed["clock"])
+    subscriptions = cast(list[dict[str, object]], observed["subscriptions"])
+    recovery = cast(dict[str, object], observed["recovery"])
+    orders = cast(dict[str, object], observed["orders"])
+    lifecycle = tuple(map(str, cast(list[object], observed["lifecycle"])))
     invariants = {
-        "epochs_exact": [item["membership"] for item in epoch_projection]
-        == [["A"], ["A", "B"], ["B"]],
+        "run_binding": observed["run_id"] == str(contract.expected_run_id),
+        "epochs_exact": observed_epochs == contract.expected_epoch_memberships,
         "paired_commands_acknowledged": all(
             item["acknowledged"] is True
             and cast(int, item["command_sequence"]) < cast(int, item["ack_sequence"])
-            for item in subscription_projection
+            for item in subscriptions
         ),
-        "clock_driven_reevaluations": len(by_kind(JOURNAL_KIND_REEVALUATION_START)) == 2
-        and len(by_kind(JOURNAL_KIND_CLOCK_ADVANCED)) == 2,
-        "disconnect_reconnect_restore": len(by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED)) == 1
-        and len(by_kind(JOURNAL_KIND_PROVIDER_RECONNECTED)) == 1
-        and len(by_kind(JOURNAL_KIND_EPOCH_RESTORED)) == 1,
-        "removed_a_rejected": any(
-            record.epoch_sequence == 3 and cast(str, record.contract_identity).startswith("A:")
-            for record in rejected
-        ),
-        "active_b_accepted": any(
-            record.epoch_sequence == 3 and cast(str, record.contract_identity).startswith("B:")
-            for record in accepted
-        ),
-        "lifecycle_complete": len(by_kind(JOURNAL_KIND_INTAKE_STOPPED)) == 1
-        and len(by_kind(JOURNAL_KIND_PERSISTENCE_DRAINED)) == 1
-        and len(by_kind(JOURNAL_KIND_SESSION_FINALIZED)) == 1,
-        "persistence_and_replay": replayed.payload["exact_equal"] is True,
-        "trading_disabled": configuration.payload["trading_enabled"] is False
-        and finalized.payload["trading_enabled"] is False,
-        "orders_zero": configuration.payload["orders_constructed"] == 0
-        and configuration.payload["orders_submitted"] == 0
-        and finalized.payload["orders_constructed"] == 0
-        and finalized.payload["orders_submitted"] == 0,
+        "clock_boundaries_exact": tuple(map(str, cast(list[object], clock["boundaries"])))
+        == contract.expected_clock_boundaries,
+        "disconnect_reconnect_restore": recovery["disconnects"] == 1
+        and recovery["reconnects"] == 1
+        and len(cast(list[object], recovery["restorations"])) == 1,
+        "lifecycle_complete": lifecycle == contract.allowed_lifecycle_order,
+        "journal_sealed_finalization_terminal": verified.journal.records[-1].kind
+        == JOURNAL_KIND_SESSION_FINALIZED,
+        "persistence_complete": verified.persistence.persistence_completed is True,
+        "replay_exact": verified.replay.exact_equality is True,
+        "trading_disabled": orders["trading_enabled"] is False,
+        "orders_zero": orders["constructed"] == 0 and orders["submitted"] == 0,
     }
-    failures = [name for name, passed in invariants.items() if not passed]
+    unknown = set(contract.required_invariants) - set(invariants)
+    if unknown:
+        raise JournalFailure("CONTRACT_REQUIRED_INVARIANT_UNKNOWN", min(unknown))
+    failures = [name for name in contract.required_invariants if not invariants[name]]
     return {
-        "certification_version": CERTIFICATION_VERSION,
-        "evidence_kind": "RUNTIME_CERTIFICATE",
-        "run_id": str(verified.run_id),
-        "journal": {
-            "record_count": verified.seal.record_count,
-            "terminal_sequence": verified.seal.terminal_sequence,
-            "terminal_digest": verified.seal.terminal_digest,
-            "seal_digest": verified.seal.seal_digest,
+        "certificate_version": contract.certificate_version,
+        "evidence_kind": "RUNTIME_EVIDENCE_BUNDLE_CERTIFICATE",
+        "acceptance_contract": {
+            "contract_version": contract.contract_version,
+            "expected_run_id": str(contract.expected_run_id),
+            "expected_epoch_memberships": [
+                list(membership) for membership in contract.expected_epoch_memberships
+            ],
+            "expected_clock_boundaries": list(contract.expected_clock_boundaries),
+            "required_invariants": list(contract.required_invariants),
         },
-        "configuration_versions": {
-            "scenario": configuration.payload["scenario_version"],
-            "control_model": configuration.payload["control_model_version"],
-            "shadow_model": configuration.payload["shadow_model_version"],
-            "coverage": configuration.payload["coverage_version"],
-        },
-        "epochs": epoch_projection,
-        "subscriptions": subscription_projection,
-        "events": {
-            "accepted": event_projection(accepted),
-            "rejected": event_projection(rejected),
-        },
-        "clock": {
-            "advancements": len(by_kind(JOURNAL_KIND_CLOCK_ADVANCED)),
-            "reevaluations": len(by_kind(JOURNAL_KIND_REEVALUATION_START)),
-        },
-        "recovery": {
-            "disconnects": len(by_kind(JOURNAL_KIND_PROVIDER_DISCONNECTED)),
-            "reconnects": len(by_kind(JOURNAL_KIND_PROVIDER_RECONNECTED)),
-            "restorations": len(by_kind(JOURNAL_KIND_EPOCH_RESTORED)),
-        },
-        "persistence": {
-            "identity": persisted.payload["persisted_identity"],
-            "digest": persisted.payload["persisted_digest"],
-            "queue_depth_final": persisted.payload["queue_depth_final"],
-        },
-        "replay": {
-            "exact_equal": replayed.payload["exact_equal"],
-            "record_count": replayed.payload["replayed_record_count"],
-            "terminal_digest": replayed.payload["replayed_terminal_digest"],
-        },
-        "orders": {
-            "trading_enabled": finalized.payload["trading_enabled"],
-            "constructed": finalized.payload["orders_constructed"],
-            "submitted": finalized.payload["orders_submitted"],
+        "observed": {
+            **observed,
+            "journal": {
+                "record_count": verified.journal.seal.record_count,
+                "terminal_sequence": verified.journal.seal.terminal_sequence,
+                "root_digest": verified.journal.root_digest,
+                "seal_digest": verified.journal.seal.seal_digest,
+                "canonical_byte_sha256": sha256_bytes(verified.journal.canonical_serialization),
+            },
+            "persistence": verified.persistence.as_dict(),
+            "replay": verified.replay.as_dict(),
         },
         "invariants": invariants,
         "failed_invariants": failures,
         "overall": "PASS" if not failures else "FAIL",
     }
-
-
-# Compatibility name intentionally retains the now-pure, one-input boundary.
-_project_certificate = acceptance_projection
 
 
 def validate_certificate(value: dict[str, object]) -> list[str]:
@@ -497,16 +638,26 @@ def validate_certificate(value: dict[str, object]) -> list[str]:
 
 
 def write_artifacts(
-    composition: Composition, output: Path, journal_output: Path
+    composition: Composition,
+    output: Path,
+    journal_output: Path,
+    persistence_output: Path,
+    replay_output: Path,
 ) -> dict[str, object]:
-    certificate = acceptance_projection(composition.replayed)
+    certificate = acceptance_projection(composition.contract, composition.evidence)
     errors = validate_certificate(certificate)
     if errors:
         raise JournalFailure("CERTIFICATE_SCHEMA_INVALID", ";".join(errors))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(certificate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     journal_output.parent.mkdir(parents=True, exist_ok=True)
-    journal_output.write_text(composition.replayed.canonical_serialization + "\n", encoding="utf-8")
+    journal_output.write_text(
+        composition.evidence.journal.canonical_serialization, encoding="utf-8"
+    )
+    persistence_output.parent.mkdir(parents=True, exist_ok=True)
+    persistence_output.write_text(composition.evidence.persistence.serialize(), encoding="utf-8")
+    replay_output.parent.mkdir(parents=True, exist_ok=True)
+    replay_output.write_text(composition.evidence.replay.serialize(), encoding="utf-8")
     return certificate
 
 
@@ -514,10 +665,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--journal-output", type=Path, default=DEFAULT_JOURNAL_OUTPUT)
+    parser.add_argument("--persistence-output", type=Path, default=DEFAULT_PERSISTENCE_OUTPUT)
+    parser.add_argument("--replay-output", type=Path, default=DEFAULT_REPLAY_OUTPUT)
     arguments = parser.parse_args(argv)
     try:
         composition = asyncio.run(execute_composition())
-        certificate = write_artifacts(composition, arguments.output, arguments.journal_output)
+        certificate = write_artifacts(
+            composition,
+            arguments.output,
+            arguments.journal_output,
+            arguments.persistence_output,
+            arguments.replay_output,
+        )
     except JournalFailure as exc:
         print(json.dumps({"overall": "FAIL", "failure_code": exc.code}, sort_keys=True))
         return 1
@@ -525,9 +684,17 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "overall": certificate["overall"],
-                "journal_sha256": sha256(json.loads(composition.replayed.canonical_serialization)),
+                "journal_sha256": sha256_bytes(
+                    composition.evidence.journal.canonical_serialization
+                ),
+                "persistence_receipt_sha256": sha256_bytes(
+                    composition.evidence.persistence.serialize()
+                ),
+                "replay_receipt_sha256": sha256_bytes(composition.evidence.replay.serialize()),
                 "certificate_path": str(arguments.output),
                 "journal_path": str(arguments.journal_output),
+                "persistence_path": str(arguments.persistence_output),
+                "replay_path": str(arguments.replay_output),
             },
             sort_keys=True,
         )
