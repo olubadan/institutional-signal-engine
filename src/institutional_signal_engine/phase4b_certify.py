@@ -310,13 +310,53 @@ class Composition:
     journal_repository: InMemoryJournalRepository
 
 
-@dataclass(frozen=True)
 class VerifiedEvidencePackage:
-    """Immutable verified capability for Omega = (J, P, R)."""
+    """Opaque capability issued only after repository-backed Omega verification."""
 
-    journal: VerifiedJournal
-    persistence: PersistenceReceipt
-    replay: ReplayReceipt
+    __slots__ = ("_authority", "_contract", "_journal", "_persistence", "_replay")
+    _authority: object
+    _contract: AcceptanceContract
+    _journal: VerifiedJournal
+    _persistence: PersistenceReceipt
+    _replay: ReplayReceipt
+
+    def __init__(self, *_: object, **__: object) -> None:
+        raise JournalFailure("VERIFIED_EVIDENCE_CONSTRUCTION_FORBIDDEN")
+
+    def __setattr__(self, _: str, __: object) -> None:
+        raise JournalFailure("VERIFIED_EVIDENCE_PACKAGE_IMMUTABLE")
+
+    @classmethod
+    def _issue(
+        cls,
+        authority: object,
+        contract: AcceptanceContract,
+        journal: VerifiedJournal,
+        persistence: PersistenceReceipt,
+        replay: ReplayReceipt,
+    ) -> VerifiedEvidencePackage:
+        package = object.__new__(cls)
+        object.__setattr__(package, "_authority", authority)
+        object.__setattr__(package, "_contract", contract)
+        object.__setattr__(package, "_journal", journal)
+        object.__setattr__(package, "_persistence", persistence)
+        object.__setattr__(package, "_replay", replay)
+        return package
+
+    @property
+    def journal(self) -> VerifiedJournal:
+        return self._journal
+
+    @property
+    def persistence(self) -> PersistenceReceipt:
+        return self._persistence
+
+    @property
+    def replay(self) -> ReplayReceipt:
+        return self._replay
+
+
+_REPOSITORY_VERIFICATION_AUTHORITY = object()
 
 
 def journal_projection(journal: VerifiedJournal) -> dict[str, object]:
@@ -422,9 +462,14 @@ def replay_persisted(
     repository: JournalRepository,
 ) -> tuple[VerifiedJournal, ReplayReceipt]:
     """Read P's object, reconstruct a new J, fully verify it, and only then issue R."""
-    verify_persistence_receipt(contract, original, persistence)
+    _verify_persistence_receipt_integrity(contract, persistence)
     loaded = repository.load(persistence.persistence_identity)
     reconstructed = verify_complete(Journal.deserialize(loaded), contract)
+    if loaded != original.canonical_serialization:
+        raise JournalFailure("PERSISTED_JOURNAL_BYTES_MISMATCH")
+    if reconstructed is original:
+        raise JournalFailure("REPLAY_RECONSTRUCTION_NOT_DISTINCT")
+    verify_persistence_receipt(contract, original, persistence)
     original_projection_digest = sha256(journal_projection(original))
     replayed_projection_digest = sha256(journal_projection(reconstructed))
     original_bytes = sha256_bytes(original.canonical_serialization)
@@ -454,12 +499,32 @@ def replay_persisted(
     return reconstructed, replay
 
 
-def verify_evidence_package(
+def _verify_persistence_receipt_integrity(
+    contract: AcceptanceContract,
+    receipt: PersistenceReceipt,
+) -> None:
+    """Validate P as a claim before consulting its repository object."""
+    if receipt.receipt_digest != sha256(receipt.commitment()):
+        raise JournalFailure("PERSISTENCE_RECEIPT_DIGEST_MISMATCH")
+    if receipt.contract_version != contract.contract_version:
+        raise JournalFailure("PERSISTENCE_CONTRACT_VERSION_MISMATCH")
+    if receipt.run_id != contract.expected_run_id:
+        raise JournalFailure("EVIDENCE_RUN_ID_MISMATCH")
+    if receipt.persistence_completed is not True:
+        raise JournalFailure("PERSISTENCE_INCOMPLETE")
+    expected_identity = f"journal://{receipt.run_id}/{receipt.journal_byte_sha256}"
+    if receipt.persistence_identity != expected_identity:
+        raise JournalFailure("PERSISTENCE_OBJECT_IDENTITY_INVALID")
+
+
+def verify_repository_backed_evidence_package(
     contract: AcceptanceContract,
     journal: VerifiedJournal,
     persistence: PersistenceReceipt,
     replay: ReplayReceipt,
+    repository: JournalRepository,
 ) -> VerifiedEvidencePackage:
+    """Verify Omega from P's repository object and issue the projection capability."""
     if not isinstance(journal, VerifiedJournal):
         raise JournalFailure("EVIDENCE_REQUIRES_VERIFIED_JOURNAL")
     independently_verified = verify_complete(
@@ -469,11 +534,19 @@ def verify_evidence_package(
         raise JournalFailure("VERIFIED_JOURNAL_VALUE_MISMATCH")
     if journal.contract_version != contract.contract_version:
         raise JournalFailure("JOURNAL_CONTRACT_VERSION_MISMATCH")
-    verify_persistence_receipt(contract, journal, persistence)
+    _reconstructed, independently_derived_replay = replay_persisted(
+        contract, journal, persistence, repository
+    )
     verify_replay_receipt(contract, journal, persistence, replay)
-    if replay.original_projection_digest != sha256(journal_projection(journal)):
-        raise JournalFailure("REPLAY_PROJECTION_BINDING_MISMATCH")
-    return VerifiedEvidencePackage(journal, persistence, replay)
+    if replay != independently_derived_replay:
+        raise JournalFailure("REPLAY_FACTS_NOT_INDEPENDENTLY_RECONSTRUCTED")
+    return VerifiedEvidencePackage._issue(
+        _REPOSITORY_VERIFICATION_AUTHORITY,
+        contract,
+        journal,
+        persistence,
+        replay,
+    )
 
 
 async def execute_composition() -> Composition:
@@ -548,7 +621,9 @@ async def execute_composition() -> Composition:
     original = verify_complete(shell.journal, contract)
     persistence = persist_verified_journal(contract, original, journal_repository)
     reconstructed, replay = replay_persisted(contract, original, persistence, journal_repository)
-    evidence = verify_evidence_package(contract, original, persistence, replay)
+    evidence = verify_repository_backed_evidence_package(
+        contract, original, persistence, replay, journal_repository
+    )
     return Composition(contract, evidence, reconstructed, journal_repository)
 
 
@@ -560,9 +635,11 @@ def acceptance_projection(
         raise JournalFailure("PROJECTION_REQUIRES_ACCEPTANCE_CONTRACT")
     if not isinstance(evidence, VerifiedEvidencePackage):
         raise JournalFailure("PROJECTION_REQUIRES_VERIFIED_EVIDENCE_PACKAGE")
-    verified = verify_evidence_package(
-        contract, evidence.journal, evidence.persistence, evidence.replay
-    )
+    if getattr(evidence, "_authority", None) is not _REPOSITORY_VERIFICATION_AUTHORITY:
+        raise JournalFailure("PROJECTION_REQUIRES_REPOSITORY_VERIFIED_EVIDENCE_PACKAGE")
+    if getattr(evidence, "_contract", None) != contract:
+        raise JournalFailure("PROJECTION_CONTRACT_BINDING_MISMATCH")
+    verified = evidence
     observed = journal_projection(verified.journal)
     observed_epochs = tuple(
         tuple(map(str, cast(list[object], item["membership"])))

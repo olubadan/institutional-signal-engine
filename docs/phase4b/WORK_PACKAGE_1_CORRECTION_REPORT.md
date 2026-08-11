@@ -12,14 +12,19 @@ The evidence boundary now implements exactly:
 J = seal(compose(E_det, Σ))
 P = persist(J)
 R = replay(P)
-Ω = (J, P, R)
-Certificate = π_CΔ(Ω)
+Ω_verified = verify_repository_backed(CΔ, J, P, R, repository)
+Certificate = π_CΔ(Ω_verified)
 ```
 
 P and R are separate immutable, recalculably digested receipts. Replay reads the
 persisted object identified by P, reconstructs a new journal, reruns structural
 and contract-driven semantic verification, and compares canonical bytes, record
 counts, root digests, and observed projection digests before R exists.
+Certification then gives the production verifier the same repository, reloads
+P's object again, reconstructs and fully verifies a distinct journal, derives
+the replay facts independently, and compares caller-supplied R with those facts.
+Only that repository-backed verifier can issue the package accepted by the
+certificate projection.
 
 The closed semantic language requires exact operation/cause/correlation
 identities, exact epoch diffs, paired command acknowledgements, activation only

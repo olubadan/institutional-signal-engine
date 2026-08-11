@@ -755,3 +755,30 @@
 - No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
   unchanged; PR #6 remains draft and unmerged. The exact journal-closing commit
   and exact-head CI are recorded in GitHub PR evidence and the terminal handoff.
+
+### SESSION-0029 repository-authority correction — 20260811
+
+- Runtime certification now follows `J = seal(compose(E_det, Sigma))`,
+  `P = persist(J)`, `R = replay(P)`,
+  `Omega_verified = verify_repository_backed(CDelta, J, P, R, repository)`, and
+  `Certificate = pi_CDelta(Omega_verified)`.
+- The production verifier receives the persistence repository, loads P's exact
+  content-addressed object, deserializes and fully verifies a distinct journal,
+  enforces exact canonical-byte equality with J, derives replay facts from that
+  reconstruction, and compares caller-supplied R rather than trusting it.
+- The verified evidence package is an opaque capability issued only by that
+  repository-backed path. Projection rejects direct construction and unverified
+  objects. Missing objects fail as `PERSISTED_JOURNAL_MISSING`; stored-byte
+  divergence and invented replay facts have stable specific codes.
+- Local verification passes: Ruff format/lint, strict mypy, dependency lock,
+  structural and secret checks, Bash syntax, 267 hermetic tests, and 53 focused
+  production-path positive/adversarial tests. Local ShellCheck was unavailable;
+  exact-head GitHub CI installs and runs it. Two executions produced byte-identical
+  artifacts. J/P/R/certificate SHA-256 values remain respectively
+  `02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1`,
+  `c97d148f7bbae485be231df2d45714ee749ac80a7de58c3a56a2e96142369835`,
+  `5c8faad0f1c396d3c4ad00965365a4ca156233e89b112e06f3a469b352f524b1`,
+  and `01dbcdcaca2e367aeac5db63bd9b3b4a1818e357d428215b4af9ec1111e40784`.
+- No provider ran. Trading remains disabled and orders remain `0/0`. PR #5 is
+  unchanged; PR #6 remains draft and unmerged. Exact-head publication and CI are
+  confirmed externally after the single correction commit is pushed.

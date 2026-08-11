@@ -24,12 +24,14 @@ from institutional_signal_engine.journal import (
     JOURNAL_KIND_SESSION_FINALIZED,
     JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
     AcceptanceContract,
+    InMemoryJournalRepository,
     Journal,
     JournalFailure,
     PersistenceReceipt,
     ReplayReceipt,
     canonical_json,
     sha256,
+    sha256_bytes,
     verify_complete,
 )
 from institutional_signal_engine.phase4b_certify import (
@@ -39,6 +41,7 @@ from institutional_signal_engine.phase4b_certify import (
     execute_composition,
     replay_persisted,
     validate_certificate,
+    verify_repository_backed_evidence_package,
 )
 
 RawJournal = dict[str, Any]
@@ -106,11 +109,19 @@ def _projection_failure(
     persistence: PersistenceReceipt,
     replay: ReplayReceipt,
 ) -> str:
+    repository = InMemoryJournalRepository()
+    serialized = getattr(journal, "canonical_serialization", None)
+    if isinstance(serialized, str):
+        repository._values[persistence.persistence_identity] = serialized
     try:
-        acceptance_projection(
+        verified = verify_repository_backed_evidence_package(
             contract,
-            VerifiedEvidencePackage(cast(Any, journal), persistence, replay),
+            cast(Any, journal),
+            persistence,
+            replay,
+            repository,
         )
+        acceptance_projection(contract, verified)
     except JournalFailure as exc:
         return exc.code
     pytest.fail("mutated evidence unexpectedly passed production projection")
@@ -144,6 +155,160 @@ def test_positive_evidence_bundle_and_projection_are_exact(composition: Composit
     )
     assert certificate["overall"] == "PASS"
     assert validate_certificate(certificate) == []
+
+
+def test_correct_receipts_cannot_certify_absent_repository_object(
+    composition: Composition,
+) -> None:
+    with pytest.raises(JournalFailure) as failure:
+        verify_repository_backed_evidence_package(
+            composition.contract,
+            composition.evidence.journal,
+            composition.evidence.persistence,
+            composition.evidence.replay,
+            InMemoryJournalRepository(),
+        )
+    assert failure.value.code == "PERSISTED_JOURNAL_MISSING"
+
+
+def test_correctly_digested_receipts_for_wrong_stored_object_are_rejected(
+    composition: Composition,
+) -> None:
+    wrong_serialized = _mutate_journal(
+        composition.evidence.journal.canonical_serialization,
+        lambda raw: _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"].update(
+            diagnostic_marker="wrong-object"
+        ),
+        rehash=True,
+    )
+    wrong_journal = verify_complete(Journal.deserialize(wrong_serialized), composition.contract)
+    repository = InMemoryJournalRepository()
+    identity = repository.save(wrong_journal.run_id, wrong_serialized)
+    persistence = PersistenceReceipt.create(composition.contract, wrong_journal, identity)
+    _, replay = replay_persisted(composition.contract, wrong_journal, persistence, repository)
+    with pytest.raises(JournalFailure) as failure:
+        verify_repository_backed_evidence_package(
+            composition.contract,
+            composition.evidence.journal,
+            persistence,
+            replay,
+            repository,
+        )
+    assert failure.value.code == "PERSISTED_JOURNAL_BYTES_MISMATCH"
+
+
+def test_stored_bytes_must_exactly_equal_sealed_j(composition: Composition) -> None:
+    repository = InMemoryJournalRepository()
+    repository._values[composition.evidence.persistence.persistence_identity] = (
+        composition.evidence.journal.canonical_serialization + "\n"
+    )
+    with pytest.raises(JournalFailure) as failure:
+        verify_repository_backed_evidence_package(
+            composition.contract,
+            composition.evidence.journal,
+            composition.evidence.persistence,
+            composition.evidence.replay,
+            repository,
+        )
+    assert failure.value.code == "PERSISTED_JOURNAL_BYTES_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (
+            lambda raw: (
+                raw.update(run_id="4b000000-0000-4000-8000-000000000099"),
+                [
+                    record.update(run_id="4b000000-0000-4000-8000-000000000099")
+                    for record in raw["records"]
+                ],
+            ),
+            "CONTRACT_RUN_BINDING_MISMATCH",
+        ),
+        (
+            lambda raw: _record(raw, JOURNAL_KIND_CONFIGURATION)["payload"].update(
+                acceptance_contract_version="WRONG_CONTRACT"
+            ),
+            "JOURNAL_CONTRACT_VERSION_MISMATCH",
+        ),
+    ],
+)
+def test_cross_bound_repository_objects_are_rejected_during_reconstruction(
+    composition: Composition,
+    mutation: Callable[[RawJournal], object],
+    expected_code: str,
+) -> None:
+    serialized = _mutate_journal(
+        composition.evidence.journal.canonical_serialization,
+        mutation,
+        rehash=True,
+    )
+    raw = cast(RawJournal, json.loads(serialized))
+    repository = InMemoryJournalRepository()
+    identity = repository.save(composition.contract.expected_run_id, serialized)
+    persistence = _redigest_persistence(
+        replace(
+            composition.evidence.persistence,
+            journal_root_digest=str(raw["seal"]["terminal_digest"]),
+            journal_byte_sha256=sha256_bytes(serialized),
+            journal_record_count=len(raw["records"]),
+            persistence_identity=identity,
+        )
+    )
+    replay = _redigest_replay(replace(composition.evidence.replay, persistence_identity=identity))
+    with pytest.raises(JournalFailure) as failure:
+        verify_repository_backed_evidence_package(
+            composition.contract,
+            composition.evidence.journal,
+            persistence,
+            replay,
+            repository,
+        )
+    assert failure.value.code == expected_code
+
+
+def test_internally_consistent_forged_receipt_is_not_repository_backed(
+    composition: Composition,
+) -> None:
+    forged = PersistenceReceipt.create(
+        composition.contract,
+        composition.evidence.journal,
+        composition.evidence.persistence.persistence_identity,
+    )
+    assert forged.receipt_digest == sha256(forged.commitment())
+    with pytest.raises(JournalFailure) as failure:
+        verify_repository_backed_evidence_package(
+            composition.contract,
+            composition.evidence.journal,
+            forged,
+            composition.evidence.replay,
+            InMemoryJournalRepository(),
+        )
+    assert failure.value.code == "PERSISTED_JOURNAL_MISSING"
+
+
+def test_verified_package_cannot_be_constructed_directly(composition: Composition) -> None:
+    with pytest.raises(JournalFailure) as failure:
+        VerifiedEvidencePackage(
+            composition.evidence.journal,
+            composition.evidence.persistence,
+            composition.evidence.replay,
+        )
+    assert failure.value.code == "VERIFIED_EVIDENCE_CONSTRUCTION_FORBIDDEN"
+
+
+def test_unverified_package_cannot_reach_projection(composition: Composition) -> None:
+    unverified = object.__new__(VerifiedEvidencePackage)
+    with pytest.raises(JournalFailure) as failure:
+        acceptance_projection(composition.contract, unverified)
+    assert failure.value.code == "PROJECTION_REQUIRES_REPOSITORY_VERIFIED_EVIDENCE_PACKAGE"
+
+
+def test_repository_verified_package_is_immutable(composition: Composition) -> None:
+    with pytest.raises(JournalFailure) as failure:
+        composition.evidence._journal = composition.evidence.journal
+    assert failure.value.code == "VERIFIED_EVIDENCE_PACKAGE_IMMUTABLE"
 
 
 def test_j_contains_no_circular_persistence_or_replay_claim(composition: Composition) -> None:
@@ -475,7 +640,7 @@ def test_coherently_fabricated_projection_digests(composition: Composition) -> N
             composition.evidence.persistence,
             changed,
         )
-        == "REPLAY_PROJECTION_BINDING_MISMATCH"
+        == "REPLAY_FACTS_NOT_INDEPENDENTLY_RECONSTRUCTED"
     )
 
 

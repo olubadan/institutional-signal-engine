@@ -21,8 +21,8 @@ The runtime evidence lifecycle is:
 J = seal(compose(E_det, Σ))
 P = persist(J)
 R = replay(P)
-Ω = (J, P, R)
-Certificate = π_CΔ(Ω)
+Ω_verified = verify_repository_backed(CΔ, J, P, R, repository)
+Certificate = π_CΔ(Ω_verified)
 ```
 
 `session.finalized` is the terminal record in J. Sealing prohibits later
@@ -39,6 +39,14 @@ counts, roots, and observed projections. R binds all original/reconstructed
 values, the persistence identity, exact-equality result, and its own receipt
 digest. R is not appended to J.
 
+The production evidence verifier receives the same repository used by
+persistence. It independently reloads P's exact object, reconstructs and fully
+verifies another distinct journal, enforces exact canonical-byte equality with
+J, independently derives the replay receipt facts, and compares caller-supplied
+R against those facts. P and R are claims until that repository-backed boundary
+issues the opaque verified package; neither receipt can establish persistence or
+replay by self-consistency alone.
+
 Every record has a unique operation identity, exact cause-operation identity,
 and a stable correlation identity. Validation checks the exact parent instance
 and the applicable epoch, command, acknowledgement, boundary, disconnect cycle,
@@ -46,7 +54,8 @@ membership, payload, and lifecycle relationship. Unknown, duplicate,
 contradictory, misplaced, or unexpected material observations fail even when an
 attacker coherently recalculates every structural hash.
 
-`π_CΔ(Ω)` receives only immutable CΔ and a verified Ω. The certificate keeps
+`π_CΔ(Ω_verified)` receives only immutable CΔ and the repository-backed verified
+package. Directly constructed or otherwise unverified packages are rejected. The certificate keeps
 expected contract values visibly separate from observed J/P/R facts. Git head,
 worktree status, GitHub CI, and pull-request state are separate build-envelope
 evidence and never enter the runtime certificate. The command is hermetic, runs
