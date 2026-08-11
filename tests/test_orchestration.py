@@ -811,6 +811,46 @@ def test_orchestration_shell_accepts_deterministic_ports(config, settings):
     assert not shell.finalized
 
 
+def test_production_entry_point_wires_orchestration_shell():
+    """phase4_live_smoke.py production entry point has _run_orchestrated wired."""
+    from institutional_signal_engine import phase4_live_smoke
+
+    assert hasattr(phase4_live_smoke, "_run_orchestrated"), (
+        "Production entry point must have _run_orchestrated function"
+    )
+    assert hasattr(phase4_live_smoke, "_run_legacy"), (
+        "Legacy path must remain as _run_legacy for backward compatibility"
+    )
+
+    # Verify OrchestrationShell is importable through the production wiring path
+    from institutional_signal_engine.orchestration import OrchestrationShell, ProductionPlanner
+
+    assert OrchestrationShell is not None
+    assert ProductionPlanner is not None
+
+    # Verify the production main() defaults to orchestration (not legacy)
+    import inspect
+
+    main_source = inspect.getsource(phase4_live_smoke.main)
+    assert "_run_orchestrated" in main_source, (
+        "Production main() must call _run_orchestrated by default"
+    )
+
+
+def test_competing_plan_authority_removed():
+    """The --prepared-plan competing authority is removed from CLI."""
+    import inspect
+
+    from institutional_signal_engine import phase4_live_smoke
+
+    main_source = inspect.getsource(phase4_live_smoke.main)
+    assert "--prepared-plan" not in main_source, (
+        "Competing plan authority --prepared-plan must be removed from CLI"
+    )
+    # plan-output is still available as a diagnostic-only output
+    assert "--plan-output" in main_source, "Diagnostic --plan-output should remain available"
+
+
 # ---------------------------------------------------------------------------
 # 35. Mutated or forged certificate evidence fails validation
 # ---------------------------------------------------------------------------

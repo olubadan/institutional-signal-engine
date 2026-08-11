@@ -754,8 +754,27 @@ def main() -> None:
     parser.add_argument("--startup-timeout-seconds", type=float, default=None)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--plan-output", type=Path)
-    parser.add_argument("--prepared-plan", type=Path)
+    parser.add_argument(
+        "--rth-orchestration",
+        action="store_true",
+        default=True,
+        help="Use OrchestrationShell for continuous RTH reevaluation (default)",
+    )
+    parser.add_argument(
+        "--legacy-frozen-universe",
+        action="store_true",
+        help="Use legacy frozen-universe runner (deprecated)",
+    )
     arguments = parser.parse_args()
+
+    if arguments.legacy_frozen_universe:
+        _run_legacy(arguments)
+    else:
+        _run_orchestrated(arguments)
+
+
+def _run_legacy(arguments: argparse.Namespace) -> None:
+    """Legacy frozen-universe runner (deprecated — use OrchestrationShell)."""
     try:
         result = asyncio.run(
             asyncio.wait_for(
@@ -765,7 +784,7 @@ def main() -> None:
                     arguments.startup_timeout_seconds,
                     prepare_only=arguments.prepare_only,
                     plan_output=arguments.plan_output,
-                    prepared_plan=arguments.prepared_plan,
+                    prepared_plan=None,
                 ),
                 timeout=(arguments.seconds + 2 * (arguments.startup_timeout_seconds or 120) + 30),
             )
@@ -793,6 +812,76 @@ def main() -> None:
             "orders_submitted": 0,
         }
     print(json.dumps(result, sort_keys=True, default=str))
+
+
+def _run_orchestrated(arguments: argparse.Namespace) -> None:
+    """Production RTH orchestration path using OrchestrationShell."""
+    from .dynamic_subscriptions import DynamicSubscriptionAdapter
+    from .orchestration import OrchestrationConfig, OrchestrationShell, ProductionPlanner
+
+    settings = _load_settings()
+    config = OrchestrationConfig.from_settings(settings)
+
+    adapter = DynamicSubscriptionAdapter(
+        events_url=settings.theta_events_url,
+        api_key=_secret(settings.theta_api_key),
+        request_types=("TRADE", "QUOTE"),
+    )
+    adapter.initialise()
+    repository = (
+        PostgresRepository(settings.database_url) if settings.database_url else InMemoryRepository()
+    )
+
+    shell = OrchestrationShell(
+        config=config,
+        settings=settings,
+        subscription_adapter=adapter,
+        planner=ProductionPlanner(
+            trade_limit=settings.phase4_trade_subscription_limit,
+            quote_limit=settings.phase4_quote_subscription_limit,
+            max_contracts_per_symbol=settings.phase4_max_contracts_per_symbol,
+        ),
+        repository=repository,
+    )
+
+    try:
+        session_result = asyncio.run(
+            asyncio.wait_for(
+                shell.run(),
+                timeout=(arguments.seconds + 2 * (arguments.startup_timeout_seconds or 120) + 30),
+            )
+        )
+        output = shell.result()
+        print(json.dumps(output, sort_keys=True, default=str), flush=True)
+        if session_result.status not in {
+            "live_observation_complete",
+            "blocked_no_contracts_selected",
+        }:
+            raise SystemExit(2)
+    except StartupTimeout as exc:
+        report = exc.report()
+        print(json.dumps(report, sort_keys=True), flush=True)
+        raise SystemExit(2)
+    except TimeoutError:
+        report = {
+            "status": "total_command_timeout",
+            "error_category": "total_command_timeout",
+            "trading_enabled": False,
+            "orders_constructed": 0,
+            "orders_submitted": 0,
+        }
+        print(json.dumps(report, sort_keys=True), flush=True)
+        raise SystemExit(2)
+    except (ProviderError, RuntimeError, ValueError) as exc:
+        report = {
+            "status": "blocked",
+            "reason": type(exc).__name__,
+            "trading_enabled": False,
+            "orders_constructed": 0,
+            "orders_submitted": 0,
+        }
+        print(json.dumps(report, sort_keys=True, default=str), flush=True)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

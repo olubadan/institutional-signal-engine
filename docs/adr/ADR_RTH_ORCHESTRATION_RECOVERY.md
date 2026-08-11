@@ -122,11 +122,11 @@ class PlannerEpoch:
     trade_subscriptions: tuple[ThetaContract, ...]
     quote_subscriptions: tuple[ThetaContract, ...]
     additions: tuple[ThetaContract, ...]  # from previous epoch
-    removals: tuple[ThetaContract, ...]   # from previous epoch
+    removals: tuple[ThetaContract, ...]  # from previous epoch
     planner_version: str
     content_hash: str  # SHA-256 of canonical JSON
-    provenance: str     # "production-planner-v1"
-    lifecycle: str      # "pending" | "active" | "superseded" | "finalized"
+    provenance: str  # "production-planner-v1"
+    lifecycle: str  # "pending" | "active" | "superseded" | "finalized"
 ```
 
 ### `DynamicSubscriptionAdapter` (Protocol)
