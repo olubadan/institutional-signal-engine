@@ -63,6 +63,8 @@ from .journal import (
 from .orchestration import DiscoveryPort, EnrichmentPort, PlannerPort, ProductionPlanner
 from .persistence import PostgresRepository
 from .providers.common import ProviderError
+from .providers.alpaca import AlpacaEquitiesProvider
+from .live_smoke import _secret
 from .providers.thetadata import SubscriptionRequest, ThetaContract, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent
 from .universe import PILOT_SYMBOLS, PlannerEpoch
@@ -375,6 +377,7 @@ class LiveSessionEngine:
     reevaluation_interval: timedelta = timedelta(minutes=5)
     acknowledgement_timeout: timedelta = timedelta(seconds=30)
     provider_identity: Mapping[str, object] = field(default_factory=dict)
+    baseline_symbols: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.settings.trading_enabled:
@@ -578,7 +581,7 @@ class LiveSessionEngine:
             sequence,
             now,
             previous,
-            frozenset(),
+            self.baseline_symbols,
         )
         self._append(
             JOURNAL_KIND_EPOCH_CREATED,
@@ -1392,6 +1395,22 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         repository_root,
     )
     boundaries = SessionBoundaries.for_market_date(date.fromisoformat(arguments.market_date))
+    alpaca = AlpacaEquitiesProvider(
+        settings.alpaca_data_url,
+        _secret(settings.alpaca_key_id),
+        _secret(settings.alpaca_secret_key),
+    )
+    historical = await alpaca.historical_bootstrap(
+        (*PILOT_SYMBOLS, "SPY", "XLK"),
+        date.fromisoformat(arguments.market_date),
+    )
+    baseline_symbols = frozenset(
+        str(key[0]).upper()
+        for key in historical.impact_baselines
+        if isinstance(key, tuple) and len(key) == 2
+    )
+    if not baseline_symbols:
+        raise LiveEvidenceFailure("HISTORICAL_BASELINE_UNAVAILABLE")
     discovery, enrichment = _production_ports(settings)
     provider = UnifiedThetaSession(
         settings.theta_events_url,
@@ -1416,6 +1435,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         writer=writer,
         journal_repository=journal_repository,
         authority_key=authority_key,
+        baseline_symbols=baseline_symbols,
         provider_identity={
             "discovery": "alpaca-options-contracts",
             "enrichment": "alpaca-option-snapshots",
