@@ -416,8 +416,7 @@ class LiveSessionEngine:
             if frame.kind == "malformed":
                 raise LiveEvidenceFailure("MALFORMED_PROVIDER_RESPONSE", frame.detail)
             if frame.kind == "event":
-                assert frame.event is not None
-                self._journal_event(frame.event, accepted=False, reason="event_before_activation")
+                # Pre-acknowledgement frames are outside the active session.
                 continue
             request_id = frame.request_id
             if request_id is None or request_id not in pending:
