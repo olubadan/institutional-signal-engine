@@ -166,15 +166,33 @@ class AlpacaEquitiesProvider:
                         while True:
                             if token is not None:
                                 params["page_token"] = token
-                            try:
-                                response = await client.get(
-                                    "/v2/stocks/bars", headers=headers, params=params
-                                )
-                            except httpx.TimeoutException as exc:
-                                raise ProviderError("alpaca", "historical_timeout", True) from exc
-                            if response.status_code != 200:
+                            response = None
+                            for attempt in range(3):
+                                try:
+                                    response = await client.get(
+                                        "/v2/stocks/bars", headers=headers, params=params
+                                    )
+                                except httpx.TimeoutException as exc:
+                                    if attempt == 2:
+                                        raise ProviderError("alpaca", "historical_timeout", True) from exc
+                                    await asyncio.sleep(0.5 * (attempt + 1))
+                                    continue
+                                if response.status_code == 200:
+                                    break
+                                if response.status_code == 429 or response.status_code >= 500:
+                                    if attempt == 2:
+                                        raise ProviderError(
+                                            "alpaca", f"historical_http_{response.status_code}", True
+                                        )
+                                    await asyncio.sleep(0.5 * (attempt + 1))
+                                    continue
                                 raise ProviderError(
                                     "alpaca", f"historical_http_{response.status_code}", False
+                                )
+                            assert response is not None
+                            if response.status_code != 200:
+                                raise ProviderError(
+                                    "alpaca", f"historical_http_{response.status_code}", True
                                 )
                             body = response.json()
                             if not isinstance(body, dict):
