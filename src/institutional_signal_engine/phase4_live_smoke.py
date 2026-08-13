@@ -107,7 +107,7 @@ async def run(
         async def discover() -> None:
             async for contract in catalog.discover_active_calls(
                 PILOT_SYMBOLS,
-                limit=100,
+                limit=10000,
                 expiration_date_gte=as_of + timedelta(days=7),
                 expiration_date_lte=as_of + timedelta(days=45),
             ):
@@ -838,7 +838,7 @@ class _DiscoveryAdapter:
         discovered: list[AlpacaOptionContract] = []
         async for contract in self._catalog.discover_active_calls(
             symbols,
-            limit=100,
+            limit=10000,
             expiration_date_gte=as_of.date() + timedelta(days=7),
             expiration_date_lte=as_of.date() + timedelta(days=45),
         ):

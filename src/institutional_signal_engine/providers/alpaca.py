@@ -148,7 +148,7 @@ class AlpacaEquitiesProvider:
             async with httpx.AsyncClient(
                 base_url=self.historical_url, timeout=self.timeout
             ) as client:
-                semaphore = asyncio.Semaphore(5)
+                semaphore = asyncio.Semaphore(50)
 
                 async def fetch_symbol(symbol: str) -> tuple[str, list[dict[str, Any]]]:
                     async with semaphore:
