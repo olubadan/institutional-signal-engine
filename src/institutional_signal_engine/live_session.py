@@ -416,7 +416,11 @@ class LiveSessionEngine:
             if frame.kind == "malformed":
                 raise LiveEvidenceFailure("MALFORMED_PROVIDER_RESPONSE", frame.detail)
             if frame.kind == "event":
-                # Pre-acknowledgement frames are outside the active session.
+                # Preserve active-channel market frames while a later epoch
+                # transition waits for a provider control response. Frames
+                # before activation remain outside the active session.
+                if frame.event is not None and self.active_epoch is not None:
+                    self._journal_event(frame.event, accepted=True)
                 continue
             request_id = frame.request_id
             if request_id is None or request_id not in pending:
@@ -497,7 +501,8 @@ class LiveSessionEngine:
             str(raw_contract.get("right", "")).upper(),
         )
         if event.event_id in self.seen_events:
-            raise LiveEvidenceFailure("DUPLICATE_EVENT")
+            accepted = False
+            reason = reason or "duplicate_event"
         if self.active_epoch is None:
             accepted = False
             reason = reason or "no_active_epoch"

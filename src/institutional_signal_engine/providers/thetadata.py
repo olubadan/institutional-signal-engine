@@ -394,7 +394,12 @@ class ThetaDataOptionsProvider:
             "feature_reasons": ("requires_open_interest", "requires_resistance_definition"),
         }
         return CanonicalEvent(
-            event_id=uuid5(NAMESPACE_URL, f"thetadata:{symbol}:{timestamp.isoformat()}:{sequence}"),
+            event_id=uuid5(
+                NAMESPACE_URL,
+                "thetadata:"
+                f"{symbol}:{contract['expiration']}:{contract['strike']}:{contract['right']}:"
+                f"{message['header']['type']}:{timestamp.isoformat()}:{sequence}",
+            ),
             kind=EventKind.OPTIONS,
             symbol=symbol,
             source="thetadata",
