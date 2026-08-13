@@ -469,6 +469,11 @@ class LiveSessionEngine:
         action: Literal["add", "remove"],
         contracts: tuple[ThetaContract, ...],
     ) -> None:
+        # The local Theta service accepts REMOVE_TRADE but emits no correlated
+        # REQ_RESPONSE. Retain provider subscriptions and enforce epoch
+        # membership at ingestion; additions remain ACK-gated.
+        if action == "remove":
+            return
         for contract in contracts:
             for channel in REQUIRED_CHANNELS:
                 request = self.provider.prepare_request(action, contract, channel)
@@ -507,7 +512,12 @@ class LiveSessionEngine:
             accepted = False
             reason = reason or "no_active_epoch"
         channel = str(event.payload.get("provider_event_kind", "")).upper()
-        if contract not in self.active_channels or channel not in self.active_channels[contract]:
+        if (
+            self.active_epoch is None
+            or contract not in self.active_epoch.selected_contracts
+            or contract not in self.active_channels
+            or channel not in self.active_channels[contract]
+        ):
             accepted = False
             reason = reason or "not_active_acknowledged"
         if accepted:
