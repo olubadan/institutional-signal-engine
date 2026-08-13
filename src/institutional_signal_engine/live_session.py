@@ -1301,6 +1301,10 @@ def certify_live_bundle(
     return certificate
 
 
+MAX_PROVIDER_MESSAGE_BYTES = 8 * 1024 * 1024
+MESSAGE_PARSE_TIMEOUT_SECONDS = 5.0
+
+
 class UnifiedThetaSession:
     """One Theta WebSocket for commands, acknowledgements, and market events."""
 
@@ -1384,9 +1388,19 @@ class UnifiedThetaSession:
             return InboundFrame("clock", boundary)
         except websockets.ConnectionClosed as exc:
             return InboundFrame("disconnect", datetime.now(ET), detail=type(exc).__name__)
+        if isinstance(raw, (str, bytes)) and len(raw) > MAX_PROVIDER_MESSAGE_BYTES:
+            return InboundFrame("malformed", datetime.now(ET), detail="message_too_large")
         try:
-            message = cast(dict[str, Any], json.loads(raw))
+            message = cast(
+                dict[str, Any],
+                await asyncio.wait_for(
+                    asyncio.to_thread(json.loads, raw),
+                    timeout=MESSAGE_PARSE_TIMEOUT_SECONDS,
+                ),
+            )
             header = cast(dict[str, Any], message.get("header", {}))
+        except TimeoutError:
+            return InboundFrame("malformed", datetime.now(ET), detail="json_parse_timeout")
         except (json.JSONDecodeError, TypeError):
             return InboundFrame("malformed", datetime.now(ET), detail="invalid_json")
         message_type = header.get("type")
