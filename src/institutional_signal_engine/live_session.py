@@ -487,7 +487,7 @@ class LiveSessionEngine:
                 await self.provider.transmit(request)
                 await self._receive_acknowledgements((request,), epoch)
 
-    def _journal_event(self, event: CanonicalEvent, *, accepted: bool, reason: str = "") -> None:
+    def _journal_event(self, event: CanonicalEvent, *, accepted: bool, reason: str = "", checkpoint: bool = True) -> None:
         raw_contract = event.payload.get("contract")
         if not isinstance(raw_contract, dict):
             raise LiveEvidenceFailure("EVENT_CONTRACT_MALFORMED")
