@@ -393,9 +393,10 @@ class LiveSessionEngine:
         self.epoch_count = 0
         self.disconnect_count = 0
 
-    def _append(self, kind: str, **values: Any) -> int:
+    def _append(self, kind: str, *, checkpoint: bool = True, **values: Any) -> int:
         record = self.journal.append(kind, timestamp=self.clock.now(), **values)
-        self.writer.checkpoint(self.journal)
+        if checkpoint:
+            self.writer.checkpoint(self.journal)
         return record.sequence
 
     async def _receive_acknowledgements(
@@ -531,6 +532,7 @@ class LiveSessionEngine:
             canonical_event=event.model_dump(mode="json"),
             processed=accepted,
             connection_generation=self.provider.connection_generation,
+            checkpoint=checkpoint,
         )
 
     async def _discover_epoch(
