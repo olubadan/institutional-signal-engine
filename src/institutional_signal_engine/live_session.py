@@ -1312,7 +1312,7 @@ class UnifiedThetaSession:
             "DENIED",
         }:
             return InboundFrame("terminated", datetime.now(ET), detail="provider_error")
-        if message_type in {"STATUS", "OHLC"}:
+        if message_type in {"STATUS", "OHLC"} or (header.get("status") == "CONNECTED" and message_type not in {"TRADE", "QUOTE"}):
             return await self.receive_until(boundary)
         try:
             # Preserve valid market frames that arrive before their correlated
