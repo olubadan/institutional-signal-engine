@@ -501,7 +501,6 @@ class LiveSessionEngine:
         )
         if event.event_id in self.seen_events:
             raise LiveEvidenceFailure("DUPLICATE_EVENT")
-        self.seen_events.add(event.event_id)
         if self.active_epoch is None:
             accepted = False
             reason = reason or "no_active_epoch"
@@ -509,6 +508,8 @@ class LiveSessionEngine:
         if contract not in self.active_channels or channel not in self.active_channels[contract]:
             accepted = False
             reason = reason or "not_active_acknowledged"
+        if accepted:
+            self.seen_events.add(event.event_id)
         kind = JOURNAL_KIND_EVENT_ACCEPTED if accepted else JOURNAL_KIND_EVENT_REJECTED
         if accepted:
             persisted = event.model_copy(
