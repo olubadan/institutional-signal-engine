@@ -1405,6 +1405,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         settings.alpaca_data_url,
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
+        timeout=30.0,
     )
     historical = await alpaca.historical_bootstrap(
         (*PILOT_SYMBOLS, "SPY", "XLK"),
