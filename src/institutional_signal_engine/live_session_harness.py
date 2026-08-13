@@ -135,6 +135,7 @@ class ScheduledFrame:
 
 class HarnessUnifiedSession(UnifiedSessionPort):
     request_types: tuple[str, ...] = ("TRADE", "QUOTE")
+    supports_removal_acknowledgements = True
 
     def __init__(self, clock: VirtualClock, frames: tuple[ScheduledFrame, ...]) -> None:
         self.clock = clock

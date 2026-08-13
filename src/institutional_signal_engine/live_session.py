@@ -60,11 +60,12 @@ from .journal import (
     sha256_bytes,
     verify_structural,
 )
+from .live_smoke import _secret
+from .mathematical_pipeline import MathematicalPipeline, replay_semantics
 from .orchestration import DiscoveryPort, EnrichmentPort, PlannerPort, ProductionPlanner
 from .persistence import PostgresRepository
-from .providers.common import ProviderError
 from .providers.alpaca import AlpacaEquitiesProvider
-from .live_smoke import _secret
+from .providers.common import ProviderError
 from .providers.thetadata import SubscriptionRequest, ThetaContract, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent
 from .universe import PILOT_SYMBOLS, PlannerEpoch
@@ -304,6 +305,8 @@ class UnifiedSessionPort(Protocol):
 class ObservationRepository(Protocol):
     def record_event(self, event: CanonicalEvent) -> None: ...
 
+    def replay_events(self, run_id: UUID | None = None) -> tuple[CanonicalEvent, ...]: ...
+
     def flush(self) -> None: ...
 
     def durable_identity(self, run_id: UUID) -> str: ...
@@ -330,6 +333,33 @@ class PostgresObservationRepository:
 
     def durable_identity(self, run_id: UUID) -> str:
         return f"postgresql-run://{run_id}"
+
+    def record_decision(self, value: Any) -> None:
+        self._repository.record_decision(value)
+
+    def record_quote_consumption(self, value: Any) -> None:
+        self._repository.record_quote_consumption(value)
+
+    def record_sweep(self, value: dict[str, object]) -> None:
+        self._repository.record_sweep(value)
+
+    def record_impact_cluster(self, value: dict[str, object]) -> None:
+        self._repository.record_impact_cluster(value)
+
+    def record_impact_session(self, value: dict[str, object]) -> None:
+        self._repository.record_impact_session(value)
+
+    def record_shared_feature_vector(self, value: dict[str, object]) -> None:
+        self._repository.record_shared_feature_vector(value)
+
+    def record_model_comparison(self, value: dict[str, object]) -> None:
+        self._repository.record_model_comparison(value)
+
+    def record_control_evaluation(self, value: dict[str, object]) -> None:
+        self._repository.record_control_evaluation(value)
+
+    def replay_events(self, run_id: UUID | None = None) -> tuple[CanonicalEvent, ...]:
+        return tuple(self._repository.replay_events(run_id))
 
 
 class BundleWriter:
@@ -378,6 +408,7 @@ class LiveSessionEngine:
     acknowledgement_timeout: timedelta = timedelta(seconds=30)
     provider_identity: Mapping[str, object] = field(default_factory=dict)
     baseline_symbols: frozenset[str] = frozenset()
+    mathematical_pipeline: MathematicalPipeline | None = None
 
     def __post_init__(self) -> None:
         if self.settings.trading_enabled:
@@ -472,7 +503,9 @@ class LiveSessionEngine:
         # The local Theta service accepts REMOVE_TRADE but emits no correlated
         # REQ_RESPONSE. Retain provider subscriptions and enforce epoch
         # membership at ingestion; additions remain ACK-gated.
-        if action == "remove":
+        if action == "remove" and not getattr(
+            self.provider, "supports_removal_acknowledgements", False
+        ):
             return
         for contract in contracts:
             for channel in REQUIRED_CHANNELS:
@@ -495,7 +528,9 @@ class LiveSessionEngine:
                 await self.provider.transmit(request)
                 await self._receive_acknowledgements((request,), epoch)
 
-    def _journal_event(self, event: CanonicalEvent, *, accepted: bool, reason: str = "", checkpoint: bool = True) -> None:
+    def _journal_event(
+        self, event: CanonicalEvent, *, accepted: bool, reason: str = "", checkpoint: bool = True
+    ) -> None:
         raw_contract = event.payload.get("contract")
         if not isinstance(raw_contract, dict):
             raise LiveEvidenceFailure("EVENT_CONTRACT_MALFORMED")
@@ -530,6 +565,10 @@ class LiveSessionEngine:
             self.repository.record_event(persisted)
             self.event_count += 1
             self.processed_count += 1
+            if self.mathematical_pipeline is not None:
+                self.mathematical_pipeline.process_accepted(event)
+        elif self.mathematical_pipeline is not None:
+            self.mathematical_pipeline.record_rejected(event, reason)
         self._append(
             kind,
             parent_sequence=self.journal.sequence - 1,
@@ -684,24 +723,30 @@ class LiveSessionEngine:
         )
 
     async def execute(self) -> dict[str, object]:
+        session_metadata: dict[str, Any] = {
+            **self.boundaries.as_dict(),
+            **self.identity.as_dict(),
+        }
         self._append(
             JOURNAL_KIND_SESSION_START,
             operation_id="session-start",
             correlation_id="session-lifecycle",
             session_id=str(self.run_id),
-            **self.boundaries.as_dict(),
-            **self.identity.as_dict(),
+            **session_metadata,
             trading_enabled=False,
             orders_constructed=0,
             orders_submitted=0,
             impact_mode=IMPACT_MODE,
         )
+        configuration_metadata: dict[str, Any] = {
+            **self.identity.as_dict(),
+        }
         self._append(
             JOURNAL_KIND_CONFIGURATION,
             parent_sequence=0,
             operation_id="configuration-load",
             correlation_id="session-lifecycle",
-            **self.identity.as_dict(),
+            **configuration_metadata,
             reevaluation_interval_seconds=self.reevaluation_interval.total_seconds(),
             acknowledgement_timeout_seconds=self.acknowledgement_timeout.total_seconds(),
             opens_at=self.boundaries.opens_at.isoformat(),
@@ -1004,6 +1049,39 @@ def _publish_completed_bundle(engine: LiveSessionEngine) -> dict[str, object]:
         ),
         REPLAY_RECEIPT_NAME: engine.writer.publish_component(REPLAY_RECEIPT_NAME, replay),
     }
+    if engine.mathematical_pipeline is not None:
+        mathematical = engine.mathematical_pipeline.snapshot()
+        persisted_events = engine.repository.replay_events(engine.run_id)
+        replayed = replay_semantics(
+            persisted_events,
+            engine.settings,
+            engine.mathematical_pipeline.symbols,
+            engine.run_id,
+        )
+        replay_fields = (
+            "decisions",
+            "feature_vectors",
+            "comparisons",
+            "control_evaluation_records",
+        )
+        replay_equal = all(
+            mathematical.get(field) == replayed.get(field) for field in replay_fields
+        )
+        mathematical["fresh_process_replay_equal"] = replay_equal
+        mathematical["fresh_process_replay"] = replayed
+        if not replay_equal:
+            raise LiveEvidenceFailure("MATHEMATICAL_REPLAY_EQUALITY_FAILED")
+        components["MATHEMATICAL_PIPELINE.json"] = engine.writer.publish_component(
+            "MATHEMATICAL_PIPELINE.json", mathematical
+        )
+        components["SHARED_FEATURE_VECTORS.json"] = engine.writer.publish_component(
+            "SHARED_FEATURE_VECTORS.json",
+            {"version": "SHARED_FEATURE_VECTOR_V1", "vectors": mathematical["feature_vectors"]},
+        )
+        components["MODEL_COMPARISON.json"] = engine.writer.publish_component(
+            "MODEL_COMPARISON.json",
+            {"version": "CONTROL_SHADOW_COMPARISON_V1", "comparisons": mathematical["comparisons"]},
+        )
     assert engine.journal.seal_value is not None
     commitment: dict[str, object] = {
         "manifest_version": MANIFEST_VERSION,
@@ -1328,7 +1406,9 @@ class UnifiedThetaSession:
             "DENIED",
         }:
             return InboundFrame("terminated", datetime.now(ET), detail="provider_error")
-        if message_type in {"STATUS", "OHLC"} or (header.get("status") == "CONNECTED" and message_type not in {"TRADE", "QUOTE"}):
+        if message_type in {"STATUS", "OHLC"} or (
+            header.get("status") == "CONNECTED" and message_type not in {"TRADE", "QUOTE"}
+        ):
             return await self.receive_until(boundary)
         try:
             # Preserve valid market frames that arrive before their correlated
@@ -1343,7 +1423,11 @@ class UnifiedThetaSession:
         except (KeyError, TypeError, ValueError) as exc:
             return InboundFrame("malformed", datetime.now(ET), detail=type(exc).__name__)
         if event is None:
-            return InboundFrame("malformed", datetime.now(ET), detail=f"unknown_message:{message_type}:{header.get('status', '')}")
+            return InboundFrame(
+                "malformed",
+                datetime.now(ET),
+                detail=f"unknown_message:{message_type}:{header.get('status', '')}",
+            )
         return InboundFrame("event", datetime.now(ET), event=event)
 
 
@@ -1466,6 +1550,13 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
             "events": "thetadata-terminal-standard",
         },
     )
+    engine.mathematical_pipeline = MathematicalPipeline(
+        settings,
+        repository,
+        engine.run_id,
+        PILOT_SYMBOLS,
+    )
+
     async def finish_bootstrap() -> object | None:
         try:
             historical = await bootstrap_task
@@ -1487,7 +1578,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
                 json.dumps(status, sort_keys=True) + "\n"
             )
             return historical
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - bootstrap status must capture sanitized failure
             status = {
                 "status": "FAILED",
                 "started_at": bootstrap_started.isoformat(),

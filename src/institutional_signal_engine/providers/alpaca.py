@@ -183,7 +183,9 @@ class AlpacaEquitiesProvider:
                                     )
                                 except httpx.TimeoutException as exc:
                                     if attempt == 2:
-                                        raise ProviderError("alpaca", "historical_timeout", True) from exc
+                                        raise ProviderError(
+                                            "alpaca", "historical_timeout", True
+                                        ) from exc
                                     await asyncio.sleep(0.5 * (attempt + 1))
                                     continue
                                 if response.status_code == 200:
@@ -191,7 +193,9 @@ class AlpacaEquitiesProvider:
                                 if response.status_code == 429 or response.status_code >= 500:
                                     if attempt == 2:
                                         raise ProviderError(
-                                            "alpaca", f"historical_http_{response.status_code}", True
+                                            "alpaca",
+                                            f"historical_http_{response.status_code}",
+                                            True,
                                         )
                                     retry_after = response.headers.get("retry-after")
                                     try:
@@ -265,6 +269,7 @@ class AlpacaEquitiesProvider:
             )
             highs[symbol] = {day: high for day, _, high in completed[-252:]}
             completed_days_by_symbol[symbol] = {day for day, _, _ in completed}
+
         async def process_minute_batch(
             batch_rows: dict[str, list[dict[str, Any]]],
         ) -> None:
@@ -281,7 +286,9 @@ class AlpacaEquitiesProvider:
                     ):
                         continue
                     minute_index = (local.hour * 60 + local.minute) - 570
-                    by_day.setdefault(local.date().isoformat(), {})[minute_index] = int(row.get("v", 0))
+                    by_day.setdefault(local.date().isoformat(), {})[minute_index] = int(
+                        row.get("v", 0)
+                    )
                 profiles[symbol] = {
                     minute_index: tuple(
                         Decimal(sum(volumes.get(index, 0) for index in range(minute_index + 1)))

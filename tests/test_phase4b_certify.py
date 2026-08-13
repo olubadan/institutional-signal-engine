@@ -276,7 +276,7 @@ def test_environment_and_cwd_do_not_select_contract(
     artifacts = generate_phase4b_certification(_paths(tmp_path / "out"))
     assert (
         artifacts.journal_sha256
-        == "02fa0820152556db2b6a3620224a77865238a393e83536a39399d886406522c1"
+        == "932ce1afbbd5bd6a84393962fdd9ad06ad1c1b095d789820a5019648b33244b8"
     )
 
 

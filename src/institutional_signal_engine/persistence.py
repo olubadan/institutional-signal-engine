@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS sweep_transitions (run_id uuid NOT NULL, cluster_id u
 CREATE TABLE IF NOT EXISTS universe_audits (run_id uuid NOT NULL, audit_order bigint GENERATED ALWAYS AS IDENTITY, symbol text NOT NULL, included boolean NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, audit_order));
 CREATE TABLE IF NOT EXISTS impact_clusters (run_id uuid NOT NULL, cluster_id text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS impact_sessions (run_id uuid NOT NULL, symbol text NOT NULL, as_of timestamptz NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, symbol, as_of));
+CREATE TABLE IF NOT EXISTS shared_feature_vectors (run_id uuid NOT NULL, cluster_id text NOT NULL, version text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
+CREATE TABLE IF NOT EXISTS model_comparisons (run_id uuid NOT NULL, cluster_id text NOT NULL, version text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
+CREATE TABLE IF NOT EXISTS control_evaluations (run_id uuid NOT NULL, decision_id uuid NOT NULL, version text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, decision_id));
 """
 
 
@@ -30,6 +33,9 @@ class InMemoryRepository:
         self.universe_audits: list[dict[str, object]] = []
         self.impact_clusters: list[dict[str, object]] = []
         self.impact_sessions: list[dict[str, object]] = []
+        self.shared_feature_vectors: list[dict[str, object]] = []
+        self.model_comparisons: list[dict[str, object]] = []
+        self.control_evaluations: list[dict[str, object]] = []
         self.probes: list[str] = []
 
     def write_drain_probe(self, probe_id: str) -> bool:
@@ -80,6 +86,24 @@ class InMemoryRepository:
     def record_impact_session(self, session: dict[str, object]) -> None:
         self.impact_sessions.append(session)
 
+    def record_shared_feature_vector(self, vector: dict[str, object]) -> None:
+        if vector.get("cluster_id") not in {
+            item.get("cluster_id") for item in self.shared_feature_vectors
+        }:
+            self.shared_feature_vectors.append(vector)
+
+    def record_model_comparison(self, comparison: dict[str, object]) -> None:
+        if comparison.get("cluster_id") not in {
+            item.get("cluster_id") for item in self.model_comparisons
+        }:
+            self.model_comparisons.append(comparison)
+
+    def record_control_evaluation(self, evaluation: dict[str, object]) -> None:
+        if evaluation.get("decision_id") not in {
+            item.get("decision_id") for item in self.control_evaluations
+        }:
+            self.control_evaluations.append(evaluation)
+
     def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         values = self.impact_clusters
         if run_id is not None:
@@ -123,6 +147,9 @@ class PostgresRepository:
         self._pending_universe: list[dict[str, object]] = []
         self._pending_impact_clusters: list[dict[str, object]] = []
         self._pending_impact_sessions: list[dict[str, object]] = []
+        self._pending_shared_feature_vectors: list[dict[str, object]] = []
+        self._pending_model_comparisons: list[dict[str, object]] = []
+        self._pending_control_evaluations: list[dict[str, object]] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -219,6 +246,9 @@ class PostgresRepository:
             and not self._pending_universe
             and not self._pending_impact_clusters
             and not self._pending_impact_sessions
+            and not self._pending_shared_feature_vectors
+            and not self._pending_model_comparisons
+            and not self._pending_control_evaluations
         ):
             return
         connection = self._session()
@@ -311,6 +341,39 @@ class PostgresRepository:
                 ),
             )
         self._pending_impact_sessions.clear()
+        for vector in self._pending_shared_feature_vectors:
+            connection.execute(
+                "INSERT INTO shared_feature_vectors (run_id,cluster_id,version,payload) VALUES (%s,%s,%s,%s) ON CONFLICT (run_id,cluster_id) DO NOTHING",
+                (
+                    vector["run_id"],
+                    vector["cluster_id"],
+                    vector["version"],
+                    json.dumps(vector, default=str),
+                ),
+            )
+        self._pending_shared_feature_vectors.clear()
+        for comparison in self._pending_model_comparisons:
+            connection.execute(
+                "INSERT INTO model_comparisons (run_id,cluster_id,version,payload) VALUES (%s,%s,%s,%s) ON CONFLICT (run_id,cluster_id) DO NOTHING",
+                (
+                    comparison["run_id"],
+                    comparison["cluster_id"],
+                    comparison["version"],
+                    json.dumps(comparison, default=str),
+                ),
+            )
+        self._pending_model_comparisons.clear()
+        for evaluation in self._pending_control_evaluations:
+            connection.execute(
+                "INSERT INTO control_evaluations (run_id,decision_id,version,payload) VALUES (%s,%s,%s,%s) ON CONFLICT (run_id,decision_id) DO NOTHING",
+                (
+                    evaluation["run_id"],
+                    evaluation["decision_id"],
+                    evaluation["version"],
+                    json.dumps(evaluation, default=str),
+                ),
+            )
+        self._pending_control_evaluations.clear()
 
     @staticmethod
     def _decision_parameters(decision: Decision) -> tuple[object, ...]:
@@ -362,6 +425,21 @@ class PostgresRepository:
     def record_impact_session(self, session: dict[str, object]) -> None:
         self._pending_impact_sessions.append(session)
         if len(self._pending_impact_sessions) >= 100:
+            self.flush()
+
+    def record_shared_feature_vector(self, vector: dict[str, object]) -> None:
+        self._pending_shared_feature_vectors.append(vector)
+        if len(self._pending_shared_feature_vectors) >= 100:
+            self.flush()
+
+    def record_model_comparison(self, comparison: dict[str, object]) -> None:
+        self._pending_model_comparisons.append(comparison)
+        if len(self._pending_model_comparisons) >= 100:
+            self.flush()
+
+    def record_control_evaluation(self, evaluation: dict[str, object]) -> None:
+        self._pending_control_evaluations.append(evaluation)
+        if len(self._pending_control_evaluations) >= 100:
             self.flush()
 
     def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
