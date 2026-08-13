@@ -1318,7 +1318,15 @@ class UnifiedThetaSession:
         if message_type == "STATUS":
             return await self.receive_until(boundary)
         try:
-            event = self._normalizer._normalize(message)
+            # Preserve valid market frames that arrive before their correlated
+            # subscription acknowledgement; the engine journals them as rejected
+            # until activation. The provider normalizer otherwise filters them.
+            acknowledged = self._normalizer.acknowledged_contracts
+            self._normalizer.acknowledged_contracts = set()
+            try:
+                event = self._normalizer._normalize(message)
+            finally:
+                self._normalizer.acknowledged_contracts = acknowledged
         except (KeyError, TypeError, ValueError) as exc:
             return InboundFrame("malformed", datetime.now(ET), detail=type(exc).__name__)
         if event is None:
