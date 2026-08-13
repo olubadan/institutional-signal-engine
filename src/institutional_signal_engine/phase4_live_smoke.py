@@ -892,12 +892,13 @@ class _EnrichmentAdapter:
             feed="opra",
         )
         quote_by_contract = {e.identity.theta_contract(): e for e in quote_evidence}
+        observation_now = datetime.now(ZoneInfo("America/New_York"))
         enrichment = finalize_liquidity(
             coarse_selections,
             mapping_results,
             quote_by_contract,
             {},
-            as_of,
+            observation_now,
             max_quote_age_seconds=self._settings.phase4_quote_freshness_seconds,
             maximum_spread=self._settings.thresholds.maximum_spread,
             minimum_quote_size=self._settings.phase4_min_quote_size,
