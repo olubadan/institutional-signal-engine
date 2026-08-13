@@ -213,6 +213,13 @@ class HarnessObservationRepository(ObservationRepository):
             raise ValueError("harness_repository_exists")
         self.path.write_text(canonical_json(self.events), encoding="utf-8")
 
+    def replay_events(self, run_id: UUID | None = None) -> tuple[CanonicalEvent, ...]:
+        """Reconstruct canonical events in the exact persisted ingest order."""
+        events = tuple(CanonicalEvent.model_validate(raw) for raw in self.events)
+        if run_id is not None:
+            events = tuple(event for event in events if event.run_id == run_id)
+        return tuple(sorted(events, key=lambda event: (event.ingest_order, event.event_id)))
+
     def durable_identity(self, run_id: UUID) -> str:
         return f"harness-observation-repository://{run_id}/{sha256(self.events)}"
 
