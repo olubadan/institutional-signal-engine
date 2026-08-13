@@ -1445,6 +1445,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         journal_repository=journal_repository,
         authority_key=authority_key,
         baseline_symbols=baseline_symbols,
+        acknowledgement_timeout=timedelta(seconds=180),
         provider_identity={
             "discovery": "alpaca-options-contracts",
             "enrichment": "alpaca-option-snapshots",
