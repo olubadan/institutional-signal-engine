@@ -465,7 +465,6 @@ class LiveSessionEngine:
         action: Literal["add", "remove"],
         contracts: tuple[ThetaContract, ...],
     ) -> None:
-        requests: list[SubscriptionRequest] = []
         for contract in contracts:
             for channel in REQUIRED_CHANNELS:
                 request = self.provider.prepare_request(action, contract, channel)
@@ -485,9 +484,7 @@ class LiveSessionEngine:
                     channel=channel,
                 )
                 await self.provider.transmit(request)
-                requests.append(request)
-        if requests:
-            await self._receive_acknowledgements(tuple(requests), epoch)
+                await self._receive_acknowledgements((request,), epoch)
 
     def _journal_event(self, event: CanonicalEvent, *, accepted: bool, reason: str = "") -> None:
         raw_contract = event.payload.get("contract")
