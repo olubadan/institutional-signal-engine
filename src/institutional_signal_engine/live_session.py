@@ -1315,7 +1315,7 @@ class UnifiedThetaSession:
             "DENIED",
         }:
             return InboundFrame("terminated", datetime.now(ET), detail="provider_error")
-        if message_type == "STATUS":
+        if message_type in {"STATUS", "OHLC"}:
             return await self.receive_until(boundary)
         try:
             # Preserve valid market frames that arrive before their correlated
@@ -1330,7 +1330,7 @@ class UnifiedThetaSession:
         except (KeyError, TypeError, ValueError) as exc:
             return InboundFrame("malformed", datetime.now(ET), detail=type(exc).__name__)
         if event is None:
-            return InboundFrame("malformed", datetime.now(ET), detail="unknown_message")
+            return InboundFrame("malformed", datetime.now(ET), detail=f"unknown_message:{message_type}:{header.get('status', '')}")
         return InboundFrame("event", datetime.now(ET), event=event)
 
 
