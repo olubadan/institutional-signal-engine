@@ -144,16 +144,25 @@ class AlpacaEquitiesProvider:
             "APCA-API-SECRET-KEY": self.secret_key,
         }
 
-        async def fetch(timeframe: str) -> dict[str, list[dict[str, Any]]]:
+        async def fetch(
+            timeframe: str,
+            on_batch: Any | None = None,
+        ) -> dict[str, list[dict[str, Any]]]:
             async with httpx.AsyncClient(
                 base_url=self.historical_url, timeout=self.timeout
             ) as client:
-                semaphore = asyncio.Semaphore(50)
+                # Alpaca accepts a comma-separated symbol set for bars. Batch
+                # requests keep the 501-symbol candidate universe intact while
+                # avoiding one synchronous request per symbol.
+                batch_size = 50
+                semaphore = asyncio.Semaphore(5)
 
-                async def fetch_symbol(symbol: str) -> tuple[str, list[dict[str, Any]]]:
+                async def fetch_batch(
+                    batch: tuple[str, ...],
+                ) -> dict[str, list[dict[str, Any]]]:
                     async with semaphore:
                         params: dict[str, str | int] = {
-                            "symbols": symbol,
+                            "symbols": ",".join(batch),
                             "timeframe": timeframe,
                             "start": f"{start.isoformat()}T00:00:00Z",
                             "end": f"{end.isoformat()}T23:59:59Z",
@@ -166,7 +175,7 @@ class AlpacaEquitiesProvider:
                         while True:
                             if token is not None:
                                 params["page_token"] = token
-                            response = None
+                            response: httpx.Response | None = None
                             for attempt in range(3):
                                 try:
                                     response = await client.get(
@@ -184,7 +193,12 @@ class AlpacaEquitiesProvider:
                                         raise ProviderError(
                                             "alpaca", f"historical_http_{response.status_code}", True
                                         )
-                                    await asyncio.sleep(0.5 * (attempt + 1))
+                                    retry_after = response.headers.get("retry-after")
+                                    try:
+                                        delay = min(10.0, max(0.5, float(retry_after or 0)))
+                                    except ValueError:
+                                        delay = 0.5 * (attempt + 1)
+                                    await asyncio.sleep(delay)
                                     continue
                                 raise ProviderError(
                                     "alpaca", f"historical_http_{response.status_code}", False
@@ -198,24 +212,37 @@ class AlpacaEquitiesProvider:
                             if not isinstance(body, dict):
                                 raise ProviderError("alpaca", "historical_malformed", False)
                             bars = body.get("bars", {})
-                            if isinstance(bars, dict):
+                            if not isinstance(bars, dict):
+                                raise ProviderError("alpaca", "historical_malformed_bars", False)
+                            for symbol in batch:
                                 symbol_rows = bars.get(symbol, [])
                                 if isinstance(symbol_rows, list):
                                     rows.extend(row for row in symbol_rows if isinstance(row, dict))
                             token_value = body.get("next_page_token")
                             token = str(token_value) if token_value else None
                             if token is None:
-                                return symbol, rows
+                                return {symbol: rows for symbol in batch}
 
-                fetched = await asyncio.gather(*(fetch_symbol(symbol) for symbol in requested))
-                return dict(fetched)
+                batches = tuple(
+                    requested[offset : offset + batch_size]
+                    for offset in range(0, len(requested), batch_size)
+                )
+                merged: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in requested}
+                for batch in batches:
+                    batch_rows = await fetch_batch(batch)
+                    if on_batch is not None:
+                        await on_batch(batch_rows)
+                        continue
+                    for symbol, rows in batch_rows.items():
+                        merged[symbol].extend(rows)
+                return merged
 
         daily = await fetch("1Day")
-        minute = await fetch("1Min")
         previous: dict[str, PreviousClose] = {}
         highs: dict[str, dict[str, Decimal]] = {}
         profiles: dict[str, dict[int, tuple[Decimal, ...]]] = {}
         impact_baselines = {}
+        completed_days_by_symbol: dict[str, set[str]] = {}
         for symbol in requested:
             daily_rows = sorted(daily[symbol], key=lambda row: str(row.get("t", "")))
             completed: list[tuple[str, Decimal, Decimal]] = []
@@ -237,42 +264,51 @@ class AlpacaEquitiesProvider:
                 "alpaca:stocks/bars:adjustment=split",
             )
             highs[symbol] = {day: high for day, _, high in completed[-252:]}
-            completed_days = {day for day, _, _ in completed}
-            by_day: dict[str, dict[int, int]] = {}
-            for row in minute[symbol]:
-                timestamp = datetime.fromisoformat(str(row["t"]))
-                local = timestamp.astimezone(ET)
-                if local.date().isoformat() not in completed_days or not (
-                    datetime.min.time().replace(hour=9, minute=30)
-                    <= local.time()
-                    < datetime.min.time().replace(hour=16)
-                ):
-                    continue
-                minute_index = (local.hour * 60 + local.minute) - 570
-                by_day.setdefault(local.date().isoformat(), {})[minute_index] = int(row.get("v", 0))
-            profile: dict[int, tuple[Decimal, ...]] = {}
-            for minute_index in range(390):
-                profile[minute_index] = tuple(
-                    Decimal(sum(volumes.get(index, 0) for index in range(minute_index + 1)))
-                    for volumes in by_day.values()
+            completed_days_by_symbol[symbol] = {day for day, _, _ in completed}
+        async def process_minute_batch(
+            batch_rows: dict[str, list[dict[str, Any]]],
+        ) -> None:
+            for symbol, minute_rows in batch_rows.items():
+                completed_days = completed_days_by_symbol[symbol]
+                by_day: dict[str, dict[int, int]] = {}
+                for row in minute_rows:
+                    timestamp = datetime.fromisoformat(str(row["t"]))
+                    local = timestamp.astimezone(ET)
+                    if local.date().isoformat() not in completed_days or not (
+                        datetime.min.time().replace(hour=9, minute=30)
+                        <= local.time()
+                        < datetime.min.time().replace(hour=16)
+                    ):
+                        continue
+                    minute_index = (local.hour * 60 + local.minute) - 570
+                    by_day.setdefault(local.date().isoformat(), {})[minute_index] = int(row.get("v", 0))
+                profiles[symbol] = {
+                    minute_index: tuple(
+                        Decimal(sum(volumes.get(index, 0) for index in range(minute_index + 1)))
+                        for volumes in by_day.values()
+                    )
+                    for minute_index in range(390)
+                }
+                impact_baselines.update(
+                    calculate_five_minute_baselines(
+                        symbol,
+                        tuple(
+                            {
+                                "timestamp": row["t"],
+                                "volume": row.get("v", 0),
+                                "close": row.get("c"),
+                            }
+                            for row in minute_rows
+                        ),
+                        session,
+                        "split",
+                        "alpaca:stocks/bars:completed-regular-sessions",
+                    )
                 )
-            profiles[symbol] = profile
-            impact_baselines.update(
-                calculate_five_minute_baselines(
-                    symbol,
-                    tuple(
-                        {
-                            "timestamp": row["t"],
-                            "volume": row.get("v", 0),
-                            "close": row.get("c"),
-                        }
-                        for row in minute[symbol]
-                    ),
-                    session,
-                    "split",
-                    "alpaca:stocks/bars:completed-regular-sessions",
-                )
-            )
+
+        await fetch("1Min", on_batch=process_minute_batch)
+        for symbol in requested:
+            profiles.setdefault(symbol, {minute_index: () for minute_index in range(390)})
         return HistoricalBootstrap(
             session=session.isoformat(),
             previous_closes=previous,

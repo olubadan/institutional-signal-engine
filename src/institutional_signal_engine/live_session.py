@@ -1408,17 +1408,13 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         _secret(settings.alpaca_secret_key),
         timeout=30.0,
     )
-    historical = await alpaca.historical_bootstrap(
-        (*PILOT_SYMBOLS, "SPY", "XLK"),
-        date.fromisoformat(arguments.market_date),
+    bootstrap_started = datetime.now(UTC)
+    bootstrap_task = asyncio.create_task(
+        alpaca.historical_bootstrap(
+            (*PILOT_SYMBOLS, "SPY", "XLK"),
+            date.fromisoformat(arguments.market_date),
+        )
     )
-    baseline_symbols = frozenset(
-        str(key[0]).upper()
-        for key in historical.impact_baselines
-        if isinstance(key, tuple) and len(key) == 2
-    )
-    if not baseline_symbols:
-        raise LiveEvidenceFailure("HISTORICAL_BASELINE_UNAVAILABLE")
     discovery, enrichment = _production_ports(settings)
     provider = UnifiedThetaSession(
         settings.theta_events_url,
@@ -1443,7 +1439,11 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         writer=writer,
         journal_repository=journal_repository,
         authority_key=authority_key,
-        baseline_symbols=baseline_symbols,
+        # The 501-symbol historical bootstrap runs concurrently. The live
+        # observer may activate with an empty initial baseline set; once the
+        # immutable bootstrap completes, later epochs receive its symbols and
+        # the persisted status binds offline shadow scoring to this run.
+        baseline_symbols=frozenset(),
         acknowledgement_timeout=timedelta(seconds=900),
         provider_identity={
             "discovery": "alpaca-options-contracts",
@@ -1451,7 +1451,46 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
             "events": "thetadata-terminal-standard",
         },
     )
-    return await engine.execute()
+    async def finish_bootstrap() -> object | None:
+        try:
+            historical = await bootstrap_task
+            baseline_symbols = frozenset(
+                str(key[0]).upper()
+                for key in historical.impact_baselines
+                if isinstance(key, tuple) and len(key) == 2
+            )
+            engine.baseline_symbols = baseline_symbols
+            status = {
+                "status": "COMPLETE",
+                "started_at": bootstrap_started.isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "candidate_symbol_count": len(PILOT_SYMBOLS),
+                "baseline_symbol_count": len(baseline_symbols),
+                "source": historical.source_provenance,
+            }
+            (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(
+                json.dumps(status, sort_keys=True) + "\n"
+            )
+            return historical
+        except Exception as exc:
+            status = {
+                "status": "FAILED",
+                "started_at": bootstrap_started.isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "candidate_symbol_count": len(PILOT_SYMBOLS),
+                "error_type": type(exc).__name__,
+            }
+            (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(
+                json.dumps(status, sort_keys=True) + "\n"
+            )
+            return None
+
+    bootstrap_monitor = asyncio.create_task(finish_bootstrap())
+    try:
+        return await engine.execute()
+    finally:
+        if not bootstrap_monitor.done():
+            await bootstrap_monitor
 
 
 def build_parser() -> argparse.ArgumentParser:
