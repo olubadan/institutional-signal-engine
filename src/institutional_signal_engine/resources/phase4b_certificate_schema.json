@@ -12,7 +12,7 @@
       "required": ["contract_version", "canonical_sha256", "expected_run_id", "expected_epoch_memberships", "expected_clock_boundaries", "required_invariants"],
       "properties": {
         "contract_version": {"const": "PHASE4B_ACCEPTANCE_CONTRACT_V3"},
-        "canonical_sha256": {"const": "3214931c796021315c5c1179d4977ebcd97bc7809a3a29e280fba8be120f6306"},
+        "canonical_sha256": {"const": "a5f5b827a06481be9f9010e05e0913d09ff42d73bd4e40a2da99a1f9792651de"},
         "expected_run_id": {"type": "string", "format": "uuid"},
         "expected_epoch_memberships": {"type": "array", "minItems": 3, "maxItems": 3},
         "expected_clock_boundaries": {"type": "array", "minItems": 2, "maxItems": 2},

@@ -76,7 +76,7 @@ RUN_ID: Final = UUID("4b000000-0000-4000-8000-000000000027")
 CONTRACT_RESOURCE: Final = "resources/phase4b_acceptance_contract.json"
 SCHEMA_RESOURCE: Final = "resources/phase4b_certificate_schema.json"
 CONTRACT_CANONICAL_SHA256: Final = (
-    "3214931c796021315c5c1179d4977ebcd97bc7809a3a29e280fba8be120f6306"
+    "a5f5b827a06481be9f9010e05e0913d09ff42d73bd4e40a2da99a1f9792651de"
 )
 # Updated only when the checked-in scenario definition is intentionally changed.
 SCENARIO_CANONICAL_SHA256: Final = (
