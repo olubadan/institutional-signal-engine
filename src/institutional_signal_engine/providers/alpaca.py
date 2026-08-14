@@ -35,6 +35,10 @@ class AlpacaEquitiesProvider:
         self.historical_url = historical_url.rstrip("/")
         self.authenticated = False
         self.connection_generation = 0
+        self.subscription_acknowledged = False
+        self.subscription_requested_symbols: tuple[str, ...] = ()
+        self.subscription_accepted_symbols: tuple[str, ...] = ()
+        self.subscription_rejected_symbols: tuple[str, ...] = ()
 
     @staticmethod
     def _authentication_result(messages: list[dict[str, Any]]) -> bool:
@@ -47,6 +51,9 @@ class AlpacaEquitiesProvider:
 
     async def _connection(self, symbols: Iterable[str]) -> AsyncIterator[CanonicalEvent]:
         try:
+            requested = tuple(sorted({str(symbol).upper() for symbol in symbols}))
+            self.subscription_requested_symbols = requested
+            self.subscription_acknowledged = False
             async with websockets.connect(
                 self.url, open_timeout=self.timeout, ping_interval=20, ping_timeout=10
             ) as ws:
@@ -61,11 +68,27 @@ class AlpacaEquitiesProvider:
                 self.authenticated = True
                 await ws.send(
                     json.dumps(
-                        {"action": "subscribe", "trades": list(symbols), "quotes": list(symbols)}
+                        {
+                            "action": "subscribe",
+                            "trades": list(requested),
+                            "quotes": list(requested),
+                        }
                     )
                 )
                 async for raw in ws:
                     for message in json.loads(raw):
+                        if message.get("T") == "subscription":
+                            self.subscription_acknowledged = True
+                            accepted: set[str] = set()
+                            for key in ("trades", "quotes"):
+                                values = message.get(key, [])
+                                if isinstance(values, list):
+                                    accepted.update(str(value).upper() for value in values)
+                            self.subscription_accepted_symbols = tuple(sorted(accepted))
+                            self.subscription_rejected_symbols = tuple(
+                                sorted(set(requested) - accepted)
+                            )
+                            continue
                         if message.get("T") == "error":
                             raise ProviderError("alpaca", "stream_rejected", False)
                         event = self._normalize(message)
@@ -361,4 +384,8 @@ class AlpacaEquitiesProvider:
             "provider": "alpaca",
             "configured": bool(self.key_id and self.secret_key),
             "url": self.url,
+            "subscription_acknowledged": self.subscription_acknowledged,
+            "requested_symbol_count": len(self.subscription_requested_symbols),
+            "accepted_symbol_count": len(self.subscription_accepted_symbols),
+            "rejected_symbol_count": len(self.subscription_rejected_symbols),
         }
