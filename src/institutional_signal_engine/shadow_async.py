@@ -68,20 +68,7 @@ class ShadowWorkItem:
         # full JSON payload here would put serialization on ingestion's hot
         # path without adding identity information.
         cluster_id = str(audit["cluster_id"])
-        last_timestamp = audit.get("last_constituent_timestamp")
-        premium = audit.get("aggregate_eligible_premium")
-        transition = audit.get("transition")
-        transition_order = audit.get("transition_order")
-        work_item_id = "shadow-work:" + ":".join(
-            (
-                str(run_id),
-                cluster_id,
-                str(last_timestamp),
-                str(premium),
-                str(transition),
-                str(transition_order),
-            )
-        )
+        work_item_id = cls.identity(run_id, audit)
         return cls(
             run_id=run_id,
             cluster_id=cluster_id,
@@ -91,6 +78,24 @@ class ShadowWorkItem:
             enqueued_at=enqueued_at,
             work_item_id=work_item_id,
             enqueued_monotonic=monotonic() if enqueued_monotonic is None else enqueued_monotonic,
+        )
+
+    @staticmethod
+    def identity(run_id: UUID, audit: Mapping[str, object]) -> str:
+        cluster_id = str(audit["cluster_id"])
+        last_timestamp = audit.get("last_constituent_timestamp")
+        premium = audit.get("aggregate_eligible_premium")
+        transition = audit.get("transition")
+        transition_order = audit.get("transition_order")
+        return "shadow-work:" + ":".join(
+            (
+                str(run_id),
+                cluster_id,
+                str(last_timestamp),
+                str(premium),
+                str(transition),
+                str(transition_order),
+            )
         )
 
     def as_dict(self) -> dict[str, object]:

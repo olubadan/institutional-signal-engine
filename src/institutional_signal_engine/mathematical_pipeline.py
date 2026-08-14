@@ -16,6 +16,7 @@ from .shadow_async import AsyncShadowWorker, ShadowWorkItem
 
 SHARED_FEATURE_VECTOR_VERSION = "SHARED_FEATURE_VECTOR_V1"
 MODEL_COMPARISON_VERSION = "CONTROL_SHADOW_COMPARISON_V1"
+SCIENTIFIC_EVIDENCE_VERSION = "MATHEMATICAL_EVIDENCE_V1"
 
 
 class MathematicalPipeline:
@@ -37,6 +38,7 @@ class MathematicalPipeline:
         shadow_queue_size: int = 20_000,
         shadow_work_item_sink: Callable[[dict[str, object]], bool] | None = None,
         result_observer: Callable[[], None] | None = None,
+        evidence_sink: Callable[[str, Mapping[str, object]], None] | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -45,6 +47,7 @@ class MathematicalPipeline:
         self.impact_engine = ShadowImpactEngine(run_id, baselines)
         self.async_shadow = async_shadow
         self.result_observer = result_observer
+        self.evidence_sink = evidence_sink
         self._audit_snapshots: dict[str, Mapping[str, object]] = {}
         self.shadow_worker: AsyncShadowWorker | None = None
         self.pipeline = SignalPipeline(
@@ -80,20 +83,49 @@ class MathematicalPipeline:
             self.result_observer()
         return result
 
+    def _emit_evidence(self, kind: str, payload: Mapping[str, object]) -> None:
+        if self.evidence_sink is not None:
+            self.evidence_sink(
+                kind, {"schema_version": SCIENTIFIC_EVIDENCE_VERSION, **dict(payload)}
+            )
+
     def _enqueue_shadow_audit(
         self, audit: dict[str, object], event_payloads: Mapping[str, Mapping[str, object]]
     ) -> None:
         if self.shadow_worker is None:
             return
-        baseline = self.impact_engine._baseline(str(audit["root"]), self._audit_timestamp(audit))
+        enqueued_at = self._audit_timestamp(audit)
+        baseline = self.impact_engine._baseline(str(audit["root"]), enqueued_at)
         if not self.shadow_worker.enqueue_snapshot(
             self.run_id,
             audit,
             event_payloads,
             baseline,
-            self._audit_timestamp(audit),
+            enqueued_at,
         ):
             raise RuntimeError("SHADOW_QUEUE_BACKPRESSURE")
+        work_item_id = ShadowWorkItem.identity(self.run_id, audit)
+        if audit.get("transition") == "CLUSTER_CLOSED":
+            self._emit_evidence(
+                "cluster.completed",
+                {
+                    "cluster_id": str(audit["cluster_id"]),
+                    "symbol": audit.get("symbol"),
+                    "constituent_event_ids": list(
+                        cast(Sequence[object], audit.get("constituent_trade_ids", ()))
+                    ),
+                    "cluster_audit": dict(audit),
+                },
+            )
+        self._emit_evidence(
+            "shadow.enqueued",
+            {
+                "work_item_id": work_item_id,
+                "cluster_id": str(audit["cluster_id"]),
+                "enqueued_at": enqueued_at.isoformat(),
+                "queue_state": "ENQUEUED",
+            },
+        )
 
     @staticmethod
     def _audit_timestamp(audit: Mapping[str, object]) -> datetime:
@@ -112,6 +144,18 @@ class MathematicalPipeline:
         self.pipeline.impact_results.append(result)
         self.repository.record_impact_cluster(result)
         self.repository.record_impact_session(session)
+        self._emit_evidence(
+            "shadow.completed",
+            {
+                "work_item_id": _item.work_item_id,
+                "cluster_id": str(result["cluster_id"]),
+                "enqueued_at": _item.enqueued_at.isoformat(),
+                "completed_at": datetime.now(UTC).isoformat(),
+                "result": result,
+                "session": session,
+                "status": "COMPLETED",
+            },
+        )
         self._capture_new_outputs()
         if self.result_observer is not None:
             self.result_observer()
@@ -153,6 +197,7 @@ class MathematicalPipeline:
                 "failure_reasons": list(decision.rejection_reasons),
             }
             self.control_evaluations.append(evaluation)
+            self._emit_evidence("control.evaluated", evaluation)
             recorder = getattr(self.repository, "record_control_evaluation", None)
             if recorder is not None:
                 recorder(evaluation)
@@ -200,6 +245,8 @@ class MathematicalPipeline:
                 "failed_reasons": list(cast(Sequence[object], result.get("failed_reasons", []))),
             }
             self.comparisons.append(comparison)
+            self._emit_evidence("feature_vector.persisted", vector)
+            self._emit_evidence("comparison.completed", comparison)
             recorder = getattr(self.repository, "record_shared_feature_vector", None)
             if recorder is not None:
                 recorder(vector)

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 FORWARD_HORIZONS_SECONDS: tuple[int, ...] = (5, 15, 30, 60, 120, 300)
@@ -96,6 +96,8 @@ class OutcomeAnchor:
 class _PendingAnchor:
     anchor: OutcomeAnchor
     completed: set[int] = field(default_factory=set)
+    outcomes: dict[int, dict[str, object]] = field(default_factory=dict)
+    comparison_emitted: bool = False
 
 
 class ForwardOutcomeTracker:
@@ -142,7 +144,7 @@ class ForwardOutcomeTracker:
                 if timestamp < target:
                     continue
                 forward_return = (price - pending.anchor.price_t0) / pending.anchor.price_t0
-                self.journal.append(
+                outcome = self.journal.append(
                     "equity.forward_outcome",
                     {
                         "cluster_id": pending.anchor.cluster_id,
@@ -166,7 +168,27 @@ class ForwardOutcomeTracker:
                         "z_score": pending.anchor.z_score,
                     },
                 )
+                pending.outcomes[horizon] = dict(cast(Mapping[str, object], outcome["payload"]))
                 pending.completed.add(horizon)
+            if not pending.comparison_emitted and set(FORWARD_HORIZONS_SECONDS).issubset(
+                pending.completed
+            ):
+                self.journal.append(
+                    "comparison.completed",
+                    {
+                        "cluster_id": pending.anchor.cluster_id,
+                        "symbol": pending.anchor.symbol,
+                        "t0": pending.anchor.t0,
+                        "price_t0": pending.anchor.price_t0,
+                        "control_result": pending.anchor.control_result,
+                        "shadow_result": pending.anchor.shadow_result,
+                        "signed_delta_direction": pending.anchor.signed_delta_direction,
+                        "z_score": pending.anchor.z_score,
+                        "outcomes": dict(pending.outcomes),
+                        "completeness": "COMPLETE",
+                    },
+                )
+                pending.comparison_emitted = True
 
     def register_anchor(self, anchor: OutcomeAnchor) -> None:
         self._pending[anchor.cluster_id] = _PendingAnchor(anchor)
@@ -227,4 +249,5 @@ def replay_side_b(path: Path) -> dict[str, object]:
             record.get("kind") == "equity.filter_ranking" for record in records
         ),
         "anchor_count": sum(record.get("kind") == "equity.outcome_anchor" for record in records),
+        "comparison_count": sum(record.get("kind") == "comparison.completed" for record in records),
     }

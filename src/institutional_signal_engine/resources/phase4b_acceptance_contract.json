@@ -60,7 +60,13 @@
     "epoch.restored",
     "intake.stopped",
     "persistence.drained",
-    "session.finalized"
+    "session.finalized",
+    "cluster.completed",
+    "control.evaluated",
+    "feature_vector.persisted",
+    "shadow.enqueued",
+    "shadow.completed",
+    "comparison.completed"
   ],
   "allowed_lifecycle_order": [
     "session.start",

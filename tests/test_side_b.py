@@ -39,11 +39,12 @@ def test_forward_outcomes_are_durable_and_replayable(tmp_path: Path) -> None:
     result = replay_side_b(tmp_path / "SIDE_B.jsonl")
     assert result == {
         "schema_version": "SIDE_B_EQUITY_OUTCOMES_V1",
-        "record_count": 13,
+        "record_count": 14,
         "observation_count": 6,
         "outcome_count": 6,
         "filter_decision_count": 0,
         "anchor_count": 1,
+        "comparison_count": 1,
     }
 
 

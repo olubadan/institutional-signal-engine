@@ -1,0 +1,106 @@
+{
+  "schema_version": "MATHEMATICAL_PIPELINE_EVIDENCE_MAP_V1",
+  "source_commit_before_change": "3668115bedc0e4cd3a240802dcdf0736c43d97fa",
+  "purpose": "Exact deployed execution map and durable-evidence gap inventory.",
+  "stages": [
+    {
+      "stage": "accepted_theta_event",
+      "source": "src/institutional_signal_engine/live_session.py:LiveSessionEngine._process_theta_event",
+      "input": "CanonicalEvent(options)",
+      "output": "Postgres canonical_events and event.accepted JournalRecord",
+      "execution": "live",
+      "before_durable": true,
+      "after_durable": true
+    },
+    {
+      "stage": "quote_context_and_aggressor",
+      "source": "src/institutional_signal_engine/pipeline.py:SignalPipeline.process; quote_book.QuoteBook.consume_for_trade; indicators.classify_ask_side",
+      "input": "Canonical option quote/trade events",
+      "output": "enriched event payload and quote_consumption persistence",
+      "execution": "live",
+      "before_durable": "partially",
+      "after_durable": "partially; authoritative existing persistence reused"
+    },
+    {
+      "stage": "cluster_completed",
+      "source": "src/institutional_signal_engine/sweeps.py:SweepEngine.process/_audit/close_session",
+      "input": "eligible option events",
+      "output": "sweep audit; cluster.completed journal record on CLUSTER_CLOSED",
+      "execution": "live",
+      "before_durable": "Postgres sweep_clusters only",
+      "after_durable": true
+    },
+    {
+      "stage": "control_evaluated",
+      "source": "src/institutional_signal_engine/mathematical_pipeline.py:MathematicalPipeline._capture_new_outputs",
+      "input": "authoritative decision/result",
+      "output": "control.evaluated with inputs, thresholds, result, reasons",
+      "execution": "async result boundary",
+      "before_durable": "Postgres control_evaluations only",
+      "after_durable": true
+    },
+    {
+      "stage": "shared_feature_vector",
+      "source": "src/institutional_signal_engine/mathematical_pipeline.py:MathematicalPipeline._capture_new_outputs",
+      "input": "same impact result and cluster audit",
+      "output": "feature_vector.persisted",
+      "execution": "async result boundary",
+      "before_durable": "Postgres shared_feature_vectors only",
+      "after_durable": true
+    },
+    {
+      "stage": "shadow_enqueue_and_completion",
+      "source": "src/institutional_signal_engine/mathematical_pipeline.py:_enqueue_shadow_audit/_capture_async_result; shadow_async.AsyncShadowWorker",
+      "input": "immutable cluster-time snapshot",
+      "output": "shadow.enqueued and shadow.completed with work-item identity and result",
+      "execution": "bounded async worker",
+      "before_durable": "Postgres work/results only",
+      "after_durable": true
+    },
+    {
+      "stage": "equity_t0_anchor",
+      "source": "src/institutional_signal_engine/live_session.py:_record_side_b_math_outputs; side_b.ForwardOutcomeTracker.register_anchor",
+      "input": "feature vector plus Side-B price_at_or_before",
+      "output": "equity.outcome_anchor in SIDE_B.jsonl",
+      "execution": "live Side-B path",
+      "before_durable": true,
+      "after_durable": true
+    },
+    {
+      "stage": "forward_outcomes",
+      "source": "src/institutional_signal_engine/side_b.py:ForwardOutcomeTracker.observe",
+      "input": "future canonical equity observations",
+      "output": "equity.forward_outcome for 5/15/30/60/120/300 seconds",
+      "execution": "live Side-B path",
+      "before_durable": true,
+      "after_durable": true
+    },
+    {
+      "stage": "final_comparison",
+      "source": "src/institutional_signal_engine/side_b.py:ForwardOutcomeTracker.observe and mathematical_pipeline.py:_capture_new_outputs",
+      "input": "same cluster/vector, model dispositions, all six outcomes",
+      "output": "comparison.completed with completeness state",
+      "execution": "live Side-B maturation boundary",
+      "before_durable": false,
+      "after_durable": true
+    },
+    {
+      "stage": "replay",
+      "source": "src/institutional_signal_engine/mathematical_pipeline.py:replay_semantics; side_b.py:replay_side_b; live_session.py:_publish_completed_bundle",
+      "input": "persisted canonical events and Side-B JSONL",
+      "output": "deterministic model and outcome evidence comparison",
+      "execution": "fresh-process/offline",
+      "before_durable": "mathematical replay existed; scientific journal join was incomplete",
+      "after_durable": true
+    }
+  ],
+  "invariants": {
+    "control_and_shadow_math_changed": false,
+    "provider_behavior_changed": false,
+    "theta_socket_architecture_changed": false,
+    "side_b_horizons_seconds": [5, 15, 30, 60, 120, 300],
+    "trading_enabled": false,
+    "orders_constructed": 0,
+    "orders_submitted": 0
+  }
+}

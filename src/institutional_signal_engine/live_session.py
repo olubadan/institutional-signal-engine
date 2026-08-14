@@ -32,7 +32,10 @@ import websockets
 from .config import Settings
 from .journal import (
     JOURNAL_KIND_CLOCK_ADVANCED,
+    JOURNAL_KIND_CLUSTER_COMPLETED,
+    JOURNAL_KIND_COMPARISON_COMPLETED,
     JOURNAL_KIND_CONFIGURATION,
+    JOURNAL_KIND_CONTROL_EVALUATED,
     JOURNAL_KIND_DISCOVERY_COMPLETE,
     JOURNAL_KIND_DISCOVERY_START,
     JOURNAL_KIND_ENRICHMENT_COMPLETE,
@@ -43,6 +46,7 @@ from .journal import (
     JOURNAL_KIND_EPOCH_RESTORED,
     JOURNAL_KIND_EVENT_ACCEPTED,
     JOURNAL_KIND_EVENT_REJECTED,
+    JOURNAL_KIND_FEATURE_VECTOR_PERSISTED,
     JOURNAL_KIND_INTAKE_STOPPED,
     JOURNAL_KIND_PERSISTENCE_DRAINED,
     JOURNAL_KIND_PROVIDER_DISCONNECTED,
@@ -52,6 +56,8 @@ from .journal import (
     JOURNAL_KIND_REEVALUATION_START,
     JOURNAL_KIND_SESSION_FINALIZED,
     JOURNAL_KIND_SESSION_START,
+    JOURNAL_KIND_SHADOW_COMPLETED,
+    JOURNAL_KIND_SHADOW_ENQUEUED,
     JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
     JOURNAL_KIND_SUBSCRIPTION_COMMAND,
     FileJournalRepository,
@@ -448,6 +454,25 @@ class LiveSessionEngine:
         if checkpoint:
             self.writer.checkpoint(self.journal)
         return record.sequence
+
+    def _record_math_evidence(self, kind: str, payload: Mapping[str, object]) -> None:
+        journal_kinds = {
+            "cluster.completed": JOURNAL_KIND_CLUSTER_COMPLETED,
+            "control.evaluated": JOURNAL_KIND_CONTROL_EVALUATED,
+            "feature_vector.persisted": JOURNAL_KIND_FEATURE_VECTOR_PERSISTED,
+            "shadow.enqueued": JOURNAL_KIND_SHADOW_ENQUEUED,
+            "shadow.completed": JOURNAL_KIND_SHADOW_COMPLETED,
+            "comparison.completed": JOURNAL_KIND_COMPARISON_COMPLETED,
+        }
+        journal_kind = journal_kinds[kind]
+        cluster_id = str(payload.get("cluster_id", ""))
+        with self._processing_lock:
+            self._append(
+                journal_kind,
+                operation_id=f"{kind}:{cluster_id}:{self.journal.sequence}",
+                correlation_id=cluster_id or kind,
+                scientific_evidence=dict(payload),
+            )
 
     async def _receive_acknowledgements(
         self, requests: tuple[SubscriptionRequest, ...], epoch: PlannerEpoch
@@ -1871,6 +1896,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         async_shadow=True,
         shadow_work_item_sink=repository.record_shadow_work_item,
         result_observer=engine._record_side_b_math_outputs,
+        evidence_sink=engine._record_math_evidence,
     )
 
     async def finish_bootstrap() -> object | None:

@@ -134,3 +134,42 @@ async def test_async_shadow_path_preserves_sync_semantic_outputs() -> None:
     assert pipeline.shadow_worker is not None
     assert pipeline.shadow_worker.metrics.completed == replay["shadow_evaluations"]
     assert pipeline.shadow_worker.metrics.rejected_full == 0
+
+
+@pytest.mark.asyncio
+async def test_scientific_evidence_is_versioned_and_joinable() -> None:
+    settings = Settings()
+    repository = InMemoryRepository()
+    evidence: list[tuple[str, dict[str, object]]] = []
+    pipeline = MathematicalPipeline(
+        settings,
+        repository,
+        RUN_ID,
+        ("AAPL",),
+        baselines={},
+        now=lambda: NOW,
+        async_shadow=True,
+        evidence_sink=lambda kind, payload: evidence.append((kind, dict(payload))),
+    )
+    for item in build_events():
+        pipeline.process_accepted(item)
+    await pipeline.drain_shadow()
+    kinds = [kind for kind, _ in evidence]
+    assert "shadow.enqueued" in kinds
+    assert "shadow.completed" in kinds
+    assert "control.evaluated" in kinds
+    assert "feature_vector.persisted" in kinds
+    assert "comparison.completed" in kinds
+    vectors = {
+        str(payload["cluster_id"]): payload
+        for kind, payload in evidence
+        if kind == "feature_vector.persisted"
+    }
+    comparisons = {
+        str(payload["cluster_id"]): payload
+        for kind, payload in evidence
+        if kind == "comparison.completed"
+    }
+    assert vectors
+    assert set(vectors) == set(comparisons)
+    assert all(payload["schema_version"] == "MATHEMATICAL_EVIDENCE_V1" for _, payload in evidence)
