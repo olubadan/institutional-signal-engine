@@ -87,6 +87,10 @@ MANIFEST_VERSION: Final = "LIVE_EVIDENCE_MANIFEST_V1"
 JOURNAL_SCHEMA_VERSION: Final = "LIVE_CAUSAL_JOURNAL_V1"
 IMPACT_MODE: Final = "APPROVED_OFFLINE_FALLBACK"
 REQUIRED_CHANNELS: Final = ("TRADE", "QUOTE")
+# The provider transition path requires a short quiet interval after each
+# correlated acknowledgement. This bounds request-transition pressure without
+# changing the selected contract population or acknowledgement semantics.
+SUBSCRIPTION_TRANSITION_PACING_SECONDS: Final = 0.25
 
 
 class LiveEvidenceFailure(ValueError):
@@ -537,6 +541,7 @@ class LiveSessionEngine:
                 )
                 await self.provider.transmit(request)
                 await self._receive_acknowledgements((request,), epoch)
+                await asyncio.sleep(SUBSCRIPTION_TRANSITION_PACING_SECONDS)
 
     def _journal_event(
         self, event: CanonicalEvent, *, accepted: bool, reason: str = "", checkpoint: bool = True
