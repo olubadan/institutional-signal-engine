@@ -1,6 +1,6 @@
 """Continuous, bounded event-to-decision processing."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -81,6 +81,8 @@ class SignalPipeline:
         symbols: tuple[str, ...] = ("AAPL",),
         sector_by_symbol: dict[str, str] | None = None,
         impact_engine: ShadowImpactEngine | None = None,
+        shadow_audit_sink: Callable[[dict[str, object], Mapping[str, Mapping[str, object]]], None]
+        | None = None,
     ) -> None:
         self.settings = settings
         self.repository: EventRepository = repository or InMemoryRepository()
@@ -118,6 +120,8 @@ class SignalPipeline:
         self._session_generation = 0
         self.sweeps = SweepEngine(self.run_id)
         self.impact_engine = impact_engine
+        self.shadow_audit_sink = shadow_audit_sink
+        self._shadow_event_payloads: dict[str, Mapping[str, object]] = {}
         self.impact_results: list[dict[str, object]] = []
         self._pending_sweep_reasons: list[str] = []
         self._pending_closed_sweep_audits: list[dict[str, object]] = []
@@ -203,6 +207,8 @@ class SignalPipeline:
         event = self._enrich_state(event)
         if self.impact_engine is not None:
             self.impact_engine.accept_event(event.event_id, event.payload)
+        if self.shadow_audit_sink is not None and event.kind == EventKind.OPTIONS:
+            self._shadow_event_payloads[str(event.event_id)] = dict(event.payload)
         sweep_audit: dict[str, object] | None = None
         closed_sweep_audits: tuple[dict[str, object], ...] = ()
         if event.kind == EventKind.OPTIONS:
@@ -239,7 +245,7 @@ class SignalPipeline:
         for audit in sweep_update.transition_audits if event.kind == EventKind.OPTIONS else ():
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None
-        if self.impact_engine is not None and event.kind == EventKind.OPTIONS:
+        if event.kind == EventKind.OPTIONS:
             impact_audits = tuple(
                 audit
                 for audit in (
@@ -249,13 +255,17 @@ class SignalPipeline:
                 )
                 if audit is not None
             )
-            for impact_audit in impact_audits:
-                impact_cluster, impact_session = self.impact_engine.process_audit(impact_audit)
-                self.impact_results.append(impact_cluster)
-                if not self._enqueue(AuditWrite(impact_cluster=impact_cluster)):
-                    return None
-                if not self._enqueue(AuditWrite(impact_session=impact_session)):
-                    return None
+            if self.impact_engine is not None:
+                for impact_audit in impact_audits:
+                    impact_cluster, impact_session = self.impact_engine.process_audit(impact_audit)
+                    self.impact_results.append(impact_cluster)
+                    if not self._enqueue(AuditWrite(impact_cluster=impact_cluster)):
+                        return None
+                    if not self._enqueue(AuditWrite(impact_session=impact_session)):
+                        return None
+            elif self.shadow_audit_sink is not None:
+                for impact_audit in impact_audits:
+                    self.shadow_audit_sink(impact_audit, self._shadow_event_payloads)
         for audit in self._pending_closed_sweep_audits:
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None

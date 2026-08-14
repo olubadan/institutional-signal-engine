@@ -360,6 +360,10 @@ class PostgresObservationRepository:
     def record_control_evaluation(self, value: dict[str, object]) -> None:
         self._repository.record_control_evaluation(value)
 
+    def record_shadow_work_item(self, value: dict[str, object]) -> bool:
+        self._repository.record_shadow_work_item(value)
+        return True
+
     def replay_events(self, run_id: UUID | None = None) -> tuple[CanonicalEvent, ...]:
         return tuple(self._repository.replay_events(run_id))
 
@@ -605,6 +609,7 @@ class LiveSessionEngine:
         if self.mathematical_pipeline is not None:
             before = len(self.mathematical_pipeline.feature_vectors)
             self.mathematical_pipeline.process_accepted(persisted)
+            self._record_side_b_math_outputs()
             for decision in self.mathematical_pipeline.pipeline.decisions:
                 self.side_b.record_filter_decision(decision)
             for vector in self.mathematical_pipeline.feature_vectors[before:]:
@@ -668,6 +673,54 @@ class LiveSessionEngine:
             if self.equity_provider is not None
             else 0,
         )
+
+    def _record_side_b_math_outputs(self) -> None:
+        """Attach asynchronously completed mathematical vectors to Side-B."""
+        if self.mathematical_pipeline is None:
+            return
+        for decision in self.mathematical_pipeline.pipeline.decisions:
+            self.side_b.record_filter_decision(decision)
+        for vector in self.mathematical_pipeline.feature_vectors:
+            cluster_id = str(vector.get("cluster_id", ""))
+            if cluster_id in self._side_b_anchors:
+                continue
+            inputs = vector.get("impact_inputs", {})
+            if not isinstance(inputs, dict):
+                continue
+            timestamp = inputs.get("last_timestamp")
+            if not isinstance(timestamp, str):
+                continue
+            observed = self.side_b.price_at_or_before(
+                str(inputs.get("symbol", "")).upper(), datetime.fromisoformat(timestamp)
+            )
+            if observed is None:
+                continue
+            signed = inputs.get("signed_delta_demand")
+            signed_direction = (
+                (
+                    "UP"
+                    if Decimal(str(signed)) > 0
+                    else "DOWN"
+                    if Decimal(str(signed)) < 0
+                    else "FLAT"
+                )
+                if signed is not None
+                else None
+            )
+            control_inputs = cast(Mapping[str, object], vector.get("control_inputs", {}))
+            self.side_b.register_anchor(
+                OutcomeAnchor(
+                    cluster_id,
+                    str(inputs.get("symbol", "")).upper(),
+                    datetime.fromisoformat(timestamp),
+                    observed[1],
+                    bool(control_inputs.get("control_qualified")),
+                    bool(inputs.get("shadow_qualified")),
+                    signed_direction,
+                    Decimal(str(inputs["z_score"])) if inputs.get("z_score") is not None else None,
+                )
+            )
+            self._side_b_anchors.add(cluster_id)
 
     async def _observe_equities(self) -> None:
         if self.equity_provider is None or not self.equity_symbols:
@@ -955,6 +1008,8 @@ class LiveSessionEngine:
             equity_task.cancel()
             await asyncio.gather(equity_task, return_exceptions=True)
         await self.provider.close()
+        if self.mathematical_pipeline is not None:
+            await self.mathematical_pipeline.drain_shadow()
         self.repository.flush()
         self._append(
             JOURNAL_KIND_PERSISTENCE_DRAINED,
@@ -1689,6 +1744,9 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         repository,
         engine.run_id,
         PILOT_SYMBOLS,
+        async_shadow=True,
+        shadow_work_item_sink=repository.record_shadow_work_item,
+        result_observer=engine._record_side_b_math_outputs,
     )
 
     async def finish_bootstrap() -> object | None:

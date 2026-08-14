@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
@@ -12,6 +12,7 @@ from .impact import ImpactBaseline, ShadowImpactEngine
 from .persistence import InMemoryRepository
 from .pipeline import SignalPipeline
 from .schemas import CanonicalEvent
+from .shadow_async import AsyncShadowWorker, ShadowWorkItem
 
 SHARED_FEATURE_VECTOR_VERSION = "SHARED_FEATURE_VECTOR_V1"
 MODEL_COMPARISON_VERSION = "CONTROL_SHADOW_COMPARISON_V1"
@@ -32,12 +33,20 @@ class MathematicalPipeline:
         | None = None,
         now: Any | None = None,
         indicator_calculator: Any | None = None,
+        async_shadow: bool = False,
+        shadow_queue_size: int = 20_000,
+        shadow_work_item_sink: Callable[[dict[str, object]], bool] | None = None,
+        result_observer: Callable[[], None] | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.run_id = run_id
         self.symbols = tuple(sorted({str(symbol).upper() for symbol in symbols}))
         self.impact_engine = ShadowImpactEngine(run_id, baselines)
+        self.async_shadow = async_shadow
+        self.result_observer = result_observer
+        self._audit_snapshots: dict[str, Mapping[str, object]] = {}
+        self.shadow_worker: AsyncShadowWorker | None = None
         self.pipeline = SignalPipeline(
             settings,
             repository=repository,
@@ -45,8 +54,17 @@ class MathematicalPipeline:
             symbols=self.symbols or ("AAPL",),
             now=now,
             indicator_calculator=indicator_calculator,
-            impact_engine=self.impact_engine,
+            impact_engine=None if async_shadow else self.impact_engine,
+            shadow_audit_sink=self._enqueue_shadow_audit if async_shadow else None,
         )
+        if async_shadow:
+            self.shadow_worker = AsyncShadowWorker(
+                self.impact_engine,
+                self._capture_async_result,
+                maxsize=shadow_queue_size,
+                work_item_sink=shadow_work_item_sink,
+            )
+            self.shadow_worker.start()
         self.accepted_event_ids: list[str] = []
         self.rejected_event_ids: list[str] = []
         self.feature_vectors: list[dict[str, object]] = []
@@ -58,7 +76,50 @@ class MathematicalPipeline:
         self.accepted_event_ids.append(str(event.event_id))
         result = self.pipeline.process(event)
         self._capture_new_outputs()
+        if self.result_observer is not None:
+            self.result_observer()
         return result
+
+    def _enqueue_shadow_audit(
+        self, audit: dict[str, object], event_payloads: Mapping[str, Mapping[str, object]]
+    ) -> None:
+        if self.shadow_worker is None:
+            return
+        baseline = self.impact_engine._baseline(str(audit["root"]), self._audit_timestamp(audit))
+        if not self.shadow_worker.enqueue_snapshot(
+            self.run_id,
+            audit,
+            event_payloads,
+            baseline,
+            self._audit_timestamp(audit),
+        ):
+            raise RuntimeError("SHADOW_QUEUE_BACKPRESSURE")
+
+    @staticmethod
+    def _audit_timestamp(audit: Mapping[str, object]) -> datetime:
+        value = audit["last_constituent_timestamp"]
+        if isinstance(value, datetime):
+            return value
+        return datetime.fromisoformat(str(value))
+
+    async def _capture_async_result(
+        self,
+        _item: ShadowWorkItem,
+        result: dict[str, object],
+        session: dict[str, object],
+    ) -> None:
+        self._audit_snapshots.setdefault(str(result["cluster_id"]), dict(_item.audit))
+        self.pipeline.impact_results.append(result)
+        self.repository.record_impact_cluster(result)
+        self.repository.record_impact_session(session)
+        self._capture_new_outputs()
+        if self.result_observer is not None:
+            self.result_observer()
+
+    async def drain_shadow(self) -> None:
+        if self.shadow_worker is None:
+            return
+        await self.shadow_worker.drain()
 
     def record_rejected(self, event: CanonicalEvent, reason: str) -> None:
         self.rejected_event_ids.append(str(event.event_id))
@@ -102,13 +163,16 @@ class MathematicalPipeline:
         for cluster_id, result in latest_results.items():
             if cluster_id in existing:
                 continue
-            audit: dict[str, object] = next(
-                (
-                    item
-                    for item in reversed(tuple(getattr(self.repository, "sweeps", ())))
-                    if str(item.get("cluster_id")) == cluster_id
-                ),
-                {},
+            audit: dict[str, object] = dict(
+                self._audit_snapshots.get(cluster_id)
+                or next(
+                    (
+                        item
+                        for item in reversed(tuple(getattr(self.repository, "sweeps", ())))
+                        if str(item.get("cluster_id")) == cluster_id
+                    ),
+                    {},
+                )
             )
             vector: dict[str, object] = {
                 "version": SHARED_FEATURE_VECTOR_VERSION,

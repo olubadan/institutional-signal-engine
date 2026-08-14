@@ -20,6 +20,7 @@ class AuditWrite:
     sweep: Any | None = None
     impact_cluster: dict[str, object] | None = None
     impact_session: dict[str, object] | None = None
+    shadow_work_item: dict[str, object] | None = None
     probe_id: str | None = None
 
 
@@ -103,6 +104,10 @@ class AsyncAuditWriter:
                     self.repository.record_impact_cluster(record.impact_cluster)
                 if record.impact_session is not None:
                     self.repository.record_impact_session(record.impact_session)
+                if record.shadow_work_item is not None:
+                    recorder = getattr(self.repository, "record_shadow_work_item", None)
+                    if recorder is not None:
+                        recorder(record.shadow_work_item)
                 if record.probe_id is not None:
                     probe = getattr(self.repository, "write_drain_probe", None)
                     if probe is None or not probe(record.probe_id):

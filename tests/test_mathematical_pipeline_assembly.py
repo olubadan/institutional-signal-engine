@@ -3,6 +3,8 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import pytest
+
 from institutional_signal_engine.config import Settings
 from institutional_signal_engine.mathematical_pipeline import MathematicalPipeline, replay_semantics
 from institutional_signal_engine.persistence import InMemoryRepository
@@ -104,3 +106,31 @@ def test_assembled_path_and_fresh_replay(tmp_path: Path) -> None:
     assert repository.sweeps
     assert repository.shared_feature_vectors
     assert repository.model_comparisons
+
+
+@pytest.mark.asyncio
+async def test_async_shadow_path_preserves_sync_semantic_outputs() -> None:
+    settings = Settings()
+    repository = InMemoryRepository()
+    pipeline = MathematicalPipeline(
+        settings,
+        repository,
+        RUN_ID,
+        ("AAPL",),
+        baselines={},
+        now=lambda: NOW,
+        async_shadow=True,
+    )
+    events = build_events()
+    for item in events:
+        pipeline.process_accepted(item)
+    await pipeline.drain_shadow()
+    live = pipeline.snapshot()
+    replay = replay_semantics(events, settings, ("AAPL",), RUN_ID, baselines={})
+    assert live["decisions"] == replay["decisions"]
+    assert live["feature_vectors"] == replay["feature_vectors"]
+    assert live["comparisons"] == replay["comparisons"]
+    assert live["shadow_evaluations"] == replay["shadow_evaluations"]
+    assert pipeline.shadow_worker is not None
+    assert pipeline.shadow_worker.metrics.completed == replay["shadow_evaluations"]
+    assert pipeline.shadow_worker.metrics.rejected_full == 0
