@@ -19,6 +19,7 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, cast
 from uuid import UUID, uuid4
@@ -68,6 +69,7 @@ from .providers.alpaca import AlpacaEquitiesProvider
 from .providers.common import ProviderError
 from .providers.thetadata import SubscriptionRequest, ThetaContract, ThetaDataOptionsProvider
 from .schemas import CanonicalEvent
+from .side_b import ForwardOutcomeTracker, OutcomeAnchor, SideBJournal
 from .universe import PILOT_SYMBOLS, PlannerEpoch
 
 ET: Final = ZoneInfo("America/New_York")
@@ -409,6 +411,8 @@ class LiveSessionEngine:
     provider_identity: Mapping[str, object] = field(default_factory=dict)
     baseline_symbols: frozenset[str] = frozenset()
     mathematical_pipeline: MathematicalPipeline | None = None
+    equity_provider: AlpacaEquitiesProvider | None = None
+    equity_symbols: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.settings.trading_enabled:
@@ -423,6 +427,8 @@ class LiveSessionEngine:
         self.processed_count = 0
         self.epoch_count = 0
         self.disconnect_count = 0
+        self.side_b = ForwardOutcomeTracker(SideBJournal(self.writer.directory / "SIDE_B.jsonl"))
+        self._side_b_anchors: set[str] = set()
 
     def _append(self, kind: str, *, checkpoint: bool = True, **values: Any) -> int:
         record = self.journal.append(kind, timestamp=self.clock.now(), **values)
@@ -587,6 +593,105 @@ class LiveSessionEngine:
             connection_generation=self.provider.connection_generation,
             checkpoint=checkpoint,
         )
+
+    def _journal_equity_event(self, event: CanonicalEvent) -> None:
+        persisted = event.model_copy(
+            update={"run_id": self.run_id, "ingest_order": self.event_count + 1}
+        )
+        self.repository.record_event(persisted)
+        self.event_count += 1
+        self.processed_count += 1
+        self.side_b.observe(persisted)
+        if self.mathematical_pipeline is not None:
+            before = len(self.mathematical_pipeline.feature_vectors)
+            self.mathematical_pipeline.process_accepted(persisted)
+            for vector in self.mathematical_pipeline.feature_vectors[before:]:
+                cluster_id = str(vector.get("cluster_id", ""))
+                inputs = vector.get("impact_inputs", {})
+                if not isinstance(inputs, dict) or cluster_id in self._side_b_anchors:
+                    continue
+                symbol = str(inputs.get("symbol", "")).upper()
+                latest = self.side_b.latest_price(symbol)
+                price_t0 = latest[1] if latest is not None else None
+                timestamp = inputs.get("first_timestamp")
+                if price_t0 is None or not isinstance(timestamp, str):
+                    continue
+                signed = inputs.get("signed_delta_demand")
+                signed_direction = (
+                    (
+                        "UP"
+                        if Decimal(str(signed)) > 0
+                        else "DOWN"
+                        if Decimal(str(signed)) < 0
+                        else "FLAT"
+                    )
+                    if signed is not None
+                    else None
+                )
+                self.side_b.register_anchor(
+                    OutcomeAnchor(
+                        cluster_id,
+                        symbol,
+                        datetime.fromisoformat(timestamp),
+                        price_t0,
+                        bool(
+                            cast(Mapping[str, object], vector.get("control_inputs", {})).get(
+                                "control_qualified"
+                            )
+                        ),
+                        bool(inputs.get("shadow_qualified")),
+                        signed_direction,
+                        Decimal(str(inputs["z_score"]))
+                        if inputs.get("z_score") is not None
+                        else None,
+                    )
+                )
+                self._side_b_anchors.add(cluster_id)
+        self._append(
+            JOURNAL_KIND_EVENT_ACCEPTED,
+            parent_sequence=self.journal.sequence - 1,
+            operation_id=f"equity-event-{event.event_id}",
+            correlation_id=str(event.event_id),
+            event_id=str(event.event_id),
+            event_kind=str(event.payload.get("provider_event_kind", "equity")),
+            symbol=event.symbol,
+            accepted=True,
+            reason="",
+            canonical_event=persisted.model_dump(mode="json"),
+            processed=True,
+            connection_generation=self.equity_provider.connection_generation
+            if self.equity_provider is not None
+            else 0,
+        )
+
+    async def _observe_equities(self) -> None:
+        if self.equity_provider is None or not self.equity_symbols:
+            return
+        self._append(
+            JOURNAL_KIND_PROVIDER_READY,
+            parent_sequence=self.journal.sequence - 1,
+            operation_id="equity-provider-ready",
+            correlation_id="equity-stream",
+            provider_identity={"provider": "alpaca", "symbol_count": len(self.equity_symbols)},
+            health=await self.equity_provider.health(),
+            connection_generation=self.equity_provider.connection_generation,
+        )
+        try:
+            async for event in self.equity_provider.events(self.equity_symbols):
+                if self.clock.now() >= self.boundaries.closes_at:
+                    break
+                self._journal_equity_event(event)
+        except ProviderError as exc:
+            self._append(
+                JOURNAL_KIND_EVENT_REJECTED,
+                parent_sequence=self.journal.sequence - 1,
+                operation_id="equity-provider-error",
+                correlation_id="equity-stream",
+                event_kind="equity",
+                accepted=False,
+                reason=f"provider:{exc.category}",
+                processed=False,
+            )
 
     async def _discover_epoch(
         self, sequence: int, previous: tuple[ThetaContract, ...]
@@ -775,6 +880,11 @@ class LiveSessionEngine:
         if not epoch.selected_contracts:
             raise LiveEvidenceFailure("NO_CONTRACTS_SELECTED")
         await self._activate(epoch)
+        equity_task = (
+            asyncio.create_task(self._observe_equities())
+            if self.equity_provider is not None and self.equity_symbols
+            else None
+        )
         next_reevaluation = self.boundaries.opens_at + self.reevaluation_interval
         while self.clock.now() < self.boundaries.closes_at:
             boundary = min(next_reevaluation, self.boundaries.closes_at)
@@ -836,6 +946,9 @@ class LiveSessionEngine:
             event_count=self.event_count,
             host_observed_at=self.clock.now().isoformat(),
         )
+        if equity_task is not None:
+            equity_task.cancel()
+            await asyncio.gather(equity_task, return_exceptions=True)
         await self.provider.close()
         self.repository.flush()
         self._append(
@@ -1563,6 +1676,8 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
             "enrichment": "alpaca-option-snapshots",
             "events": "thetadata-terminal-standard",
         },
+        equity_provider=alpaca,
+        equity_symbols=tuple(PILOT_SYMBOLS),
     )
     engine.mathematical_pipeline = MathematicalPipeline(
         settings,
@@ -1580,6 +1695,9 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
                 if isinstance(key, tuple) and len(key) == 2
             )
             engine.baseline_symbols = baseline_symbols
+            if engine.mathematical_pipeline is not None:
+                for key, baseline in historical.impact_baselines.items():
+                    engine.mathematical_pipeline.impact_engine.baselines[key] = baseline
             status = {
                 "status": "COMPLETE",
                 "started_at": bootstrap_started.isoformat(),

@@ -104,17 +104,22 @@ class ForwardOutcomeTracker:
     def __init__(self, journal: SideBJournal) -> None:
         self.journal = journal
         self._pending: dict[str, _PendingAnchor] = {}
+        self._latest_prices: dict[str, tuple[datetime, Decimal]] = {}
 
     def observe(self, event: Any) -> None:
         timestamp = event.normalized_timestamp.astimezone(UTC)
         price = _decimal(event.payload.get("price"))
         if price is None or price <= 0:
             return
+        symbol = event.symbol.upper()
+        previous = self._latest_prices.get(symbol)
+        if previous is None or timestamp >= previous[0]:
+            self._latest_prices[symbol] = (timestamp, price)
         self.journal.append(
             "equity.observation",
             {
                 "event_id": str(event.event_id),
-                "symbol": event.symbol.upper(),
+                "symbol": symbol,
                 "source": event.source,
                 "source_timestamp": event.source_timestamp,
                 "received_timestamp": event.received_timestamp,
@@ -127,7 +132,7 @@ class ForwardOutcomeTracker:
             },
         )
         for pending in self._pending.values():
-            if pending.anchor.symbol != event.symbol.upper() or timestamp < pending.anchor.t0:
+            if pending.anchor.symbol != symbol or timestamp < pending.anchor.t0:
                 continue
             for horizon in FORWARD_HORIZONS_SECONDS:
                 if horizon in pending.completed:
@@ -178,6 +183,9 @@ class ForwardOutcomeTracker:
                 "horizons_seconds": FORWARD_HORIZONS_SECONDS,
             },
         )
+
+    def latest_price(self, symbol: str) -> tuple[datetime, Decimal] | None:
+        return self._latest_prices.get(symbol.upper())
 
     def record_filter_decision(self, decision: Any) -> None:
         self.journal.append(
