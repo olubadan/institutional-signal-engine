@@ -17,6 +17,7 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -1498,6 +1499,8 @@ class UnifiedThetaSession:
         self.connection_generation = 0
         self._next_request_id = 1
         self._ws: Any = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._inbound: asyncio.Queue[InboundFrame] = asyncio.Queue(maxsize=8192)
         self._requests: dict[int, SubscriptionRequest] = {}
         self._normalizer = ThetaDataOptionsProvider(events_url, api_key, contracts=())
 
@@ -1526,6 +1529,7 @@ class UnifiedThetaSession:
         self.connection_generation += 1
         self._requests.clear()
         self._normalizer.connected = False
+        self._reader_task = asyncio.create_task(self._read_loop(websocket))
 
     async def connect(self) -> None:
         async with self._owner_lock():
@@ -1535,6 +1539,7 @@ class UnifiedThetaSession:
         websocket = self._ws
         if websocket is None:
             return
+        reader = self._reader_task
         try:
             try:
                 await websocket.send(json.dumps({"msg_type": "STOP"}))
@@ -1543,6 +1548,14 @@ class UnifiedThetaSession:
             await websocket.close()
             await websocket.wait_closed()
         finally:
+            if reader is not None and not reader.done():
+                reader.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reader
+            self._reader_task = None
+            while not self._inbound.empty():
+                with suppress(asyncio.QueueEmpty):
+                    self._inbound.get_nowait()
             self._ws = None
             if type(self)._active_owner is self:
                 type(self)._active_owner = None
@@ -1559,7 +1572,13 @@ class UnifiedThetaSession:
 
     async def health(self) -> dict[str, object]:
         return {
-            "status": "healthy" if self._ws is not None else "unavailable",
+            "status": (
+                "healthy"
+                if self._ws is not None
+                and self._reader_task is not None
+                and not self._reader_task.done()
+                else "unavailable"
+            ),
             "provider": "thetadata",
             "events_url": self.events_url,
             "configured": bool(self.api_key),
@@ -1594,16 +1613,7 @@ class UnifiedThetaSession:
             )
         )
 
-    async def receive_until(self, boundary: datetime) -> InboundFrame:
-        if self._ws is None:
-            return InboundFrame("disconnect", datetime.now(ET), detail="socket_not_connected")
-        timeout = max(0.0, (boundary - datetime.now(ET)).total_seconds())
-        try:
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
-        except TimeoutError:
-            return InboundFrame("clock", boundary)
-        except websockets.ConnectionClosed as exc:
-            return InboundFrame("disconnect", datetime.now(ET), detail=type(exc).__name__)
+    async def _decode_message(self, raw: str | bytes) -> InboundFrame | None:
         if isinstance(raw, (str, bytes)) and len(raw) > MAX_PROVIDER_MESSAGE_BYTES:
             return InboundFrame("malformed", datetime.now(ET), detail="message_too_large")
         try:
@@ -1639,7 +1649,7 @@ class UnifiedThetaSession:
         if message_type in {"STATUS", "OHLC"} or (
             header.get("status") == "CONNECTED" and message_type not in {"TRADE", "QUOTE"}
         ):
-            return await self.receive_until(boundary)
+            return None
         try:
             # Preserve valid market frames that arrive before their correlated
             # subscription acknowledgement; the engine journals them as rejected
@@ -1659,6 +1669,34 @@ class UnifiedThetaSession:
                 detail=f"unknown_message:{message_type}:{header.get('status', '')}",
             )
         return InboundFrame("event", datetime.now(ET), event=event)
+
+    async def _read_loop(self, websocket: Any) -> None:
+        """Continuously drain the one owned socket and queue decoded frames."""
+        while self._ws is websocket:
+            try:
+                raw = await websocket.recv()
+            except websockets.ConnectionClosed as exc:
+                await self._inbound.put(
+                    InboundFrame("disconnect", datetime.now(ET), detail=type(exc).__name__)
+                )
+                return
+            except (OSError, RuntimeError) as exc:
+                await self._inbound.put(
+                    InboundFrame("disconnect", datetime.now(ET), detail=type(exc).__name__)
+                )
+                return
+            frame = await self._decode_message(raw)
+            if frame is not None:
+                await self._inbound.put(frame)
+
+    async def receive_until(self, boundary: datetime) -> InboundFrame:
+        if self._ws is None:
+            return InboundFrame("disconnect", datetime.now(ET), detail="socket_not_connected")
+        timeout = max(0.0, (boundary - datetime.now(ET)).total_seconds())
+        try:
+            return await asyncio.wait_for(self._inbound.get(), timeout=timeout)
+        except TimeoutError:
+            return InboundFrame("clock", boundary)
 
 
 def build_identity(
