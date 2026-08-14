@@ -104,7 +104,8 @@ class ForwardOutcomeTracker:
     def __init__(self, journal: SideBJournal) -> None:
         self.journal = journal
         self._pending: dict[str, _PendingAnchor] = {}
-        self._latest_prices: dict[str, tuple[datetime, Decimal]] = {}
+        self._prices: dict[str, list[tuple[datetime, Decimal]]] = {}
+        self._decisions: set[str] = set()
 
     def observe(self, event: Any) -> None:
         timestamp = event.normalized_timestamp.astimezone(UTC)
@@ -112,9 +113,9 @@ class ForwardOutcomeTracker:
         if price is None or price <= 0:
             return
         symbol = event.symbol.upper()
-        previous = self._latest_prices.get(symbol)
-        if previous is None or timestamp >= previous[0]:
-            self._latest_prices[symbol] = (timestamp, price)
+        prices = self._prices.setdefault(symbol, [])
+        if not prices or timestamp >= prices[-1][0]:
+            prices.append((timestamp, price))
         self.journal.append(
             "equity.observation",
             {
@@ -184,10 +185,17 @@ class ForwardOutcomeTracker:
             },
         )
 
-    def latest_price(self, symbol: str) -> tuple[datetime, Decimal] | None:
-        return self._latest_prices.get(symbol.upper())
+    def price_at_or_before(
+        self, symbol: str, timestamp: datetime
+    ) -> tuple[datetime, Decimal] | None:
+        candidates = [item for item in self._prices.get(symbol.upper(), ()) if item[0] <= timestamp]
+        return candidates[-1] if candidates else None
 
     def record_filter_decision(self, decision: Any) -> None:
+        decision_id = str(decision.decision_id)
+        if decision_id in self._decisions:
+            return
+        self._decisions.add(decision_id)
         self.journal.append(
             "equity.filter_ranking",
             {

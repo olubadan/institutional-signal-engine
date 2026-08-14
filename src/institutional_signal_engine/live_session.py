@@ -605,16 +605,21 @@ class LiveSessionEngine:
         if self.mathematical_pipeline is not None:
             before = len(self.mathematical_pipeline.feature_vectors)
             self.mathematical_pipeline.process_accepted(persisted)
+            for decision in self.mathematical_pipeline.pipeline.decisions:
+                self.side_b.record_filter_decision(decision)
             for vector in self.mathematical_pipeline.feature_vectors[before:]:
                 cluster_id = str(vector.get("cluster_id", ""))
                 inputs = vector.get("impact_inputs", {})
                 if not isinstance(inputs, dict) or cluster_id in self._side_b_anchors:
                     continue
                 symbol = str(inputs.get("symbol", "")).upper()
-                latest = self.side_b.latest_price(symbol)
-                price_t0 = latest[1] if latest is not None else None
-                timestamp = inputs.get("first_timestamp")
-                if price_t0 is None or not isinstance(timestamp, str):
+                timestamp = inputs.get("last_timestamp")
+                if not isinstance(timestamp, str):
+                    continue
+                cluster_time = datetime.fromisoformat(timestamp)
+                observed = self.side_b.price_at_or_before(symbol, cluster_time)
+                price_t0 = observed[1] if observed is not None else None
+                if price_t0 is None:
                     continue
                 signed = inputs.get("signed_delta_demand")
                 signed_direction = (
@@ -632,7 +637,7 @@ class LiveSessionEngine:
                     OutcomeAnchor(
                         cluster_id,
                         symbol,
-                        datetime.fromisoformat(timestamp),
+                        cluster_time,
                         price_t0,
                         bool(
                             cast(Mapping[str, object], vector.get("control_inputs", {})).get(
@@ -1699,11 +1704,14 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
                 for key, baseline in historical.impact_baselines.items():
                     engine.mathematical_pipeline.impact_engine.baselines[key] = baseline
             status = {
-                "status": "COMPLETE",
+                "status": "COMPLETE"
+                if len(baseline_symbols) == len(PILOT_SYMBOLS)
+                else "INCOMPLETE_BASELINE_COVERAGE",
                 "started_at": bootstrap_started.isoformat(),
                 "finished_at": datetime.now(UTC).isoformat(),
                 "candidate_symbol_count": len(PILOT_SYMBOLS),
                 "baseline_symbol_count": len(baseline_symbols),
+                "coverage_complete": len(baseline_symbols) == len(PILOT_SYMBOLS),
                 "source": historical.source_provenance,
             }
             (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(

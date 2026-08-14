@@ -102,8 +102,6 @@ class MathematicalPipeline:
         for cluster_id, result in latest_results.items():
             if cluster_id in existing:
                 continue
-            if result.get("control_qualified") is not True:
-                continue
             audit: dict[str, object] = next(
                 (
                     item
