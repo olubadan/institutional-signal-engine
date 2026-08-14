@@ -1696,9 +1696,13 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
     )
     bootstrap_started = datetime.now(UTC)
     bootstrap_task = asyncio.create_task(
-        alpaca.historical_bootstrap(
-            (*PILOT_SYMBOLS, "SPY", "XLK"),
-            date.fromisoformat(arguments.market_date),
+        asyncio.to_thread(
+            lambda: asyncio.run(
+                alpaca.historical_bootstrap(
+                    (*PILOT_SYMBOLS, "SPY", "XLK"),
+                    date.fromisoformat(arguments.market_date),
+                )
+            )
         )
     )
     discovery, enrichment = _production_ports(settings)
