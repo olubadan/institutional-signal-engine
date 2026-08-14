@@ -1530,6 +1530,10 @@ class UnifiedThetaSession:
         self._requests.clear()
         self._normalizer.connected = False
         self._reader_task = asyncio.create_task(self._read_loop(websocket))
+        # Theta keeps stream subscriptions across its FPSS reconnects.  A new
+        # local consumer must reset any streams left by an interrupted prior
+        # run before rebuilding its deterministic subscription set.
+        await websocket.send(json.dumps({"msg_type": "STOP"}))
 
     async def connect(self) -> None:
         async with self._owner_lock():

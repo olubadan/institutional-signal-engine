@@ -53,6 +53,7 @@ async def test_unified_theta_session_has_one_process_owner(monkeypatch: pytest.M
     await first.close()
     await second.connect()
     assert len(sockets) == 2
+    assert log[-1][0] == "send"
     await second.close()
 
 
@@ -78,7 +79,13 @@ async def test_reconnect_sends_stop_and_closes_before_opening_replacement(
     assert log[0][0] == "open"
     assert log[1][0] == "send"
     assert log[1][1] == {"msg_type": "STOP"}
-    assert [item[0] for item in log[2:]] == ["close", "wait_closed", "open"]
+    assert [item[0] for item in log[2:]] == [
+        "send",
+        "close",
+        "wait_closed",
+        "open",
+        "send",
+    ]
     await session.close()
 
 
