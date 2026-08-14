@@ -154,6 +154,10 @@ class HarnessUnifiedSession(UnifiedSessionPort):
     async def close(self) -> None:
         self._connected = False
 
+    async def reconnect(self) -> None:
+        await self.close()
+        await self.connect()
+
     async def health(self) -> dict[str, object]:
         return {
             "status": "healthy" if self._connected else "unavailable",

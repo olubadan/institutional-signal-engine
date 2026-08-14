@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol, cast
+from typing import Any, ClassVar, Final, Literal, Protocol, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -296,6 +296,8 @@ class UnifiedSessionPort(Protocol):
     async def connect(self) -> None: ...
 
     async def close(self) -> None: ...
+
+    async def reconnect(self) -> None: ...
 
     async def health(self) -> dict[str, object]: ...
 
@@ -862,8 +864,7 @@ class LiveSessionEngine:
             connection_generation=self.provider.connection_generation,
         )
         self.active_channels.clear()
-        await self.provider.close()
-        await self.provider.connect()
+        await self.provider.reconnect()
         reconnected = self._append(
             JOURNAL_KIND_PROVIDER_RECONNECTED,
             parent_sequence=disconnected,
@@ -1487,6 +1488,8 @@ class UnifiedThetaSession:
     """One Theta WebSocket for commands, acknowledgements, and market events."""
 
     request_types: tuple[str, ...] = REQUIRED_CHANNELS
+    _lifecycle_lock: ClassVar[asyncio.Lock | None] = None
+    _active_owner: ClassVar[UnifiedThetaSession | None] = None
 
     def __init__(self, events_url: str, api_key: str, timeout: float = 10.0) -> None:
         self.events_url = events_url
@@ -1498,11 +1501,19 @@ class UnifiedThetaSession:
         self._requests: dict[int, SubscriptionRequest] = {}
         self._normalizer = ThetaDataOptionsProvider(events_url, api_key, contracts=())
 
-    async def connect(self) -> None:
+    @classmethod
+    def _owner_lock(cls) -> asyncio.Lock:
+        if cls._lifecycle_lock is None:
+            cls._lifecycle_lock = asyncio.Lock()
+        return cls._lifecycle_lock
+
+    async def _connect_unlocked(self) -> None:
         if self._ws is not None:
             raise LiveEvidenceFailure("PROVIDER_ALREADY_CONNECTED")
+        if self._active_owner is not None and self._active_owner is not self:
+            raise LiveEvidenceFailure("THETA_EVENTS_CONNECTION_ALREADY_OWNED")
         try:
-            self._ws = await websockets.connect(
+            websocket = await websockets.connect(
                 self.events_url,
                 open_timeout=self.timeout,
                 ping_interval=20,
@@ -1510,14 +1521,41 @@ class UnifiedThetaSession:
             )
         except (OSError, TimeoutError) as exc:
             raise ProviderError("thetadata", "connection_failed", True) from exc
+        self._ws = websocket
+        type(self)._active_owner = self
         self.connection_generation += 1
         self._requests.clear()
         self._normalizer.connected = False
 
-    async def close(self) -> None:
-        if self._ws is not None:
-            await self._ws.close()
+    async def connect(self) -> None:
+        async with self._owner_lock():
+            await self._connect_unlocked()
+
+    async def _close_unlocked(self) -> None:
+        websocket = self._ws
+        if websocket is None:
+            return
+        try:
+            try:
+                await websocket.send(json.dumps({"msg_type": "STOP"}))
+            except (OSError, RuntimeError, websockets.ConnectionClosed):
+                pass
+            await websocket.close()
+            await websocket.wait_closed()
+        finally:
             self._ws = None
+            if type(self)._active_owner is self:
+                type(self)._active_owner = None
+
+    async def close(self) -> None:
+        async with self._owner_lock():
+            await self._close_unlocked()
+
+    async def reconnect(self) -> None:
+        """Replace the local socket without overlapping its successor."""
+        async with self._owner_lock():
+            await self._close_unlocked()
+            await self._connect_unlocked()
 
     async def health(self) -> dict[str, object]:
         return {
