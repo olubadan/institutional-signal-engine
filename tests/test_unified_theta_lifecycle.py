@@ -113,11 +113,30 @@ async def test_receive_until_normalizes_market_frame_without_extra_socket(
             )
 
     session._ws = EventSocket()
-    session._reader_task = asyncio.create_task(session._read_loop(session._ws))
+    session._decoder_task = asyncio.create_task(session._decode_loop())
+    await session._raw_inbound.put(
+        json.dumps(
+            {
+                "header": {"type": "TRADE"},
+                "contract": {
+                    "root": "AAPL",
+                    "expiration": 20260821,
+                    "strike": 307500,
+                    "right": "C",
+                },
+                "trade": {
+                    "date": "20260814",
+                    "ms_of_day": 34200000,
+                    "size": 1,
+                    "price": 1.0,
+                },
+            }
+        )
+    )
     frame = await session.receive_until(datetime.now(UTC).astimezone() + timedelta(seconds=1))
     assert frame.kind == "event"
     assert frame.event is not None
     assert frame.event.source == "thetadata"
-    session._reader_task.cancel()
+    session._decoder_task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await session._reader_task
+        await session._decoder_task

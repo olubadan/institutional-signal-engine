@@ -1510,10 +1510,12 @@ class UnifiedThetaSession:
         self._next_request_id = 1
         self._ws: Any = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._decoder_task: asyncio.Task[None] | None = None
         # The reader must never stop calling recv because downstream durable
         # processing is slower than the provider.  This lossless queue lets
         # the single socket drain continuously; frames are processed in order
         # by the serialized event-processing path.
+        self._raw_inbound: asyncio.Queue[str | bytes | None] = asyncio.Queue()
         self._inbound: asyncio.Queue[InboundFrame] = asyncio.Queue()
         self._requests: dict[int, SubscriptionRequest] = {}
         self._normalizer = ThetaDataOptionsProvider(events_url, api_key, contracts=())
@@ -1544,6 +1546,7 @@ class UnifiedThetaSession:
         self._requests.clear()
         self._normalizer.connected = False
         self._reader_task = asyncio.create_task(self._read_loop(websocket))
+        self._decoder_task = asyncio.create_task(self._decode_loop())
         # Theta keeps stream subscriptions across its FPSS reconnects.  A new
         # local consumer must reset any streams left by an interrupted prior
         # run before rebuilding its deterministic subscription set.
@@ -1558,6 +1561,7 @@ class UnifiedThetaSession:
         if websocket is None:
             return
         reader = self._reader_task
+        decoder = self._decoder_task
         try:
             try:
                 await websocket.send(json.dumps({"msg_type": "STOP"}))
@@ -1570,7 +1574,15 @@ class UnifiedThetaSession:
                 reader.cancel()
                 with suppress(asyncio.CancelledError):
                     await reader
+            if decoder is not None and not decoder.done():
+                decoder.cancel()
+                with suppress(asyncio.CancelledError):
+                    await decoder
             self._reader_task = None
+            self._decoder_task = None
+            while not self._raw_inbound.empty():
+                with suppress(asyncio.QueueEmpty):
+                    self._raw_inbound.get_nowait()
             while not self._inbound.empty():
                 with suppress(asyncio.QueueEmpty):
                     self._inbound.get_nowait()
@@ -1595,6 +1607,8 @@ class UnifiedThetaSession:
                 if self._ws is not None
                 and self._reader_task is not None
                 and not self._reader_task.done()
+                and self._decoder_task is not None
+                and not self._decoder_task.done()
                 else "unavailable"
             ),
             "provider": "thetadata",
@@ -1689,18 +1703,25 @@ class UnifiedThetaSession:
         return InboundFrame("event", datetime.now(ET), event=event)
 
     async def _read_loop(self, websocket: Any) -> None:
-        """Continuously drain the one owned socket and queue decoded frames."""
+        """Continuously drain the one owned socket into a raw lossless queue."""
         while self._ws is websocket:
             try:
                 raw = await websocket.recv()
-            except websockets.ConnectionClosed as exc:
-                await self._inbound.put(
-                    InboundFrame("disconnect", datetime.now(ET), detail=type(exc).__name__)
-                )
+            except websockets.ConnectionClosed:
+                await self._raw_inbound.put(None)
                 return
-            except (OSError, RuntimeError) as exc:
+            except (OSError, RuntimeError):
+                await self._raw_inbound.put(None)
+                return
+            await self._raw_inbound.put(raw)
+
+    async def _decode_loop(self) -> None:
+        """Decode raw frames in order without delaying WebSocket recv."""
+        while True:
+            raw = await self._raw_inbound.get()
+            if raw is None:
                 await self._inbound.put(
-                    InboundFrame("disconnect", datetime.now(ET), detail=type(exc).__name__)
+                    InboundFrame("disconnect", datetime.now(ET), detail="socket_closed")
                 )
                 return
             frame = await self._decode_message(raw)
