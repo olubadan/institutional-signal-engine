@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -440,6 +441,7 @@ class LiveSessionEngine:
         self.disconnect_count = 0
         self.side_b = ForwardOutcomeTracker(SideBJournal(self.writer.directory / "SIDE_B.jsonl"))
         self._side_b_anchors: set[str] = set()
+        self._processing_lock = threading.RLock()
 
     def _append(self, kind: str, *, checkpoint: bool = True, **values: Any) -> int:
         record = self.journal.append(kind, timestamp=self.clock.now(), **values)
@@ -468,7 +470,7 @@ class LiveSessionEngine:
                 # transition waits for a provider control response. Frames
                 # before activation remain outside the active session.
                 if frame.event is not None and self.active_epoch is not None:
-                    self._journal_event(frame.event, accepted=True)
+                    await asyncio.to_thread(self._process_theta_event, frame.event, True)
                 continue
             request_id = frame.request_id
             if request_id is None or request_id not in pending:
@@ -606,6 +608,10 @@ class LiveSessionEngine:
             checkpoint=checkpoint,
         )
 
+    def _process_theta_event(self, event: CanonicalEvent, accepted: bool, reason: str = "") -> None:
+        with self._processing_lock:
+            self._journal_event(event, accepted=accepted, reason=reason)
+
     def _journal_equity_event(self, event: CanonicalEvent) -> None:
         persisted = event.model_copy(
             update={"run_id": self.run_id, "ingest_order": self.event_count + 1}
@@ -682,6 +688,10 @@ class LiveSessionEngine:
             else 0,
         )
 
+    def _process_equity_event(self, event: CanonicalEvent) -> None:
+        with self._processing_lock:
+            self._journal_equity_event(event)
+
     def _record_side_b_math_outputs(self) -> None:
         """Attach asynchronously completed mathematical vectors to Side-B."""
         if self.mathematical_pipeline is None:
@@ -746,7 +756,7 @@ class LiveSessionEngine:
             async for event in self.equity_provider.events(self.equity_symbols):
                 if self.clock.now() >= self.boundaries.closes_at:
                     break
-                self._journal_equity_event(event)
+                await asyncio.to_thread(self._process_equity_event, event)
         except ProviderError as exc:
             self._append(
                 JOURNAL_KIND_EVENT_REJECTED,
@@ -956,7 +966,7 @@ class LiveSessionEngine:
             frame = await self.provider.receive_until(boundary)
             if frame.kind == "event":
                 assert frame.event is not None
-                self._journal_event(frame.event, accepted=True)
+                await asyncio.to_thread(self._process_theta_event, frame.event, True)
             elif frame.kind == "disconnect":
                 await self._recover()
             elif frame.kind == "terminated":
