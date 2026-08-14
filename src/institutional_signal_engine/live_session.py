@@ -1510,7 +1510,11 @@ class UnifiedThetaSession:
         self._next_request_id = 1
         self._ws: Any = None
         self._reader_task: asyncio.Task[None] | None = None
-        self._inbound: asyncio.Queue[InboundFrame] = asyncio.Queue(maxsize=8192)
+        # The reader must never stop calling recv because downstream durable
+        # processing is slower than the provider.  This lossless queue lets
+        # the single socket drain continuously; frames are processed in order
+        # by the serialized event-processing path.
+        self._inbound: asyncio.Queue[InboundFrame] = asyncio.Queue()
         self._requests: dict[int, SubscriptionRequest] = {}
         self._normalizer = ThetaDataOptionsProvider(events_url, api_key, contracts=())
 
