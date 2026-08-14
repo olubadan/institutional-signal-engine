@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS impact_sessions (run_id uuid NOT NULL, symbol text NO
 CREATE TABLE IF NOT EXISTS shared_feature_vectors (run_id uuid NOT NULL, cluster_id text NOT NULL, version text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS model_comparisons (run_id uuid NOT NULL, cluster_id text NOT NULL, version text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
 CREATE TABLE IF NOT EXISTS control_evaluations (run_id uuid NOT NULL, decision_id uuid NOT NULL, version text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, decision_id));
+CREATE TABLE IF NOT EXISTS shadow_work_items (run_id uuid NOT NULL, work_item_id text PRIMARY KEY, cluster_id text NOT NULL, payload jsonb NOT NULL);
 """
 
 
@@ -36,6 +37,7 @@ class InMemoryRepository:
         self.shared_feature_vectors: list[dict[str, object]] = []
         self.model_comparisons: list[dict[str, object]] = []
         self.control_evaluations: list[dict[str, object]] = []
+        self.shadow_work_items: list[dict[str, object]] = []
         self.probes: list[str] = []
 
     def write_drain_probe(self, probe_id: str) -> bool:
@@ -104,6 +106,18 @@ class InMemoryRepository:
         }:
             self.control_evaluations.append(evaluation)
 
+    def record_shadow_work_item(self, item: dict[str, object]) -> None:
+        if item.get("work_item_id") not in {
+            value.get("work_item_id") for value in self.shadow_work_items
+        }:
+            self.shadow_work_items.append(item)
+
+    def replay_shadow_work_items(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        values = self.shadow_work_items
+        if run_id is not None:
+            values = [value for value in values if value.get("run_id") == str(run_id)]
+        return tuple(values)
+
     def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         values = self.impact_clusters
         if run_id is not None:
@@ -150,6 +164,7 @@ class PostgresRepository:
         self._pending_shared_feature_vectors: list[dict[str, object]] = []
         self._pending_model_comparisons: list[dict[str, object]] = []
         self._pending_control_evaluations: list[dict[str, object]] = []
+        self._pending_shadow_work_items: list[dict[str, object]] = []
 
     def _connect(self) -> Any:
         import psycopg
@@ -249,6 +264,7 @@ class PostgresRepository:
             and not self._pending_shared_feature_vectors
             and not self._pending_model_comparisons
             and not self._pending_control_evaluations
+            and not self._pending_shadow_work_items
         ):
             return
         connection = self._session()
@@ -374,6 +390,17 @@ class PostgresRepository:
                 ),
             )
         self._pending_control_evaluations.clear()
+        for item in self._pending_shadow_work_items:
+            connection.execute(
+                "INSERT INTO shadow_work_items (run_id,work_item_id,cluster_id,payload) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                (
+                    item["run_id"],
+                    item["work_item_id"],
+                    item["cluster_id"],
+                    json.dumps(item, default=str),
+                ),
+            )
+        self._pending_shadow_work_items.clear()
 
     @staticmethod
     def _decision_parameters(decision: Decision) -> tuple[object, ...]:
@@ -441,6 +468,21 @@ class PostgresRepository:
         self._pending_control_evaluations.append(evaluation)
         if len(self._pending_control_evaluations) >= 100:
             self.flush()
+
+    def record_shadow_work_item(self, item: dict[str, object]) -> None:
+        self._pending_shadow_work_items.append(item)
+        if len(self._pending_shadow_work_items) >= 100:
+            self.flush()
+
+    def replay_shadow_work_items(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
+        self.flush()
+        query = "SELECT payload FROM shadow_work_items"
+        params: tuple[UUID, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id=%s"
+            params = (run_id,)
+        query += " ORDER BY work_item_id"
+        return tuple(row[0] for row in self._session().execute(query, params).fetchall())
 
     def replay_impact_clusters(self, run_id: UUID | None = None) -> Iterable[dict[str, object]]:
         self.flush()

@@ -162,6 +162,30 @@ def test_freshness_expires_once_and_newer_sweep_refreshes():
     )
 
 
+def test_sweep_window_keeps_construction_independent_from_freshness():
+    engine = SweepEngine(uuid4())
+    qualifying_cluster(engine, NOW)
+    original = next(iter(engine.active.values()))
+
+    # The one-second construction window is strict for a new constituent;
+    # thirty-minute freshness must never merge this into the old cluster.
+    separated = engine.process(trade(NOW + timedelta(seconds=1, milliseconds=1), 5, "5"))
+    assert separated.cluster is not original
+    assert separated.cluster is not None
+    assert separated.cluster.open_timestamp == NOW + timedelta(seconds=1, milliseconds=1)
+
+
+def test_freshness_expiry_does_not_change_cluster_membership():
+    engine = SweepEngine(uuid4())
+    qualifying_cluster(engine, NOW)
+    original = next(iter(engine.active.values()))
+    expiry = original.last_timestamp + SWEEP_FRESHNESS
+    assert engine.tick(expiry - timedelta(microseconds=1)).reason is None
+    assert next(iter(engine.active.values())) is original
+    assert engine.tick(expiry).reason == "SWEEP_FRESHNESS_EXPIRED"
+    assert original.expired is True
+
+
 def test_premium_just_below_boundary_does_not_qualify():
     engine = SweepEngine(uuid4())
     for exchange in VALID_EXCHANGES:
