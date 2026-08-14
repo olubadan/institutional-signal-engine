@@ -235,7 +235,13 @@ class AlpacaEquitiesProvider:
                                 raise ProviderError(
                                     "alpaca", f"historical_http_{response.status_code}", True
                                 )
-                            body = response.json()
+                            # Large 50-symbol historical pages can contain a
+                            # substantial number of minute bars. JSON
+                            # decoding is synchronous CPU work; keep it off
+                            # the event-loop thread so the live observer can
+                            # reach provider activation while bootstrap
+                            # continues in the background.
+                            body = await asyncio.to_thread(response.json)
                             if not isinstance(body, dict):
                                 raise ProviderError("alpaca", "historical_malformed", False)
                             bars = body.get("bars", {})
@@ -271,6 +277,7 @@ class AlpacaEquitiesProvider:
         impact_baselines = {}
         completed_days_by_symbol: dict[str, set[str]] = {}
         for symbol in requested:
+            await asyncio.sleep(0)
             daily_rows = sorted(daily[symbol], key=lambda row: str(row.get("t", "")))
             completed: list[tuple[str, Decimal, Decimal]] = []
             for row in daily_rows:
@@ -297,6 +304,7 @@ class AlpacaEquitiesProvider:
             batch_rows: dict[str, list[dict[str, Any]]],
         ) -> None:
             for symbol, minute_rows in batch_rows.items():
+                await asyncio.sleep(0)
                 completed_days = completed_days_by_symbol[symbol]
                 by_day: dict[str, dict[int, int]] = {}
                 for row in minute_rows:
