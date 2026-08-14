@@ -45,6 +45,7 @@ def test_forward_outcomes_are_durable_and_replayable(tmp_path: Path) -> None:
         "filter_decision_count": 0,
         "anchor_count": 1,
         "comparison_count": 1,
+        "duplicate_scientific_ids": [],
     }
 
 

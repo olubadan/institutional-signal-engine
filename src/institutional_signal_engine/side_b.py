@@ -10,16 +10,23 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 FORWARD_HORIZONS_SECONDS: tuple[int, ...] = (5, 15, 30, 60, 120, 300)
 SIDE_B_SCHEMA_VERSION = "SIDE_B_EQUITY_OUTCOMES_V1"
+
+
+def _scientific_id(kind: str, *parts: object) -> str:
+    return str(
+        uuid5(NAMESPACE_URL, ":".join(("ise-scientific-v1", kind, *(str(part) for part in parts))))
+    )
 
 
 def _json_value(value: object) -> object:
@@ -90,6 +97,7 @@ class OutcomeAnchor:
     shadow_result: bool | None = None
     signed_delta_direction: str | None = None
     z_score: Decimal | None = None
+    run_id: str | None = None
 
 
 @dataclass
@@ -144,9 +152,20 @@ class ForwardOutcomeTracker:
                 if timestamp < target:
                     continue
                 forward_return = (price - pending.anchor.price_t0) / pending.anchor.price_t0
+                scope = pending.anchor.run_id or ""
+                anchor_id = _scientific_id(
+                    "equity-anchor", scope, pending.anchor.cluster_id, pending.anchor.t0.isoformat()
+                )
                 outcome = self.journal.append(
                     "equity.forward_outcome",
                     {
+                        "anchor_id": anchor_id,
+                        "outcome_id": _scientific_id(
+                            "forward-outcome", scope, pending.anchor.cluster_id, horizon
+                        ),
+                        "feature_vector_id": _scientific_id(
+                            "feature-vector", scope, pending.anchor.cluster_id
+                        ),
                         "cluster_id": pending.anchor.cluster_id,
                         "symbol": pending.anchor.symbol,
                         "t0": pending.anchor.t0,
@@ -176,6 +195,22 @@ class ForwardOutcomeTracker:
                 self.journal.append(
                     "comparison.completed",
                     {
+                        "comparison_id": _scientific_id(
+                            "realized-comparison", scope, pending.anchor.cluster_id
+                        ),
+                        "comparison_type": "REALIZED_OUTCOME",
+                        "model_comparison_id": _scientific_id(
+                            "model-comparison", scope, pending.anchor.cluster_id
+                        ),
+                        "feature_vector_id": _scientific_id(
+                            "feature-vector", scope, pending.anchor.cluster_id
+                        ),
+                        "anchor_id": _scientific_id(
+                            "equity-anchor",
+                            scope,
+                            pending.anchor.cluster_id,
+                            pending.anchor.t0.isoformat(),
+                        ),
                         "cluster_id": pending.anchor.cluster_id,
                         "symbol": pending.anchor.symbol,
                         "t0": pending.anchor.t0,
@@ -192,9 +227,13 @@ class ForwardOutcomeTracker:
 
     def register_anchor(self, anchor: OutcomeAnchor) -> None:
         self._pending[anchor.cluster_id] = _PendingAnchor(anchor)
+        scope = anchor.run_id or ""
+        anchor_id = _scientific_id("equity-anchor", scope, anchor.cluster_id, anchor.t0.isoformat())
         self.journal.append(
             "equity.outcome_anchor",
             {
+                "anchor_id": anchor_id,
+                "feature_vector_id": _scientific_id("feature-vector", scope, anchor.cluster_id),
                 "cluster_id": anchor.cluster_id,
                 "symbol": anchor.symbol,
                 "t0": anchor.t0,
@@ -240,6 +279,18 @@ class ForwardOutcomeTracker:
 def replay_side_b(path: Path) -> dict[str, object]:
     """Replay the append-only Side-B journal and return deterministic counts."""
     records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    identity_fields_by_kind = {
+        "equity.outcome_anchor": "anchor_id",
+        "equity.forward_outcome": "outcome_id",
+        "comparison.completed": "comparison_id",
+    }
+    scientific_ids = [
+        f"{record.get('kind')}:{record[key]}"
+        for record in records
+        if (key := identity_fields_by_kind.get(str(record.get("kind")))) is not None
+        and key in record
+    ]
+    duplicates = sorted(value for value, count in Counter(scientific_ids).items() if count > 1)
     return {
         "schema_version": SIDE_B_SCHEMA_VERSION,
         "record_count": len(records),
@@ -250,4 +301,5 @@ def replay_side_b(path: Path) -> dict[str, object]:
         ),
         "anchor_count": sum(record.get("kind") == "equity.outcome_anchor" for record in records),
         "comparison_count": sum(record.get("kind") == "comparison.completed" for record in records),
+        "duplicate_scientific_ids": duplicates,
     }

@@ -32,10 +32,7 @@ import websockets
 from .config import Settings
 from .journal import (
     JOURNAL_KIND_CLOCK_ADVANCED,
-    JOURNAL_KIND_CLUSTER_COMPLETED,
-    JOURNAL_KIND_COMPARISON_COMPLETED,
     JOURNAL_KIND_CONFIGURATION,
-    JOURNAL_KIND_CONTROL_EVALUATED,
     JOURNAL_KIND_DISCOVERY_COMPLETE,
     JOURNAL_KIND_DISCOVERY_START,
     JOURNAL_KIND_ENRICHMENT_COMPLETE,
@@ -46,7 +43,6 @@ from .journal import (
     JOURNAL_KIND_EPOCH_RESTORED,
     JOURNAL_KIND_EVENT_ACCEPTED,
     JOURNAL_KIND_EVENT_REJECTED,
-    JOURNAL_KIND_FEATURE_VECTOR_PERSISTED,
     JOURNAL_KIND_INTAKE_STOPPED,
     JOURNAL_KIND_PERSISTENCE_DRAINED,
     JOURNAL_KIND_PROVIDER_DISCONNECTED,
@@ -54,10 +50,9 @@ from .journal import (
     JOURNAL_KIND_PROVIDER_RECONNECTED,
     JOURNAL_KIND_REEVALUATION_NOOP,
     JOURNAL_KIND_REEVALUATION_START,
+    JOURNAL_KIND_SCIENTIFIC_EVIDENCE_BATCH,
     JOURNAL_KIND_SESSION_FINALIZED,
     JOURNAL_KIND_SESSION_START,
-    JOURNAL_KIND_SHADOW_COMPLETED,
-    JOURNAL_KIND_SHADOW_ENQUEUED,
     JOURNAL_KIND_SUBSCRIPTION_ACKNOWLEDGEMENT,
     JOURNAL_KIND_SUBSCRIPTION_COMMAND,
     FileJournalRepository,
@@ -448,6 +443,7 @@ class LiveSessionEngine:
         self.side_b = ForwardOutcomeTracker(SideBJournal(self.writer.directory / "SIDE_B.jsonl"))
         self._side_b_anchors: set[str] = set()
         self._processing_lock = threading.RLock()
+        self._pending_scientific_evidence: list[dict[str, object]] = []
 
     def _append(self, kind: str, *, checkpoint: bool = True, **values: Any) -> int:
         record = self.journal.append(kind, timestamp=self.clock.now(), **values)
@@ -456,23 +452,31 @@ class LiveSessionEngine:
         return record.sequence
 
     def _record_math_evidence(self, kind: str, payload: Mapping[str, object]) -> None:
-        journal_kinds = {
-            "cluster.completed": JOURNAL_KIND_CLUSTER_COMPLETED,
-            "control.evaluated": JOURNAL_KIND_CONTROL_EVALUATED,
-            "feature_vector.persisted": JOURNAL_KIND_FEATURE_VECTOR_PERSISTED,
-            "shadow.enqueued": JOURNAL_KIND_SHADOW_ENQUEUED,
-            "shadow.completed": JOURNAL_KIND_SHADOW_COMPLETED,
-            "comparison.completed": JOURNAL_KIND_COMPARISON_COMPLETED,
-        }
-        journal_kind = journal_kinds[kind]
         cluster_id = str(payload.get("cluster_id", ""))
         with self._processing_lock:
-            self._append(
-                journal_kind,
-                operation_id=f"{kind}:{cluster_id}:{self.journal.sequence}",
-                correlation_id=cluster_id or kind,
-                scientific_evidence=dict(payload),
+            self._pending_scientific_evidence.append(
+                {"kind": kind, "cluster_id": cluster_id, "payload": dict(payload)}
             )
+
+    def _take_math_evidence(self) -> list[dict[str, object]]:
+        pending = self._pending_scientific_evidence
+        self._pending_scientific_evidence = []
+        return pending
+
+    def _flush_math_evidence(self, *, checkpoint: bool = False) -> None:
+        pending = self._take_math_evidence()
+        if not pending:
+            return
+        self._append(
+            JOURNAL_KIND_SCIENTIFIC_EVIDENCE_BATCH,
+            operation_id=f"scientific-batch:{self.journal.sequence}",
+            correlation_id=str(pending[0].get("cluster_id") or "scientific"),
+            scientific_evidence={
+                "schema_version": "MATHEMATICAL_EVIDENCE_BATCH_V1",
+                "records": pending,
+            },
+            checkpoint=checkpoint,
+        )
 
     async def _receive_acknowledgements(
         self, requests: tuple[SubscriptionRequest, ...], epoch: PlannerEpoch
@@ -614,6 +618,7 @@ class LiveSessionEngine:
                 self.mathematical_pipeline.process_accepted(event)
         elif self.mathematical_pipeline is not None:
             self.mathematical_pipeline.record_rejected(event, reason)
+        scientific_evidence = self._take_math_evidence()
         self._append(
             kind,
             parent_sequence=self.journal.sequence - 1,
@@ -631,6 +636,7 @@ class LiveSessionEngine:
             processed=accepted,
             connection_generation=self.provider.connection_generation,
             checkpoint=checkpoint,
+            scientific_evidence=scientific_evidence,
         )
 
     def _process_theta_event(self, event: CanonicalEvent, accepted: bool, reason: str = "") -> None:
@@ -693,9 +699,11 @@ class LiveSessionEngine:
                         Decimal(str(inputs["z_score"]))
                         if inputs.get("z_score") is not None
                         else None,
+                        str(self.run_id),
                     )
                 )
                 self._side_b_anchors.add(cluster_id)
+        scientific_evidence = self._take_math_evidence()
         self._append(
             JOURNAL_KIND_EVENT_ACCEPTED,
             parent_sequence=self.journal.sequence - 1,
@@ -711,6 +719,7 @@ class LiveSessionEngine:
             connection_generation=self.equity_provider.connection_generation
             if self.equity_provider is not None
             else 0,
+            scientific_evidence=scientific_evidence,
         )
 
     def _process_equity_event(self, event: CanonicalEvent) -> None:
@@ -761,6 +770,7 @@ class LiveSessionEngine:
                     bool(inputs.get("shadow_qualified")),
                     signed_direction,
                     Decimal(str(inputs["z_score"])) if inputs.get("z_score") is not None else None,
+                    str(self.run_id),
                 )
             )
             self._side_b_anchors.add(cluster_id)
@@ -1052,6 +1062,8 @@ class LiveSessionEngine:
         await self.provider.close()
         if self.mathematical_pipeline is not None:
             await self.mathematical_pipeline.drain_shadow()
+        with self._processing_lock:
+            self._flush_math_evidence()
         self.repository.flush()
         self._append(
             JOURNAL_KIND_PERSISTENCE_DRAINED,
@@ -1286,6 +1298,74 @@ def _publish_completed_bundle(engine: LiveSessionEngine) -> dict[str, object]:
         mathematical["fresh_process_replay"] = replayed
         if not replay_equal:
             raise LiveEvidenceFailure("MATHEMATICAL_REPLAY_EQUALITY_FAILED")
+        scientific_records: list[dict[str, object]] = []
+        for record in engine.journal.records:
+            direct = record.as_dict().get("scientific_evidence")
+            if isinstance(direct, list):
+                for entry in direct:
+                    if isinstance(entry, dict):
+                        scientific_records.append(
+                            {
+                                "kind": entry.get("kind"),
+                                "scientific_evidence": entry.get("payload", {}),
+                                "event_sequence": record.sequence,
+                            }
+                        )
+            if record.kind == JOURNAL_KIND_SCIENTIFIC_EVIDENCE_BATCH:
+                batch = record.as_dict().get("scientific_evidence", {})
+                entries = batch.get("records", []) if isinstance(batch, dict) else []
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        scientific_records.append(
+                            {
+                                "kind": entry.get("kind"),
+                                "scientific_evidence": entry.get("payload", {}),
+                                "batch_sequence": record.sequence,
+                            }
+                        )
+            elif record.kind in {
+                "cluster.completed",
+                "control.evaluated",
+                "feature_vector.persisted",
+                "shadow.enqueued",
+                "shadow.completed",
+                "comparison.completed",
+            }:
+                scientific_records.append(record.as_dict())
+        scientific_identity_fields = {
+            "cluster.completed": "cluster_evidence_id",
+            "control.evaluated": "evaluation_id",
+            "feature_vector.persisted": "feature_vector_id",
+            "shadow.enqueued": "shadow_evaluation_id",
+            "shadow.completed": "shadow_evaluation_id",
+            "comparison.completed": "comparison_id",
+        }
+        scientific_ids = [
+            cast(Mapping[str, object], record.get("scientific_evidence", {})).get(
+                scientific_identity_fields[str(record.get("kind"))]
+            )
+            for record in scientific_records
+            if str(record.get("kind")) in scientific_identity_fields
+        ]
+        scientific_ids = [str(value) for value in scientific_ids if value is not None]
+        scientific_replay = {
+            "schema_version": "SCIENTIFIC_REPLAY_V1",
+            "run_id": str(engine.run_id),
+            "accepted_input_event_ids": [str(event.event_id) for event in persisted_events],
+            "scientific_record_count": len(scientific_records),
+            "scientific_records": scientific_records,
+            "fresh_process_replay_equal": replay_equal,
+            "model_replay_sha256": sha256({field: replayed[field] for field in replay_fields}),
+            "live_model_sha256": sha256({field: mathematical[field] for field in replay_fields}),
+            "duplicate_scientific_records": len(scientific_ids) != len(set(scientific_ids)),
+            "scientific_identity_count": len(scientific_ids),
+            "scientific_identity_unique_count": len(set(scientific_ids)),
+        }
+        components["SCIENTIFIC_REPLAY.json"] = engine.writer.publish_component(
+            "SCIENTIFIC_REPLAY.json", scientific_replay
+        )
         components["MATHEMATICAL_PIPELINE.json"] = engine.writer.publish_component(
             "MATHEMATICAL_PIPELINE.json", mathematical
         )

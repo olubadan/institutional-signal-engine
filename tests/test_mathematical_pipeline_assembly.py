@@ -106,6 +106,8 @@ def test_assembled_path_and_fresh_replay(tmp_path: Path) -> None:
     assert repository.sweeps
     assert repository.shared_feature_vectors
     assert repository.model_comparisons
+    assert all(item["feature_vector_id"] for item in live["feature_vectors"])
+    assert all(item["comparison_type"] == "MODEL_ONLY" for item in live["comparisons"])
 
 
 @pytest.mark.asyncio
@@ -173,3 +175,8 @@ async def test_scientific_evidence_is_versioned_and_joinable() -> None:
     assert vectors
     assert set(vectors) == set(comparisons)
     assert all(payload["schema_version"] == "MATHEMATICAL_EVIDENCE_V1" for _, payload in evidence)
+    assert all(
+        payload.get("feature_vector_id")
+        for kind, payload in evidence
+        if kind in {"shadow.enqueued", "shadow.completed", "feature_vector.persisted"}
+    )

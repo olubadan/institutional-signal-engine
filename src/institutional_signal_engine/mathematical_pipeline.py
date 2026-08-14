@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .config import Settings
 from .impact import ImpactBaseline, ShadowImpactEngine
+from .journal import canonical_json, sha256_bytes
 from .persistence import InMemoryRepository
 from .pipeline import SignalPipeline
 from .schemas import CanonicalEvent
@@ -17,6 +18,12 @@ from .shadow_async import AsyncShadowWorker, ShadowWorkItem
 SHARED_FEATURE_VECTOR_VERSION = "SHARED_FEATURE_VECTOR_V1"
 MODEL_COMPARISON_VERSION = "CONTROL_SHADOW_COMPARISON_V1"
 SCIENTIFIC_EVIDENCE_VERSION = "MATHEMATICAL_EVIDENCE_V1"
+
+
+def _scientific_id(kind: str, *parts: object) -> str:
+    return str(
+        uuid5(NAMESPACE_URL, ":".join(("ise-scientific-v1", kind, *(str(part) for part in parts))))
+    )
 
 
 class MathematicalPipeline:
@@ -74,6 +81,7 @@ class MathematicalPipeline:
         self.comparisons: list[dict[str, object]] = []
         self.control_evaluations: list[dict[str, object]] = []
         self._seen_decisions: set[str] = set()
+        self._seen_scientific_controls: set[str] = set()
 
     def process_accepted(self, event: CanonicalEvent) -> Any:
         self.accepted_event_ids.append(str(event.event_id))
@@ -105,11 +113,16 @@ class MathematicalPipeline:
         ):
             raise RuntimeError("SHADOW_QUEUE_BACKPRESSURE")
         work_item_id = ShadowWorkItem.identity(self.run_id, audit)
+        cluster_id = str(audit["cluster_id"])
+        feature_vector_id = _scientific_id("feature-vector", self.run_id, cluster_id)
+        shadow_evaluation_id = _scientific_id("shadow-evaluation", self.run_id, work_item_id)
         if audit.get("transition") == "CLUSTER_CLOSED":
             self._emit_evidence(
                 "cluster.completed",
                 {
-                    "cluster_id": str(audit["cluster_id"]),
+                    "cluster_evidence_id": _scientific_id("cluster", self.run_id, cluster_id),
+                    "cluster_id": cluster_id,
+                    "feature_vector_id": feature_vector_id,
                     "symbol": audit.get("symbol"),
                     "constituent_event_ids": list(
                         cast(Sequence[object], audit.get("constituent_trade_ids", ()))
@@ -121,7 +134,9 @@ class MathematicalPipeline:
             "shadow.enqueued",
             {
                 "work_item_id": work_item_id,
-                "cluster_id": str(audit["cluster_id"]),
+                "shadow_evaluation_id": shadow_evaluation_id,
+                "feature_vector_id": feature_vector_id,
+                "cluster_id": cluster_id,
                 "enqueued_at": enqueued_at.isoformat(),
                 "queue_state": "ENQUEUED",
             },
@@ -148,6 +163,12 @@ class MathematicalPipeline:
             "shadow.completed",
             {
                 "work_item_id": _item.work_item_id,
+                "shadow_evaluation_id": _scientific_id(
+                    "shadow-evaluation", self.run_id, _item.work_item_id
+                ),
+                "feature_vector_id": _scientific_id(
+                    "feature-vector", self.run_id, str(result["cluster_id"])
+                ),
                 "cluster_id": str(result["cluster_id"]),
                 "enqueued_at": _item.enqueued_at.isoformat(),
                 "completed_at": datetime.now(UTC).isoformat(),
@@ -223,6 +244,7 @@ class MathematicalPipeline:
                 "version": SHARED_FEATURE_VECTOR_VERSION,
                 "run_id": str(self.run_id),
                 "cluster_id": cluster_id,
+                "feature_vector_id": _scientific_id("feature-vector", self.run_id, cluster_id),
                 "source_event_ids": list(
                     cast(Sequence[object], audit.get("constituent_trade_ids", []))
                 ),
@@ -234,11 +256,51 @@ class MathematicalPipeline:
                     "thresholds": self.settings.thresholds.model_dump(mode="json"),
                 },
             }
+            vector["immutable_input_sha256"] = sha256_bytes(
+                canonical_json(
+                    {
+                        "cluster_id": cluster_id,
+                        "source_event_ids": vector["source_event_ids"],
+                        "impact_inputs": vector["impact_inputs"],
+                        "control_inputs": vector["control_inputs"],
+                    }
+                )
+            )
+            control_evaluation_id = _scientific_id("control-evaluation", self.run_id, cluster_id)
+            shadow_evaluation_id = _scientific_id(
+                "shadow-evaluation", self.run_id, ShadowWorkItem.identity(self.run_id, audit)
+            )
+            control_evaluation = {
+                "version": "CONTROL_EVALUATION_V1",
+                "evaluation_id": control_evaluation_id,
+                "run_id": str(self.run_id),
+                "cluster_id": cluster_id,
+                "feature_vector_id": vector["feature_vector_id"],
+                "model_version": "CONTROL_V1",
+                "thresholds": self.settings.thresholds.model_dump(mode="json"),
+                "threshold_provenance": "Settings.thresholds authoritative runtime configuration",
+                "inputs": vector["control_inputs"],
+                "result": result.get("control_qualified"),
+                "failure_reasons": list(cast(Sequence[object], result.get("failed_reasons", []))),
+            }
+            if control_evaluation_id not in self._seen_scientific_controls:
+                self._seen_scientific_controls.add(control_evaluation_id)
+                self.control_evaluations.append(control_evaluation)
+                self._emit_evidence("control.evaluated", control_evaluation)
+                recorder = getattr(self.repository, "record_control_evaluation", None)
+                if recorder is not None:
+                    recorder(control_evaluation)
             self.feature_vectors.append(vector)
             comparison: dict[str, object] = {
                 "version": MODEL_COMPARISON_VERSION,
+                "comparison_id": _scientific_id("model-comparison", self.run_id, cluster_id),
+                "comparison_type": "MODEL_ONLY",
                 "run_id": str(self.run_id),
                 "cluster_id": cluster_id,
+                "feature_vector_id": vector["feature_vector_id"],
+                "control_evaluation_id": control_evaluation_id,
+                "shadow_evaluation_id": shadow_evaluation_id,
+                "realized_outcome_complete": False,
                 "control_result": result.get("control_qualified"),
                 "shadow_result": result.get("shadow_qualified"),
                 "comparison": result.get("comparison"),
