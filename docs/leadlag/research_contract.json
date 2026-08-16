@@ -1,0 +1,18 @@
+{
+  "contract_version": "LEAD_LAG_MEASUREMENT_FOUNDATION_V1",
+  "north_star": "Determine whether meaningful call-option pressure occurs before an abnormal underlying-equity response and measure the lag without assuming the hypothesis is true.",
+  "questions": {
+    "structural": "Does qualifying call-option pressure precede an abnormal equity response?",
+    "temporal": "When did pressure begin, when did the response begin, and what is the lag under available timestamp provenance?",
+    "economic_later": "After legitimate detection and realistic execution delay, how much favorable movement remains and does approximately 25bp remain often enough to matter?"
+  },
+  "valid_outcomes": ["OPTIONS_FIRST", "EQUITY_FIRST", "SIMULTANEOUS", "NO_RESPONSE", "PRE_EXISTING_EQUITY_MOVE", "AMBIGUOUS"],
+  "anti_look_ahead": "Do not attribute information available only at qualification or emission to onset or to an earlier economic decision clock.",
+  "observation_only": true,
+  "existing_control_shadow_unchanged": true,
+  "falsification_required": true,
+  "simulation_is_not_live_evidence": true,
+  "trading_enabled": false,
+  "orders_constructed": 0,
+  "orders_submitted": 0
+}

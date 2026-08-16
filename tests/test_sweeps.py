@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+from institutional_signal_engine.leadlag import map_existing_t0
 from institutional_signal_engine.schemas import CanonicalEvent, EventKind
 from institutional_signal_engine.sweeps import (
     EXCHANGE_MAPPING_VERSION,
@@ -365,6 +366,49 @@ def test_transition_history_is_ordered_and_nonqualifying_audit_is_retained():
     transition = qualified.transition_audits[-1]
     assert transition["transition"] == "NEW_QUALIFYING_SWEEP"
     assert transition["transition_order"] == 1
+
+
+def test_qualification_timestamp_can_precede_later_cluster_completion():
+    engine = SweepEngine(uuid4())
+    qualifying = None
+    for offset, exchange in enumerate(VALID_EXCHANGES):
+        qualifying = engine.process(trade(NOW + timedelta(milliseconds=offset), 5, exchange))
+    assert qualifying is not None and qualifying.transition_audits
+    qualification = qualifying.transition_audits[-1]
+    engine.process(trade(NOW + timedelta(milliseconds=500), 1, "D"))
+    later = engine.close_session()[0]
+    lifecycle = map_existing_t0(
+        {
+            **later,
+            "qualification_state": True,
+            "qualification_timestamp": qualification["qualification_timestamp"],
+        },
+        emission_timestamp=NOW + timedelta(seconds=1),
+    )
+    assert lifecycle.t0_qualify == NOW + timedelta(milliseconds=2)
+    assert lifecycle.t0_cluster_complete == NOW + timedelta(seconds=1)
+    assert lifecycle.valid
+
+
+def test_qualification_at_cluster_completion_and_nonqualifying_completion():
+    engine = SweepEngine(uuid4())
+    for offset, exchange in enumerate(VALID_EXCHANGES):
+        update = engine.process(trade(NOW + timedelta(milliseconds=offset), 5, exchange))
+    assert update.audit is not None
+    assert update.audit["qualification_timestamp"] == (NOW + timedelta(milliseconds=2)).isoformat()
+    closed = engine.close_session()[0]
+    assert closed["final"] is True
+    from institutional_signal_engine.pipeline import SignalPipeline
+
+    transition = update.transition_audits[-1]
+    emitted = SignalPipeline._annotate_sweep_emission(transition, NOW + timedelta(milliseconds=3))
+    assert emitted["emission_timestamp"] == (NOW + timedelta(milliseconds=3)).isoformat()
+    nonqualifying = SweepEngine(uuid4())
+    nonqualifying.process(trade(NOW, 1, "5"))
+    closed = nonqualifying.close_session()[0]
+    lifecycle = map_existing_t0(closed)
+    assert lifecycle.t0_qualify is None
+    assert "cluster_not_qualified" in lifecycle.gaps
 
 
 def test_transition_audits_are_append_only_and_ordered():

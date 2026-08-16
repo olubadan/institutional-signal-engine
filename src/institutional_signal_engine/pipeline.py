@@ -134,6 +134,10 @@ class SignalPipeline:
     def process(self, event: CanonicalEvent) -> Decision | None:
         started = monotonic()
         processing_time = self.now().astimezone(UTC)
+        if "_pipeline_admission_timestamp" not in event.payload:
+            payload = dict(event.payload)
+            payload["_pipeline_admission_timestamp"] = processing_time.isoformat()
+            event = event.model_copy(update={"payload": payload})
         self._handle_session_transition(event.source_timestamp)
         if event.payload.get("provider_event_kind") == "sweep_timer":
             self._record_timing(event, processing_time, 0.0, started)
@@ -214,6 +218,10 @@ class SignalPipeline:
         if event.kind == EventKind.OPTIONS:
             sweep_update = self.sweeps.process(event)
             closed_sweep_audits = sweep_update.closed_audits
+            transition_audits = tuple(
+                self._annotate_sweep_emission(audit, processing_time)
+                for audit in sweep_update.transition_audits
+            )
             payload = dict(event.payload)
             sweep_state = self.sweeps.snapshot()
             payload.update(sweep_state)
@@ -242,7 +250,7 @@ class SignalPipeline:
         for audit in closed_sweep_audits:
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None
-        for audit in sweep_update.transition_audits if event.kind == EventKind.OPTIONS else ():
+        for audit in transition_audits if event.kind == EventKind.OPTIONS else ():
             if not self._enqueue(AuditWrite(sweep=audit)):
                 return None
         if event.kind == EventKind.OPTIONS:
@@ -251,7 +259,7 @@ class SignalPipeline:
                 for audit in (
                     sweep_audit,
                     *closed_sweep_audits,
-                    *(sweep_update.transition_audits),
+                    *transition_audits,
                 )
                 if audit is not None
             )
@@ -355,6 +363,15 @@ class SignalPipeline:
             self._pending_sweep_reasons.clear()
         self._record_timing(event, processing_time, age_at_receipt_ms, started)
         return first_decision
+
+    @staticmethod
+    def _annotate_sweep_emission(
+        audit: dict[str, object], processing_time: datetime
+    ) -> dict[str, object]:
+        annotated = dict(audit)
+        if audit.get("transition") == "NEW_QUALIFYING_SWEEP":
+            annotated["emission_timestamp"] = processing_time.astimezone(UTC).isoformat()
+        return annotated
 
     def _enqueue(self, record: AuditWrite) -> bool:
         if self.writer is None:

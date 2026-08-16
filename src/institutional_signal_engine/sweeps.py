@@ -130,6 +130,7 @@ class SweepCluster:
     expired: bool = False
     last_transition: str = "OPENED"
     transition_order: int = 0
+    qualification_timestamp: datetime | None = None
 
     @property
     def last_timestamp(self) -> datetime:
@@ -320,6 +321,8 @@ class SweepEngine:
         transition_audits: list[dict[str, Any]] = []
         if before != cluster.qualifying:
             reason = "NEW_QUALIFYING_SWEEP" if cluster.qualifying else "SWEEP_QUALIFICATION_REVOKED"
+            if cluster.qualifying:
+                cluster.qualification_timestamp = event.source_timestamp
             cluster.last_transition = reason
             transition_audits.append(self._audit(cluster, reason))
         audit = self._audit(cluster, None)
@@ -410,6 +413,8 @@ class SweepEngine:
                 reason = (
                     "NEW_QUALIFYING_SWEEP" if cluster.qualifying else "SWEEP_QUALIFICATION_REVOKED"
                 )
+                if cluster.qualifying:
+                    cluster.qualification_timestamp = event.source_timestamp
                 cluster.last_transition = reason
                 transition_audits.append(self._audit(cluster, reason))
             return self._update(
@@ -436,7 +441,16 @@ class SweepEngine:
         audit = cluster.recompute()
         audit["transition"] = transition
         audit["transition_order"] = cluster.transition_order if transition is not None else None
+        audit["qualification_timestamp"] = (
+            self._iso(cluster.qualification_timestamp)
+            if cluster.qualification_timestamp is not None
+            else None
+        )
         return audit
+
+    @staticmethod
+    def _iso(value: datetime) -> str:
+        return value.astimezone(UTC).isoformat()
 
     def snapshot(self) -> dict[str, object]:
         premium = sum(self.session_qualifying.values(), Decimal(0))

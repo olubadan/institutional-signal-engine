@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from .schemas import CanonicalEvent, Decision
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS canonical_events (event_id uuid PRIMARY KEY, run_id uuid NOT NULL, ingest_order bigint NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, payload jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS canonical_event_receipts (event_id uuid PRIMARY KEY, accepted_at timestamptz NOT NULL, clock_domain text NOT NULL, acceptance_stage text NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions (decision_id uuid PRIMARY KEY, run_id uuid NOT NULL, decision_order bigint NOT NULL, decided_at timestamptz NOT NULL, selected_symbol text, fire boolean NOT NULL, candidates jsonb NOT NULL, rejection_reasons jsonb NOT NULL, input_event_ids jsonb NOT NULL, config_version text NOT NULL, engine_version text NOT NULL, condition_mapping_version text NOT NULL, triggering_change_reasons jsonb NOT NULL DEFAULT '[]'::jsonb, synchronized_state_identity text NOT NULL DEFAULT '', counters jsonb NOT NULL, indicator_provenance jsonb NOT NULL DEFAULT '{}'::jsonb, sweep_state jsonb NOT NULL DEFAULT '{}'::jsonb);
 CREATE TABLE IF NOT EXISTS quote_consumptions (run_id uuid NOT NULL, consumption_order bigint NOT NULL, quote_event_id uuid NOT NULL, trade_event_id uuid, quote_role text NOT NULL, kind text NOT NULL, symbol text NOT NULL, source text NOT NULL, source_timestamp timestamptz NOT NULL, received_timestamp timestamptz NOT NULL, normalized_timestamp timestamptz NOT NULL, sequence bigint NOT NULL, quote_ingest_order bigint NOT NULL DEFAULT 0, payload jsonb NOT NULL, PRIMARY KEY (run_id, consumption_order));
 CREATE TABLE IF NOT EXISTS sweep_clusters (run_id uuid NOT NULL, cluster_id uuid NOT NULL, payload jsonb NOT NULL, PRIMARY KEY (run_id, cluster_id));
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS shadow_work_items (run_id uuid NOT NULL, work_item_id
 class InMemoryRepository:
     def __init__(self) -> None:
         self.events: list[CanonicalEvent] = []
+        self.journal_receipts: list[dict[str, object]] = []
         self.decisions: list[Decision] = []
         self.quote_consumptions: list[QuoteConsumption] = []
         self.sweeps: list[dict[str, object]] = []
@@ -47,6 +50,17 @@ class InMemoryRepository:
     def record_event(self, event: CanonicalEvent) -> None:
         if event.event_id not in {existing.event_id for existing in self.events}:
             self.events.append(event)
+            self.journal_receipts.append(
+                {
+                    "event_id": str(event.event_id),
+                    "accepted_at": datetime.now(UTC),
+                    "clock_domain": "local_wall_clock",
+                    "acceptance_stage": "in_memory_repository_record_event",
+                }
+            )
+
+    def replay_journal_receipts(self) -> tuple[dict[str, object], ...]:
+        return tuple(self.journal_receipts)
 
     def record_decision(self, decision: Decision) -> None:
         if decision.decision_id not in {existing.decision_id for existing in self.decisions}:
@@ -269,6 +283,7 @@ class PostgresRepository:
             return
         connection = self._session()
         if self._pending_events:
+            pending_events = tuple(self._pending_events)
             connection.execute(
                 "CREATE TEMP TABLE IF NOT EXISTS canonical_events_stage "
                 "(event_id uuid, run_id uuid, ingest_order bigint, kind text, symbol text, source text, "
@@ -277,7 +292,7 @@ class PostgresRepository:
             )
             connection.execute("TRUNCATE canonical_events_stage")
             with connection.cursor().copy("COPY canonical_events_stage FROM STDIN") as copy:
-                for event in self._pending_events:
+                for event in pending_events:
                     copy.write_row(
                         (
                             event.event_id,
@@ -301,6 +316,22 @@ class PostgresRepository:
                 "normalized_timestamp,sequence,payload FROM canonical_events_stage "
                 "ON CONFLICT DO NOTHING"
             )
+            accepted_at = datetime.now(UTC)
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO canonical_event_receipts "
+                    "(event_id,accepted_at,clock_domain,acceptance_stage) VALUES (%s,%s,%s,%s) "
+                    "ON CONFLICT DO NOTHING",
+                    [
+                        (
+                            event.event_id,
+                            accepted_at,
+                            "local_wall_clock",
+                            "postgres_flush_after_canonical_insert",
+                        )
+                        for event in pending_events
+                    ],
+                )
             self._pending_events.clear()
         if self._pending_decisions:
             with connection.cursor() as cursor:
