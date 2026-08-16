@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic_ns
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
@@ -392,6 +393,7 @@ class ThetaDataOptionsProvider:
                 "right": contract.get("right"),
             },
             "feature_reasons": ("requires_open_interest", "requires_resistance_definition"),
+            "_received_monotonic_ns": monotonic_ns(),
         }
         return CanonicalEvent(
             event_id=uuid5(NAMESPACE_URL, f"thetadata:{symbol}:{timestamp.isoformat()}:{sequence}"),

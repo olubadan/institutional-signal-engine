@@ -9,6 +9,7 @@ import json
 from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from time import monotonic_ns
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -115,6 +116,7 @@ class AlpacaEquitiesProvider:
             "quote_context": {"bid": bid, "ask": ask},
             "quote_validity": quote_validity,
             "feature_reasons": ("requires_historical_baseline", "requires_stateful_calculation"),
+            "_received_monotonic_ns": monotonic_ns(),
         }
         return CanonicalEvent(
             event_id=uuid5(NAMESPACE_URL, f"alpaca:{symbol}:{timestamp.isoformat()}:{sequence}"),
