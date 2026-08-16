@@ -3,14 +3,25 @@
 The foundation preserves clocks as separate fields. It does not manufacture a
 clock when the current runtime does not record one.
 
+Clock domains are explicit: provider event timestamps belong to the provider
+event clock; receive, admission, processing, and emission wall timestamps belong
+to the local wall clock; monotonic ingress and normalization values belong to
+the local monotonic clock. Provider-to-local numeric age is an estimate with
+clock-offset uncertainty, not a causal ordering proof. The temporal model
+rejects cross-domain duration calculations unless synchronization is explicitly
+provided. Existing `event_age_at_receipt_ms` is therefore a local-wall age
+estimate for observability, not a synchronized provider-to-local duration.
+
 | Evidence field | Current source | Status |
 | --- | --- | --- |
 | provider/event timestamp | `CanonicalEvent.source_timestamp` | available |
 | provider sequence/order | `CanonicalEvent.sequence` and `ingest_order` | available |
 | local receive wall clock | `CanonicalEvent.received_timestamp` | available |
-| local monotonic receive clock | provider normalizers record `_received_monotonic_ns` in the canonical payload | available for newly normalized provider events |
+| local monotonic receive clock | socket-loop ingress records `_received_monotonic_ns` immediately after frame receipt | available for newly received provider frames |
+| normalization monotonic clock | normalizers record `_normalized_monotonic_ns` after message parsing | available for newly normalized events |
 | normalization timestamp | `CanonicalEvent.normalized_timestamp` | available |
-| canonical acceptance timestamp | pipeline records `_canonical_acceptance_timestamp` at first pipeline admission | available for newly processed events |
+| pipeline admission timestamp | pipeline records `_pipeline_admission_timestamp` at first pipeline admission | available for newly processed events |
+| durable journal acceptance timestamp | PostgreSQL `record_event` queues; durable acceptance occurs during `flush`, with no separate persisted receipt clock | explicit gap; never conflated with pipeline admission |
 | processing timestamp | `EventTiming.processing_timestamp` | available |
 | processing completion timestamp | `EventTiming.processing_completed_timestamp` | available in timing telemetry |
 | emission timestamp | pipeline annotates `NEW_QUALIFYING_SWEEP` transition audits | available for newly emitted detections |

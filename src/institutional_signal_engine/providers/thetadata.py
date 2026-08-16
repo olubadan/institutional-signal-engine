@@ -250,13 +250,19 @@ class ThetaDataOptionsProvider:
                 for request in self.subscription_payloads():
                     await ws.send(json.dumps(request))
                 async for raw in ws:
+                    ingress_wall_timestamp = datetime.now(UTC)
+                    ingress_monotonic_ns = monotonic_ns()
                     message = json.loads(raw)
                     header = message.get("header", {})
                     if header.get("status") in {"ERROR", "UNAUTHORIZED", "DENIED"}:
                         raise ProviderError("thetadata", "stream_rejected", False)
                     if self._observe_control(message):
                         continue
-                    event = self._normalize(message)
+                    event = self._normalize(
+                        message,
+                        ingress_wall_timestamp=ingress_wall_timestamp,
+                        ingress_monotonic_ns=ingress_monotonic_ns,
+                    )
                     if event is not None and (not roots or event.symbol in roots):
                         yield event
         except ProviderError:
@@ -326,7 +332,13 @@ class ThetaDataOptionsProvider:
                 requests.append(contract.payload(request_id, req_type=req_type))
         return tuple(requests)
 
-    def _normalize(self, message: dict[str, Any]) -> CanonicalEvent | None:
+    def _normalize(
+        self,
+        message: dict[str, Any],
+        *,
+        ingress_wall_timestamp: datetime | None = None,
+        ingress_monotonic_ns: int | None = None,
+    ) -> CanonicalEvent | None:
         if message.get("header", {}).get("type") not in {"TRADE", "QUOTE"}:
             return None
         message_kind = str(message.get("header", {}).get("type", "UNKNOWN"))
@@ -393,7 +405,8 @@ class ThetaDataOptionsProvider:
                 "right": contract.get("right"),
             },
             "feature_reasons": ("requires_open_interest", "requires_resistance_definition"),
-            "_received_monotonic_ns": monotonic_ns(),
+            "_received_monotonic_ns": ingress_monotonic_ns,
+            "_normalized_monotonic_ns": monotonic_ns(),
         }
         return CanonicalEvent(
             event_id=uuid5(NAMESPACE_URL, f"thetadata:{symbol}:{timestamp.isoformat()}:{sequence}"),
@@ -401,7 +414,7 @@ class ThetaDataOptionsProvider:
             symbol=symbol,
             source="thetadata",
             source_timestamp=timestamp,
-            received_timestamp=datetime.now(UTC),
+            received_timestamp=ingress_wall_timestamp or datetime.now(UTC),
             normalized_timestamp=timestamp,
             sequence=sequence,
             payload=payload,

@@ -130,9 +130,9 @@ class SignalPipeline:
     def process(self, event: CanonicalEvent) -> Decision | None:
         started = monotonic()
         processing_time = self.now().astimezone(UTC)
-        if "_canonical_acceptance_timestamp" not in event.payload:
+        if "_pipeline_admission_timestamp" not in event.payload:
             payload = dict(event.payload)
-            payload["_canonical_acceptance_timestamp"] = processing_time.isoformat()
+            payload["_pipeline_admission_timestamp"] = processing_time.isoformat()
             event = event.model_copy(update={"payload": payload})
         self._handle_session_transition(event.source_timestamp)
         if event.payload.get("provider_event_kind") == "sweep_timer":

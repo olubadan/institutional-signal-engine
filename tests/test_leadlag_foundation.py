@@ -16,6 +16,7 @@ from institutional_signal_engine.leadlag import (
 from institutional_signal_engine.persistence import InMemoryRepository
 from institutional_signal_engine.pipeline import SignalPipeline
 from institutional_signal_engine.providers.alpaca import AlpacaEquitiesProvider
+from institutional_signal_engine.providers.thetadata import ThetaDataOptionsProvider
 from institutional_signal_engine.schemas import CanonicalEvent, EventKind
 
 
@@ -39,7 +40,7 @@ def test_temporal_evidence_contract_preserves_existing_event_clocks():
 
 
 def test_temporal_evidence_reads_runtime_capture_fields_without_collapsing_clocks():
-    from institutional_signal_engine.leadlag import TemporalEvidence
+    from institutional_signal_engine.leadlag import TemporalEvidence, clock_domain_duration_seconds
 
     source = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
     event = CanonicalEvent(
@@ -48,13 +49,20 @@ def test_temporal_evidence_reads_runtime_capture_fields_without_collapsing_clock
         normalized_timestamp=source + timedelta(milliseconds=41), sequence=7,
         payload={
             "_received_monotonic_ns": 123,
-            "_canonical_acceptance_timestamp": (source + timedelta(milliseconds=42)).isoformat(),
+            "_pipeline_admission_timestamp": (source + timedelta(milliseconds=42)).isoformat(),
         },
     )
     evidence = TemporalEvidence.from_canonical_event(event)
     assert evidence.received_monotonic_ns == 123
+    assert evidence.pipeline_admission_timestamp == source + timedelta(milliseconds=42)
     assert evidence.canonical_acceptance_timestamp == source + timedelta(milliseconds=42)
     assert evidence.provider_event_timestamp != evidence.canonical_acceptance_timestamp
+    assert evidence.clock_domains["provider_event"] == "provider_event_clock"
+    with pytest.raises(ValueError):
+        clock_domain_duration_seconds(
+            source, source + timedelta(seconds=1),
+            start_domain="provider_event_clock", end_domain="local_wall_clock",
+        )
 
 
 def test_local_provider_normalization_captures_monotonic_receive_without_network():
@@ -62,9 +70,22 @@ def test_local_provider_normalization_captures_monotonic_receive_without_network
     event = provider._normalize({
         "T": "t", "t": "2026-01-02T14:30:00Z", "S": "AAPL", "i": 1,
         "p": 100, "s": 10, "c": [], "x": "D",
-    })
+    }, ingress_wall_timestamp=datetime(2026, 1, 2, 14, 30, tzinfo=UTC), ingress_monotonic_ns=123)
     assert event is not None
-    assert isinstance(event.payload["_received_monotonic_ns"], int)
+    assert event.payload["_received_monotonic_ns"] == 123
+    assert isinstance(event.payload["_normalized_monotonic_ns"], int)
+
+
+def test_theta_normalization_accepts_socket_ingress_clock_without_network():
+    provider = ThetaDataOptionsProvider("ws://offline.invalid/events", "fixture-secret")
+    event = provider._normalize({
+        "header": {"type": "TRADE"},
+        "contract": {"root": "AAPL", "expiration": 20260807, "strike": 310000, "right": "C"},
+        "trade": {"date": "20260102", "ms_of_day": 52200000, "sequence": 7, "size": 5, "price": "100", "exchange": "5"},
+    }, ingress_wall_timestamp=datetime(2026, 1, 2, 14, 30, tzinfo=UTC), ingress_monotonic_ns=456)
+    assert event is not None
+    assert event.payload["_received_monotonic_ns"] == 456
+    assert isinstance(event.payload["_normalized_monotonic_ns"], int)
 
 
 def test_pipeline_records_canonical_acceptance_timestamp_offline():
@@ -76,7 +97,7 @@ def test_pipeline_records_canonical_acceptance_timestamp_offline():
         source_timestamp=now, received_timestamp=now, normalized_timestamp=now, sequence=1,
         payload={"provider_event_kind": "trade", "price": 100, "volume": 1},
     ))
-    assert repository.events[-1].payload["_canonical_acceptance_timestamp"] == now.isoformat()
+    assert repository.events[-1].payload["_pipeline_admission_timestamp"] == now.isoformat()
 
 
 def test_t0_maps_current_sweep_fields_and_marks_missing_clocks():

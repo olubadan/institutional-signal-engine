@@ -19,6 +19,27 @@ from itertools import pairwise
 from statistics import median
 from typing import Any
 
+CLOCK_DOMAINS = {
+    "provider_event": "provider_event_clock",
+    "local_wall": "local_wall_clock",
+    "local_monotonic": "local_monotonic_clock",
+}
+
+
+def clock_domain_duration_seconds(
+    start: datetime,
+    end: datetime,
+    *,
+    start_domain: str,
+    end_domain: str,
+    synchronized: bool = False,
+) -> float:
+    """Reject numeric duration claims across unsynchronized clock domains."""
+
+    if start_domain != end_domain and not synchronized:
+        raise ValueError("cross-domain duration requires an explicit synchronization proof")
+    return (end - start).total_seconds()
+
 
 class LeadLagOutcome(StrEnum):
     OPTIONS_FIRST = "OPTIONS_FIRST"
@@ -66,6 +87,8 @@ class TemporalEvidence:
     provenance: str
     duplicate: bool
     out_of_order: bool
+    durable_journal_acceptance_timestamp: datetime | None = None
+    normalization_monotonic_ns: int | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -75,6 +98,7 @@ class TemporalEvidence:
             "canonical_acceptance_timestamp",
             "processing_timestamp",
             "emission_timestamp",
+            "durable_journal_acceptance_timestamp",
         ):
             object.__setattr__(self, name, _utc(getattr(self, name)))
 
@@ -86,6 +110,7 @@ class TemporalEvidence:
         receipt_id: str | None = None,
         processing_timestamp: datetime | None = None,
         emission_timestamp: datetime | None = None,
+        durable_journal_acceptance_timestamp: datetime | None = None,
         received_monotonic_ns: int | None = None,
         canonical_acceptance_timestamp: datetime | None = None,
         timestamp_precision: str | None = None,
@@ -109,7 +134,10 @@ class TemporalEvidence:
             else payload.get("_received_monotonic_ns"),
             normalization_timestamp=event.normalized_timestamp,
             canonical_acceptance_timestamp=canonical_acceptance_timestamp
-            or _parse_payload_timestamp(payload.get("_canonical_acceptance_timestamp")),
+            or _parse_payload_timestamp(
+                payload.get("_pipeline_admission_timestamp")
+                or payload.get("_canonical_acceptance_timestamp")
+            ),
             processing_timestamp=processing_timestamp,
             emission_timestamp=emission_timestamp,
             timestamp_precision=timestamp_precision
@@ -119,10 +147,29 @@ class TemporalEvidence:
             provenance=f"canonical_event:{event.event_id}",
             duplicate=duplicate,
             out_of_order=out_of_order,
+            durable_journal_acceptance_timestamp=durable_journal_acceptance_timestamp
+            or _parse_payload_timestamp(payload.get("_durable_journal_acceptance_timestamp")),
+            normalization_monotonic_ns=payload.get("_normalized_monotonic_ns"),
         )
+
+    @property
+    def clock_domains(self) -> dict[str, str]:
+        return dict(CLOCK_DOMAINS)
+
+    @property
+    def pipeline_admission_timestamp(self) -> datetime | None:
+        """Explicit name for the former generic canonical-acceptance field."""
+
+        return self.canonical_acceptance_timestamp
 
     def as_dict(self) -> dict[str, object]:
         result = asdict(self)
+        result["clock_domains"] = self.clock_domains
+        result["pipeline_admission_timestamp"] = (
+            self.pipeline_admission_timestamp.isoformat()
+            if self.pipeline_admission_timestamp
+            else None
+        )
         for key, value in tuple(result.items()):
             if isinstance(value, datetime):
                 result[key] = value.isoformat()

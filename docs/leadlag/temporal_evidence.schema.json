@@ -13,6 +13,7 @@
     "provider_sequence": {"type": ["integer", "string", "null"]},
     "received_wall_timestamp": {"type": ["string", "null", "object"]},
     "received_monotonic_ns": {"type": ["integer", "null"]},
+    "normalization_monotonic_ns": {"type": ["integer", "null"]},
     "normalization_timestamp": {"type": ["string", "null", "object"]},
     "canonical_acceptance_timestamp": {"type": ["string", "null", "object"]},
     "processing_timestamp": {"type": ["string", "null", "object"]},
@@ -21,7 +22,19 @@
     "timestamp_uncertainty_ns": {"type": ["integer", "null"]},
     "provenance": {"type": "string"},
     "duplicate": {"type": "boolean"},
-    "out_of_order": {"type": "boolean"}
+    "out_of_order": {"type": "boolean"},
+    "durable_journal_acceptance_timestamp": {"type": ["string", "null", "object"]},
+    "pipeline_admission_timestamp": {"type": ["string", "null", "object"]},
+    "clock_domains": {
+      "type": "object",
+      "required": ["provider_event", "local_wall", "local_monotonic"],
+      "properties": {
+        "provider_event": {"const": "provider_event_clock"},
+        "local_wall": {"const": "local_wall_clock"},
+        "local_monotonic": {"const": "local_monotonic_clock"}
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

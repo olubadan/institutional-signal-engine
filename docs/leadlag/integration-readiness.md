@@ -9,8 +9,10 @@ on the requested target:
 2. Newly normalized option and equity events retain provider/event time,
    provider sequence, local receive wall time, local monotonic receive time,
    normalization time, and provenance.
-3. Pipeline admission records canonical acceptance time, and the durable
-   receipt contains the event identity.
+3. Pipeline admission records `_pipeline_admission_timestamp`, and the durable
+   receipt contains the event identity. This is not treated as PostgreSQL
+   durable-commit time; that separate receipt remains an explicit requirement
+   if durable commit latency is later needed.
 4. The option transition receipt records `qualification_timestamp` when the
    existing qualification rule first becomes true, even if the cluster is
    still growing.

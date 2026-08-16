@@ -66,10 +66,16 @@ class AlpacaEquitiesProvider:
                     )
                 )
                 async for raw in ws:
+                    ingress_wall_timestamp = datetime.now(UTC)
+                    ingress_monotonic_ns = monotonic_ns()
                     for message in json.loads(raw):
                         if message.get("T") == "error":
                             raise ProviderError("alpaca", "stream_rejected", False)
-                        event = self._normalize(message)
+                        event = self._normalize(
+                            message,
+                            ingress_wall_timestamp=ingress_wall_timestamp,
+                            ingress_monotonic_ns=ingress_monotonic_ns,
+                        )
                         if event is not None:
                             yield event
         except ProviderError:
@@ -79,7 +85,13 @@ class AlpacaEquitiesProvider:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ProviderError("alpaca", "malformed_message", True) from exc
 
-    def _normalize(self, message: dict[str, Any]) -> CanonicalEvent | None:
+    def _normalize(
+        self,
+        message: dict[str, Any],
+        *,
+        ingress_wall_timestamp: datetime | None = None,
+        ingress_monotonic_ns: int | None = None,
+    ) -> CanonicalEvent | None:
         kind = message.get("T")
         if kind not in {"t", "q"}:
             return None
@@ -116,7 +128,8 @@ class AlpacaEquitiesProvider:
             "quote_context": {"bid": bid, "ask": ask},
             "quote_validity": quote_validity,
             "feature_reasons": ("requires_historical_baseline", "requires_stateful_calculation"),
-            "_received_monotonic_ns": monotonic_ns(),
+            "_received_monotonic_ns": ingress_monotonic_ns,
+            "_normalized_monotonic_ns": monotonic_ns(),
         }
         return CanonicalEvent(
             event_id=uuid5(NAMESPACE_URL, f"alpaca:{symbol}:{timestamp.isoformat()}:{sequence}"),
@@ -124,7 +137,7 @@ class AlpacaEquitiesProvider:
             symbol=symbol,
             source="alpaca",
             source_timestamp=timestamp,
-            received_timestamp=datetime.now(UTC),
+            received_timestamp=ingress_wall_timestamp or datetime.now(UTC),
             normalized_timestamp=timestamp,
             sequence=sequence,
             payload=payload,
