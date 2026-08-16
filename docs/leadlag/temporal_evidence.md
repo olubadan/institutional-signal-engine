@@ -21,7 +21,7 @@ estimate for observability, not a synchronized provider-to-local duration.
 | normalization monotonic clock | normalizers record `_normalized_monotonic_ns` after message parsing | available for newly normalized events |
 | normalization timestamp | `CanonicalEvent.normalized_timestamp` | available |
 | pipeline admission timestamp | pipeline records `_pipeline_admission_timestamp` at first pipeline admission | available for newly processed events |
-| durable journal acceptance timestamp | PostgreSQL `record_event` queues; durable acceptance occurs during `flush`, with no separate persisted receipt clock | explicit gap; never conflated with pipeline admission |
+| durable journal acceptance timestamp | append-only `canonical_event_receipts` records local wall time after canonical insert/flush; in-memory repository records its admission receipt | available for new journal writes; historical receipts may be absent |
 | processing timestamp | `EventTiming.processing_timestamp` | available |
 | processing completion timestamp | `EventTiming.processing_completed_timestamp` | available in timing telemetry |
 | emission timestamp | pipeline annotates `NEW_QUALIFYING_SWEEP` transition audits | available for newly emitted detections |

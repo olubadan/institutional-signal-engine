@@ -98,6 +98,10 @@ def test_pipeline_records_canonical_acceptance_timestamp_offline():
         payload={"provider_event_kind": "trade", "price": 100, "volume": 1},
     ))
     assert repository.events[-1].payload["_pipeline_admission_timestamp"] == now.isoformat()
+    receipt = repository.replay_journal_receipts()[0]
+    assert receipt["event_id"] == str(repository.events[-1].event_id)
+    assert receipt["acceptance_stage"] == "in_memory_repository_record_event"
+    assert receipt["clock_domain"] == "local_wall_clock"
 
 
 def test_t0_maps_current_sweep_fields_and_marks_missing_clocks():

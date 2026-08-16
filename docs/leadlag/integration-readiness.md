@@ -10,9 +10,8 @@ on the requested target:
    provider sequence, local receive wall time, local monotonic receive time,
    normalization time, and provenance.
 3. Pipeline admission records `_pipeline_admission_timestamp`, and the durable
-   receipt contains the event identity. This is not treated as PostgreSQL
-   durable-commit time; that separate receipt remains an explicit requirement
-   if durable commit latency is later needed.
+   `canonical_event_receipts` journal records local wall time after canonical
+   insert/flush. These remain separate clocks and receipt stages.
 4. The option transition receipt records `qualification_timestamp` when the
    existing qualification rule first becomes true, even if the cluster is
    still growing.
