@@ -598,16 +598,28 @@ def calculate_five_minute_baselines(
         if close is not None and volume is not None:
             grouped.setdefault(timestamp.date(), {})[minute_index] = (volume, close)
     result: dict[tuple[str, int], ImpactBaseline] = {}
+    daily_windows: list[tuple[list[Decimal | None], list[Decimal | None]]] = []
+    for day_values in grouped.values():
+        day_volumes: list[Decimal | None] = [None] * 390
+        closes: list[Decimal | None] = [None] * 390
+        for minute_index, (volume, close) in day_values.items():
+            day_volumes[minute_index] = volume
+            closes[minute_index] = close
+        daily_windows.append((day_volumes, closes))
     for minute_index in range(386):
         volumes: list[Decimal] = []
         returns: list[Decimal] = []
-        for day_values in grouped.values():
-            window = [day_values.get(index) for index in range(minute_index, minute_index + 5)]
-            if any(value is None for value in window):
+        for day_volumes, day_closes in daily_windows:
+            window_volumes = day_volumes[minute_index : minute_index + 5]
+            window_closes = day_closes[minute_index : minute_index + 5]
+            if any(value is None for value in window_volumes) or any(
+                value is None for value in window_closes
+            ):
                 continue
-            values = cast(list[tuple[Decimal, Decimal]], window)
-            volumes.append(sum((value[0] for value in values), Decimal(0)))
-            first, last = values[0][1], values[-1][1]
+            valid_volumes = [cast(Decimal, value) for value in window_volumes]
+            valid_closes = [cast(Decimal, value) for value in window_closes]
+            volumes.append(sum(valid_volumes, Decimal(0)))
+            first, last = valid_closes[0], valid_closes[-1]
             if first > 0:
                 returns.append((last - first) / first)
         if len(volumes) < 20:

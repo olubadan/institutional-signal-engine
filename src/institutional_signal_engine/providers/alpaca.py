@@ -340,8 +340,13 @@ class AlpacaEquitiesProvider:
                     )
                 profiles[symbol] = {
                     minute_index: tuple(
-                        Decimal(sum(volumes.get(index, 0) for index in range(minute_index + 1)))
-                        for volumes in by_day.values()
+                        Decimal(
+                            sum(
+                                day_volumes.get(index, 0)
+                                for index in range(minute_index + 1)
+                            )
+                        )
+                        for day_volumes in by_day.values()
                     )
                     for minute_index in range(390)
                 }
