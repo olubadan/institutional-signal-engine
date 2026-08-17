@@ -338,16 +338,16 @@ class AlpacaEquitiesProvider:
                     by_day.setdefault(local.date().isoformat(), {})[minute_index] = int(
                         row.get("v", 0)
                     )
+                daily_profiles: list[tuple[Decimal, ...]] = []
+                for day_volumes in by_day.values():
+                    running = 0
+                    cumulative: list[Decimal] = []
+                    for minute_index in range(390):
+                        running += day_volumes.get(minute_index, 0)
+                        cumulative.append(Decimal(running))
+                    daily_profiles.append(tuple(cumulative))
                 profiles[symbol] = {
-                    minute_index: tuple(
-                        Decimal(
-                            sum(
-                                day_volumes.get(index, 0)
-                                for index in range(minute_index + 1)
-                            )
-                        )
-                        for day_volumes in by_day.values()
-                    )
+                    minute_index: tuple(day[minute_index] for day in daily_profiles)
                     for minute_index in range(390)
                 }
                 impact_baselines.update(
