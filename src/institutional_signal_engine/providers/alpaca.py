@@ -276,8 +276,11 @@ class AlpacaEquitiesProvider:
                     for offset in range(0, len(requested), batch_size)
                 )
                 merged: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in requested}
-                for batch in batches:
-                    batch_rows = await fetch_batch(batch)
+                batch_tasks = [
+                    asyncio.create_task(fetch_batch(batch)) for batch in batches
+                ]
+                for completed_task in asyncio.as_completed(batch_tasks):
+                    batch_rows = await completed_task
                     if on_batch is not None:
                         await on_batch(batch_rows)
                         continue
