@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic_ns
 from typing import Any, ClassVar, Final, Literal, Protocol, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -1793,10 +1794,16 @@ class UnifiedThetaSession:
             # Preserve valid market frames that arrive before their correlated
             # subscription acknowledgement; the engine journals them as rejected
             # until activation. The provider normalizer otherwise filters them.
+            ingress_wall_timestamp = datetime.now(UTC)
+            ingress_monotonic_ns = monotonic_ns()
             acknowledged = self._normalizer.acknowledged_contracts
             self._normalizer.acknowledged_contracts = set()
             try:
-                event = self._normalizer._normalize(message)
+                event = self._normalizer._normalize(
+                    message,
+                    ingress_wall_timestamp=ingress_wall_timestamp,
+                    ingress_monotonic_ns=ingress_monotonic_ns,
+                )
             finally:
                 self._normalizer.acknowledged_contracts = acknowledged
         except (KeyError, TypeError, ValueError) as exc:
@@ -1807,7 +1814,9 @@ class UnifiedThetaSession:
                 datetime.now(ET),
                 detail=f"unknown_message:{message_type}:{header.get('status', '')}",
             )
-        return InboundFrame("event", datetime.now(ET), event=event)
+        return InboundFrame(
+            "event", ingress_wall_timestamp.astimezone(ET), event=event
+        )
 
     async def _read_loop(self, websocket: Any) -> None:
         """Continuously drain the one owned socket into a raw lossless queue."""
