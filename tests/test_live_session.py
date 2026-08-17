@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pickle
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from institutional_signal_engine.journal import sha256
 from institutional_signal_engine.live_session import (
     BundleWriter,
     LiveEvidenceFailure,
+    _historical_from_payload,
     load_and_verify_bundle,
     validate_environment,
 )
@@ -159,3 +161,19 @@ def test_runbook_matches_authoritative_cli() -> None:
     assert "--seconds" not in runbook
     assert "--skip-oi-diagnostic" not in runbook
     assert "16:00" in runbook
+
+
+def test_historical_bootstrap_payload_is_process_serializable() -> None:
+    payload = {
+        "session": "2026-08-17",
+        "previous_closes": {},
+        "cumulative_profiles": {"AAA": {0: ()}},
+        "completed_highs": {"AAA": {}},
+        "adjustment": "split",
+        "source_provenance": "alpaca:test",
+        "impact_baselines": {},
+    }
+    round_tripped = pickle.loads(pickle.dumps(payload))
+    historical = _historical_from_payload(round_tripped)
+    assert historical.session == "2026-08-17"
+    assert historical.cumulative_volume_baseline("AAA", 0) == ()

@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 from collections.abc import Mapping
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -30,6 +31,7 @@ from zoneinfo import ZoneInfo
 import websockets
 
 from .config import Settings
+from .historical import HistoricalBootstrap
 from .journal import (
     JOURNAL_KIND_CLOCK_ADVANCED,
     JOURNAL_KIND_CONFIGURATION,
@@ -1902,6 +1904,57 @@ def _production_ports(settings: Settings) -> tuple[DiscoveryPort, EnrichmentPort
     return _DiscoveryAdapter(settings), cast(EnrichmentPort, _EnrichmentAdapter(settings))
 
 
+def _historical_bootstrap_payload(
+    historical_url: str,
+    events_url: str,
+    key_id: str,
+    secret_key: str,
+    symbols: tuple[str, ...],
+    market_date: str,
+) -> dict[str, object]:
+    """Run CPU-heavy historical preparation outside the live event process.
+
+    The payload deliberately contains only typed, picklable data.  Keeping the
+    provider/bootstrap worker in a separate process prevents Python CPU work
+    and JSON/Decimal processing from starving the Theta event-loop thread.
+    """
+    provider = AlpacaEquitiesProvider(
+        events_url,
+        key_id,
+        secret_key,
+        timeout=30.0,
+        historical_url=historical_url,
+    )
+    historical = asyncio.run(
+        provider.historical_bootstrap(symbols, date.fromisoformat(market_date))
+    )
+    return {
+        "session": historical.session,
+        "previous_closes": dict(historical.previous_closes),
+        "cumulative_profiles": {
+            symbol: dict(profiles) for symbol, profiles in historical.cumulative_profiles.items()
+        },
+        "completed_highs": {
+            symbol: dict(highs) for symbol, highs in historical.completed_highs.items()
+        },
+        "adjustment": historical.adjustment,
+        "source_provenance": historical.source_provenance,
+        "impact_baselines": dict(historical.impact_baselines),
+    }
+
+
+def _historical_from_payload(payload: Mapping[str, object]) -> HistoricalBootstrap:
+    return HistoricalBootstrap(
+        session=cast(str, payload["session"]),
+        previous_closes=cast(Any, payload["previous_closes"]),
+        cumulative_profiles=cast(Any, payload["cumulative_profiles"]),
+        completed_highs=cast(Any, payload["completed_highs"]),
+        adjustment=cast(str, payload["adjustment"]),
+        source_provenance=cast(str, payload["source_provenance"]),
+        impact_baselines=cast(Any, payload["impact_baselines"]),
+    )
+
+
 async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
     settings = _load_settings()
     repository_root = arguments.repository_root.resolve()
@@ -1920,15 +1973,16 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         timeout=30.0,
     )
     bootstrap_started = datetime.now(UTC)
-    bootstrap_task = asyncio.create_task(
-        asyncio.to_thread(
-            lambda: asyncio.run(
-                alpaca.historical_bootstrap(
-                    (*PILOT_SYMBOLS, "SPY", "XLK"),
-                    date.fromisoformat(arguments.market_date),
-                )
-            )
-        )
+    bootstrap_pool = ProcessPoolExecutor(max_workers=1)
+    bootstrap_task = asyncio.get_running_loop().run_in_executor(
+        bootstrap_pool,
+        _historical_bootstrap_payload,
+        "https://data.alpaca.markets",
+        settings.alpaca_data_url,
+        _secret(settings.alpaca_key_id),
+        _secret(settings.alpaca_secret_key),
+        (*PILOT_SYMBOLS, "SPY", "XLK"),
+        arguments.market_date,
     )
     discovery, enrichment = _production_ports(settings)
     provider = UnifiedThetaSession(
@@ -1981,25 +2035,30 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
 
     async def finish_bootstrap() -> object | None:
         try:
-            historical = await bootstrap_task
+            payload = await bootstrap_task
+            historical = _historical_from_payload(cast(Mapping[str, object], payload))
             baseline_symbols = frozenset(
                 str(key[0]).upper()
                 for key in historical.impact_baselines
                 if isinstance(key, tuple) and len(key) == 2
             )
-            engine.baseline_symbols = baseline_symbols
+            candidate_symbols = frozenset(PILOT_SYMBOLS)
+            candidate_baselines = baseline_symbols.intersection(candidate_symbols)
+            engine.baseline_symbols = candidate_baselines
             if engine.mathematical_pipeline is not None:
                 for key, baseline in historical.impact_baselines.items():
                     engine.mathematical_pipeline.impact_engine.baselines[key] = baseline
             status = {
                 "status": "COMPLETE"
-                if len(baseline_symbols) == len(PILOT_SYMBOLS)
+                if candidate_baselines == candidate_symbols
                 else "INCOMPLETE_BASELINE_COVERAGE",
                 "started_at": bootstrap_started.isoformat(),
                 "finished_at": datetime.now(UTC).isoformat(),
                 "candidate_symbol_count": len(PILOT_SYMBOLS),
-                "baseline_symbol_count": len(baseline_symbols),
-                "coverage_complete": len(baseline_symbols) == len(PILOT_SYMBOLS),
+                "baseline_symbol_count": len(candidate_baselines),
+                "provider_baseline_symbol_count": len(baseline_symbols),
+                "auxiliary_baseline_symbol_count": len(baseline_symbols - candidate_symbols),
+                "coverage_complete": candidate_baselines == candidate_symbols,
                 "source": historical.source_provenance,
             }
             (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(
@@ -2025,6 +2084,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
     finally:
         if not bootstrap_monitor.done():
             await bootstrap_monitor
+        bootstrap_pool.shutdown(wait=True, cancel_futures=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
