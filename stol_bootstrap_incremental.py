@@ -122,15 +122,27 @@ def checkpoint_valid(path: Path) -> bool:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest() == recorded
 
 
+def checkpoint_scientifically_valid(path: Path) -> bool:
+    """True if a hashed checkpoint contains the required baseline book."""
+    if not checkpoint_valid(path):
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    baselines = payload.get("impact_baselines")
+    return isinstance(baselines, dict) and bool(baselines)
+
+
 def completed_symbols(checkpoint_dir: Path) -> set[str]:
-    """Symbols with a valid checkpoint under checkpoint_dir/symbols."""
+    """Symbols with a scientifically valid checkpoint under the directory."""
     symbols_dir = Path(checkpoint_dir) / "symbols"
     if not symbols_dir.is_dir():
         return set()
     return {
         entry.stem
         for entry in symbols_dir.glob("*.json")
-        if checkpoint_valid(entry)
+        if checkpoint_scientifically_valid(entry)
     }
 
 
@@ -279,6 +291,8 @@ async def _process_one_symbol(
         PROVENANCE,
     )
     compact_rows.clear()
+    if not baselines:
+        raise ProviderError("alpaca", "historical_baseline_insufficient", False)
 
     day_order = sorted(by_day)
     per_day_cumulative: list[list[int]] = []
@@ -380,7 +394,7 @@ async def historical_bootstrap_to_disk(
     pending = [
         symbol
         for symbol in requested
-        if not checkpoint_valid(symbols_dir / f"{symbol}.json")
+        if not checkpoint_scientifically_valid(symbols_dir / f"{symbol}.json")
     ]
     resumed_skip_count = len(requested) - len(pending)
     completed: set[str] = set(requested) - set(pending)
