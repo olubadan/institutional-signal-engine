@@ -10,7 +10,7 @@ must remain disabled and orders must remain `0/0`. Do not use the hermetic
 Run from the checked-out repository and substitute the exact approved head:
 
 ```sh
-EXPECTED_HEAD=3caa6dfffe3b6b08ffdb89aeae2d0ed46e61a294
+EXPECTED_HEAD=f8ef7126b1e552d2b4fbf5e3e1aa8ba31bec230a
 test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD}"
 git status --short
 gh pr view 6 --json state,isDraft,headRefOid,mergeable
@@ -32,7 +32,7 @@ never redirected over an earlier artifact:
 
 ```sh
 SESSION_OUTPUT="/var/lib/institutional-signal-engine/sessions/${EXPECTED_HEAD}-$(date -u +%Y%m%dT%H%M%SZ)"
-BOOTSTRAP_CHECKPOINT_DIR="/var/lib/institutional-signal-engine/evidence/r1-bootstrap-v8-full"
+BOOTSTRAP_CHECKPOINT_DIR="/var/lib/institutional-signal-engine/evidence/r1-bootstrap-v9-full"
 RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env \
   uv run python -m institutional_signal_engine.live_session run \
   --session-output "${SESSION_OUTPUT}" \
