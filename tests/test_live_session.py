@@ -79,6 +79,20 @@ def test_missing_ack_is_retransmitted_with_same_logical_request(tmp_path: Path) 
     assert not (bundle / "INCOMPLETE").exists()
 
 
+def test_transition_projects_unacknowledged_removals_locally(tmp_path: Path) -> None:
+    bundle = tmp_path / "removal-projection"
+    asyncio.run(
+        run_harness(
+            bundle,
+            tmp_path / "removal-projection-journals",
+            tmp_path / "removal-projection-observations.json",
+            Path.cwd(),
+            supports_removal_acknowledgements=False,
+        )
+    )
+    assert not (bundle / "INCOMPLETE").exists()
+
+
 def test_two_accelerated_runs_have_byte_identical_deterministic_artifacts(tmp_path: Path) -> None:
     first = _run(tmp_path, "first")
     second = _run(tmp_path, "second")

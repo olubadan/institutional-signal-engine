@@ -592,6 +592,12 @@ class LiveSessionEngine:
         if action == "remove" and not getattr(
             self.provider, "supports_removal_acknowledgements", False
         ):
+            # Theta retains REMOVE_TRADE subscriptions without a correlated
+            # response. Remove them from the local accepted-channel projection
+            # immediately; ingestion still rejects retained provider frames by
+            # active-epoch membership.
+            for contract in contracts:
+                self.active_channels.pop(contract, None)
             return
         for contract in contracts:
             for channel in REQUIRED_CHANNELS:

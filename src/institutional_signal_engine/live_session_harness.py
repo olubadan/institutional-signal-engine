@@ -142,6 +142,7 @@ class HarnessUnifiedSession(UnifiedSessionPort):
         clock: VirtualClock,
         frames: tuple[ScheduledFrame, ...],
         drop_first_ack: bool = False,
+        supports_removal_acknowledgements: bool = True,
     ) -> None:
         self.clock = clock
         self.connection_generation = 0
@@ -150,6 +151,7 @@ class HarnessUnifiedSession(UnifiedSessionPort):
         self._acknowledgements: list[InboundFrame] = []
         self._frames = list(frames)
         self._drop_first_ack = drop_first_ack
+        self.supports_removal_acknowledgements = supports_removal_acknowledgements
 
     async def connect(self) -> None:
         if self._connected:
@@ -246,6 +248,7 @@ async def run_harness(
     observation_repository: Path,
     repository_root: Path,
     drop_first_ack: bool = False,
+    supports_removal_acknowledgements: bool = True,
 ) -> dict[str, object]:
     settings = Settings()
     market_date = date(2026, 8, 11)
@@ -281,7 +284,12 @@ async def run_harness(
         discovery=HarnessDiscovery(),
         enrichment=HarnessEnrichment(),
         planner=HarnessPlanner(),
-        provider=HarnessUnifiedSession(clock, frames, drop_first_ack=drop_first_ack),
+            provider=HarnessUnifiedSession(
+                clock,
+                frames,
+                drop_first_ack=drop_first_ack,
+                supports_removal_acknowledgements=supports_removal_acknowledgements,
+            ),
         repository=HarnessObservationRepository(observation_repository),
         writer=BundleWriter(bundle_directory),
         journal_repository=FileJournalRepository(journal_repository_directory),
