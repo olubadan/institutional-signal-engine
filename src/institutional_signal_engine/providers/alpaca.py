@@ -218,7 +218,9 @@ class AlpacaEquitiesProvider:
                         "feed": self.url.rsplit("/", 1)[-1],
                         "limit": 10000,
                     }
-                    rows: list[dict[str, Any]] = []
+                    rows_by_symbol: dict[str, list[dict[str, Any]]] = {
+                        symbol: [] for symbol in batch
+                    }
                     token: str | None = None
                     while True:
                         if token is not None:
@@ -275,11 +277,13 @@ class AlpacaEquitiesProvider:
                         for symbol in batch:
                             symbol_rows = bars.get(symbol, [])
                             if isinstance(symbol_rows, list):
-                                rows.extend(row for row in symbol_rows if isinstance(row, dict))
+                                rows_by_symbol[symbol].extend(
+                                    row for row in symbol_rows if isinstance(row, dict)
+                                )
                         token_value = body.get("next_page_token")
                         token = str(token_value) if token_value else None
                         if token is None:
-                            return {symbol: rows for symbol in batch}
+                            return rows_by_symbol
 
                 async def fetch_batch(
                     batch: tuple[str, ...],
