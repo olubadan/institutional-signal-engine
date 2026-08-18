@@ -60,9 +60,12 @@ from institutional_signal_engine.indicators import ET
 from institutional_signal_engine.providers.common import ProviderError
 
 SCHEMA = "stol-bootstrap-symbol-v1"
-PROVENANCE = "alpaca:stocks/bars:completed-regular-sessions"
 RTH_START = datetime.min.time().replace(hour=9, minute=30)
 RTH_END = datetime.min.time().replace(hour=16)
+
+
+def _provenance(feed: str) -> str:
+    return f"alpaca:stocks/bars:completed-regular-sessions:feed={feed}"
 
 
 def _rss_kb() -> int:
@@ -231,6 +234,7 @@ async def _process_one_symbol(
     start: date,
     end: date,
     symbols_dir: Path,
+    provenance: str,
 ) -> dict[str, Any]:
     """Fetch, reduce, and durably write ONE symbol. Returns a receipt dict.
 
@@ -288,7 +292,7 @@ async def _process_one_symbol(
         tuple(compact_rows),
         session,
         "split",
-        PROVENANCE,
+        provenance,
     )
     compact_rows.clear()
     if not baselines:
@@ -317,7 +321,7 @@ async def _process_one_symbol(
         "symbol": symbol,
         "session": session.isoformat(),
         "adjustment": "split",
-        "source_provenance": PROVENANCE,
+        "source_provenance": provenance,
         "previous_close": {
             "close": str(last_close),
             "day": last_day,
@@ -355,6 +359,7 @@ async def historical_bootstrap_to_disk(
     *,
     concurrency: int = 3,
     per_symbol_deadline: float = 900.0,
+    historical_feed: str | None = None,
 ) -> dict[str, Any]:
     """Run the full bootstrap with per-symbol durable writes and resume.
 
@@ -368,7 +373,10 @@ async def historical_bootstrap_to_disk(
         "APCA-API-KEY-ID": provider.key_id,
         "APCA-API-SECRET-KEY": provider.secret_key,
     }
-    feed = provider.url.rsplit("/", 1)[-1]
+    feed = (historical_feed or provider.url.rsplit("/", 1)[-1]).strip().lower()
+    if feed not in {"iex", "sip"}:
+        raise ValueError("historical_feed must be iex or sip")
+    provenance = _provenance(feed)
     checkpoint_dir = Path(checkpoint_dir)
     symbols_dir = checkpoint_dir / "symbols"
     symbols_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -420,7 +428,7 @@ async def historical_bootstrap_to_disk(
                     async with asyncio.timeout(per_symbol_deadline):
                         receipt = await _process_one_symbol(
                             client, headers, feed, symbol, session,
-                            start, end, symbols_dir,
+                            start, end, symbols_dir, provenance,
                         )
                     completed.add(symbol)
                     await emit_receipt(receipt)

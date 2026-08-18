@@ -63,6 +63,7 @@ def main() -> int:
         help="Comma-separated subset for the test ladder; omit for full universe.",
     )
     parser.add_argument("--concurrency", type=int, default=3)
+    parser.add_argument("--historical-feed", choices=("iex", "sip"), default=None)
     parser.add_argument("--per-symbol-deadline", type=float, default=900.0)
     parser.add_argument(
         "--resume",
@@ -107,6 +108,7 @@ def main() -> int:
                 args.output,
                 concurrency=args.concurrency,
                 per_symbol_deadline=args.per_symbol_deadline,
+                historical_feed=args.historical_feed,
             )
         )
         completed = completed_symbols(args.output)
@@ -120,7 +122,10 @@ def main() -> int:
             "candidate_symbol_count": len(candidate),
             "baseline_symbol_count": len(completed),
             "coverage_complete": coverage_complete,
-            "source": "alpaca:stocks/bars:completed-regular-sessions",
+            "source": (
+                f"alpaca:stocks/bars:completed-regular-sessions:feed="
+                f"{args.historical_feed or settings.alpaca_data_url.rsplit('/', 1)[-1]}"
+            ),
             "missing_symbols": sorted(candidate - completed)[:25],
             "summary": summary,
         }
