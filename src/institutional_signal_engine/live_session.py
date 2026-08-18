@@ -1985,6 +1985,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         arguments.expected_git_commit,
         repository_root,
     )
+    writer = BundleWriter(arguments.session_output)
     boundaries = SessionBoundaries.for_market_date(date.fromisoformat(arguments.market_date))
     checkpoint_value = arguments.bootstrap_checkpoint_dir or os.environ.get(
         "STOL_BOOTSTRAP_CHECKPOINT_DIR"
@@ -2033,7 +2034,6 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         settings.theta_events_url,
         settings.theta_api_key.get_secret_value() if settings.theta_api_key else "",
     )
-    writer = BundleWriter(arguments.session_output)
     engine = LiveSessionEngine(
         run_id=uuid4(),
         identity=identity,
