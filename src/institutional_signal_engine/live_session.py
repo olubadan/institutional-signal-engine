@@ -86,6 +86,7 @@ FINAL_STATE_NAME: Final = "FINAL_STATE.json"
 CONFIGURATION_NAME: Final = "CONFIGURATION.json"
 PERSISTENCE_RECEIPT_NAME: Final = "PERSISTENCE_RECEIPT.json"
 REPLAY_RECEIPT_NAME: Final = "REPLAY_RECEIPT.json"
+DUPLICATE_EQUITY_NAME: Final = "EQUITY_DUPLICATES.jsonl"
 CHECKPOINT_NAME: Final = "JOURNAL.checkpoint.json"
 INCOMPLETE_NAME: Final = "INCOMPLETE"
 CERTIFICATE_VERSION: Final = "LIVE_OBSERVATIONAL_SESSION_CERTIFICATE_V1"
@@ -412,6 +413,15 @@ class BundleWriter:
         (self.directory / INCOMPLETE_NAME).unlink(missing_ok=True)
         (self.directory / CHECKPOINT_NAME).unlink(missing_ok=True)
 
+    def append_jsonl(self, name: str, value: Mapping[str, object]) -> None:
+        """Append one durable diagnostic receipt without rewriting prior data."""
+        target = self.directory / name
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(canonical_json(dict(value)) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(target, 0o600)
+
 
 @dataclass
 class LiveSessionEngine:
@@ -447,6 +457,7 @@ class LiveSessionEngine:
         self.active_epoch: PlannerEpoch | None = None
         self.active_channels: dict[ThetaContract, set[str]] = {}
         self.seen_events: set[UUID] = set()
+        self.seen_equity_events: set[UUID] = set()
         self.event_count = 0
         self.processed_count = 0
         self.epoch_count = 0
@@ -688,6 +699,20 @@ class LiveSessionEngine:
             self._journal_event(event, accepted=accepted, reason=reason)
 
     def _journal_equity_event(self, event: CanonicalEvent) -> None:
+        if event.event_id in self.seen_equity_events:
+            self.writer.append_jsonl(
+                "EQUITY_DUPLICATES.jsonl",
+                {
+                    "event_id": str(event.event_id),
+                    "symbol": event.symbol,
+                    "source": event.source,
+                    "source_timestamp": event.source_timestamp.isoformat(),
+                    "received_timestamp": event.received_timestamp.isoformat(),
+                    "reason": "duplicate_provider_event_id",
+                },
+            )
+            return
+        self.seen_equity_events.add(event.event_id)
         persisted = event.model_copy(
             update={"run_id": self.run_id, "ingest_order": self.event_count + 1}
         )
@@ -1321,6 +1346,9 @@ def _publish_completed_bundle(engine: LiveSessionEngine) -> dict[str, object]:
         ),
         REPLAY_RECEIPT_NAME: engine.writer.publish_component(REPLAY_RECEIPT_NAME, replay),
     }
+    duplicate_equity = engine.writer.directory / DUPLICATE_EQUITY_NAME
+    if duplicate_equity.is_file():
+        components[DUPLICATE_EQUITY_NAME] = sha256_bytes(duplicate_equity.read_text(encoding="utf-8"))
     if engine.mathematical_pipeline is not None:
         mathematical = engine.mathematical_pipeline.snapshot()
         persisted_events = engine.repository.replay_events(engine.run_id)
