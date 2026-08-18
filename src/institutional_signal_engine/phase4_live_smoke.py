@@ -831,6 +831,7 @@ class _DiscoveryAdapter:
             _secret(settings.alpaca_key_id),
             _secret(settings.alpaca_secret_key),
         )
+        self.unavailable_symbols = self._catalog.unavailable_symbols
 
     async def discover(
         self, symbols: tuple[str, ...], as_of: datetime
