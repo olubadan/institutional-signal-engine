@@ -192,93 +192,113 @@ class AlpacaEquitiesProvider:
                 # Alpaca accepts a comma-separated symbol set for bars. Batch
                 # requests keep the 501-symbol candidate universe intact while
                 # avoiding one synchronous request per symbol.
-                batch_size = 50
-                semaphore = asyncio.Semaphore(5)
+                # Keep the full candidate universe, but bound response size and
+                # concurrent pressure.  A transient timeout on a large batch
+                # is retried as smaller batches rather than aborting the whole
+                # bootstrap.
+                batch_size = 20
+                semaphore = asyncio.Semaphore(3)
+
+                async def fetch_batch_once(
+                    batch: tuple[str, ...],
+                ) -> dict[str, list[dict[str, Any]]]:
+                    params: dict[str, str | int] = {
+                        "symbols": ",".join(batch),
+                        "timeframe": timeframe,
+                        "start": f"{start.isoformat()}T00:00:00Z",
+                        "end": f"{end.isoformat()}T23:59:59Z",
+                        "adjustment": "split",
+                        "feed": self.url.rsplit("/", 1)[-1],
+                        "limit": 10000,
+                    }
+                    rows: list[dict[str, Any]] = []
+                    token: str | None = None
+                    while True:
+                        if token is not None:
+                            params["page_token"] = token
+                        response: httpx.Response | None = None
+                        for attempt in range(3):
+                            try:
+                                response = await client.get(
+                                    "/v2/stocks/bars", headers=headers, params=params
+                                )
+                            except httpx.TimeoutException as exc:
+                                if attempt == 2:
+                                    raise ProviderError(
+                                        "alpaca", "historical_timeout", True
+                                    ) from exc
+                                await asyncio.sleep(0.5 * (attempt + 1))
+                                continue
+                            if response.status_code == 200:
+                                break
+                            if response.status_code == 429 or response.status_code >= 500:
+                                if attempt == 2:
+                                    raise ProviderError(
+                                        "alpaca",
+                                        f"historical_http_{response.status_code}",
+                                        True,
+                                    )
+                                retry_after = response.headers.get("retry-after")
+                                try:
+                                    delay = min(10.0, max(0.5, float(retry_after or 0)))
+                                except ValueError:
+                                    delay = 0.5 * (attempt + 1)
+                                await asyncio.sleep(delay)
+                                continue
+                            raise ProviderError(
+                                "alpaca", f"historical_http_{response.status_code}", False
+                            )
+                        assert response is not None
+                        if response.status_code != 200:
+                            raise ProviderError(
+                                "alpaca", f"historical_http_{response.status_code}", True
+                            )
+                        # Large 50-symbol historical pages can contain a
+                        # substantial number of minute bars. JSON
+                        # decoding is synchronous CPU work; keep it off
+                        # the event-loop thread so the live observer can
+                        # reach provider activation while bootstrap
+                        # continues in the background.
+                        body = await asyncio.to_thread(response.json)
+                        if not isinstance(body, dict):
+                            raise ProviderError("alpaca", "historical_malformed", False)
+                        bars = body.get("bars", {})
+                        if not isinstance(bars, dict):
+                            raise ProviderError("alpaca", "historical_malformed_bars", False)
+                        for symbol in batch:
+                            symbol_rows = bars.get(symbol, [])
+                            if isinstance(symbol_rows, list):
+                                rows.extend(row for row in symbol_rows if isinstance(row, dict))
+                        token_value = body.get("next_page_token")
+                        token = str(token_value) if token_value else None
+                        if token is None:
+                            return {symbol: rows for symbol in batch}
 
                 async def fetch_batch(
                     batch: tuple[str, ...],
                 ) -> dict[str, list[dict[str, Any]]]:
-                    async with semaphore:
-                        params: dict[str, str | int] = {
-                            "symbols": ",".join(batch),
-                            "timeframe": timeframe,
-                            "start": f"{start.isoformat()}T00:00:00Z",
-                            "end": f"{end.isoformat()}T23:59:59Z",
-                            "adjustment": "split",
-                            "feed": self.url.rsplit("/", 1)[-1],
-                            "limit": 10000,
-                        }
-                        rows: list[dict[str, Any]] = []
-                        token: str | None = None
-                        while True:
-                            if token is not None:
-                                params["page_token"] = token
-                            response: httpx.Response | None = None
-                            for attempt in range(3):
-                                try:
-                                    response = await client.get(
-                                        "/v2/stocks/bars", headers=headers, params=params
-                                    )
-                                except httpx.TimeoutException as exc:
-                                    if attempt == 2:
-                                        raise ProviderError(
-                                            "alpaca", "historical_timeout", True
-                                        ) from exc
-                                    await asyncio.sleep(0.5 * (attempt + 1))
-                                    continue
-                                if response.status_code == 200:
-                                    break
-                                if response.status_code == 429 or response.status_code >= 500:
-                                    if attempt == 2:
-                                        raise ProviderError(
-                                            "alpaca",
-                                            f"historical_http_{response.status_code}",
-                                            True,
-                                        )
-                                    retry_after = response.headers.get("retry-after")
-                                    try:
-                                        delay = min(10.0, max(0.5, float(retry_after or 0)))
-                                    except ValueError:
-                                        delay = 0.5 * (attempt + 1)
-                                    await asyncio.sleep(delay)
-                                    continue
-                                raise ProviderError(
-                                    "alpaca", f"historical_http_{response.status_code}", False
-                                )
-                            assert response is not None
-                            if response.status_code != 200:
-                                raise ProviderError(
-                                    "alpaca", f"historical_http_{response.status_code}", True
-                                )
-                            # Large 50-symbol historical pages can contain a
-                            # substantial number of minute bars. JSON
-                            # decoding is synchronous CPU work; keep it off
-                            # the event-loop thread so the live observer can
-                            # reach provider activation while bootstrap
-                            # continues in the background.
-                            body = await asyncio.to_thread(response.json)
-                            if not isinstance(body, dict):
-                                raise ProviderError("alpaca", "historical_malformed", False)
-                            bars = body.get("bars", {})
-                            if not isinstance(bars, dict):
-                                raise ProviderError("alpaca", "historical_malformed_bars", False)
-                            for symbol in batch:
-                                symbol_rows = bars.get(symbol, [])
-                                if isinstance(symbol_rows, list):
-                                    rows.extend(row for row in symbol_rows if isinstance(row, dict))
-                            token_value = body.get("next_page_token")
-                            token = str(token_value) if token_value else None
-                            if token is None:
-                                return {symbol: rows for symbol in batch}
+                    try:
+                        async with semaphore:
+                            return await fetch_batch_once(batch)
+                    except ProviderError as exc:
+                        if not exc.retryable or len(batch) <= 1:
+                            raise
+                        midpoint = max(1, len(batch) // 2)
+                        left, right = await asyncio.gather(
+                            fetch_batch(batch[:midpoint]),
+                            fetch_batch(batch[midpoint:]),
+                        )
+                        merged: dict[str, list[dict[str, Any]]] = {}
+                        for symbol in batch:
+                            merged[symbol] = [*left.get(symbol, []), *right.get(symbol, [])]
+                        return merged
 
                 batches = tuple(
                     requested[offset : offset + batch_size]
                     for offset in range(0, len(requested), batch_size)
                 )
                 merged: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in requested}
-                batch_tasks = [
-                    asyncio.create_task(fetch_batch(batch)) for batch in batches
-                ]
+                batch_tasks = [asyncio.create_task(fetch_batch(batch)) for batch in batches]
                 for completed_task in asyncio.as_completed(batch_tasks):
                     batch_rows = await completed_task
                     if on_batch is not None:

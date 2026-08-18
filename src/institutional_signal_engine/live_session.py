@@ -1814,9 +1814,7 @@ class UnifiedThetaSession:
                 datetime.now(ET),
                 detail=f"unknown_message:{message_type}:{header.get('status', '')}",
             )
-        return InboundFrame(
-            "event", ingress_wall_timestamp.astimezone(ET), event=event
-        )
+        return InboundFrame("event", ingress_wall_timestamp.astimezone(ET), event=event)
 
     async def _read_loop(self, websocket: Any) -> None:
         """Continuously drain the one owned socket into a raw lossless queue."""
@@ -1934,9 +1932,22 @@ def _historical_bootstrap_payload(
         timeout=30.0,
         historical_url=historical_url,
     )
-    historical = asyncio.run(
-        provider.historical_bootstrap(symbols, date.fromisoformat(market_date))
-    )
+    try:
+        historical = asyncio.run(
+            provider.historical_bootstrap(symbols, date.fromisoformat(market_date))
+        )
+    except ProviderError as exc:
+        # Never send a frozen exception object through ProcessPoolExecutor:
+        # multiprocessing may try to mutate its traceback and turn a provider
+        # timeout into BrokenProcessPool.  Return a secret-free result instead.
+        return {
+            "status": "FAILED",
+            "error_type": "ProviderError",
+            "error_category": exc.category,
+            "retryable": exc.retryable,
+        }
+    except Exception as exc:  # noqa: BLE001 - parent records sanitized status
+        return {"status": "FAILED", "error_type": type(exc).__name__}
     return {
         "session": historical.session,
         "previous_closes": dict(historical.previous_closes),
@@ -2045,6 +2056,20 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
     async def finish_bootstrap() -> object | None:
         try:
             payload = await bootstrap_task
+            if payload.get("status") == "FAILED":
+                status = {
+                    "status": "FAILED",
+                    "started_at": bootstrap_started.isoformat(),
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "candidate_symbol_count": len(PILOT_SYMBOLS),
+                    "error_type": payload.get("error_type", "BootstrapFailure"),
+                    "error_category": payload.get("error_category"),
+                    "retryable": payload.get("retryable"),
+                }
+                (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(
+                    json.dumps(status, sort_keys=True) + "\n"
+                )
+                return None
             historical = _historical_from_payload(cast(Mapping[str, object], payload))
             baseline_symbols = frozenset(
                 str(key[0]).upper()

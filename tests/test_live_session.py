@@ -14,6 +14,7 @@ from institutional_signal_engine.journal import sha256
 from institutional_signal_engine.live_session import (
     BundleWriter,
     LiveEvidenceFailure,
+    _historical_bootstrap_payload,
     _historical_from_payload,
     load_and_verify_bundle,
     validate_environment,
@@ -22,6 +23,7 @@ from institutional_signal_engine.live_session_harness import (
     HARNESS_AUTHORITY_KEY,
     run_harness,
 )
+from institutional_signal_engine.providers.common import ProviderError
 
 
 def _run(tmp_path: Path, name: str = "bundle") -> Path:
@@ -177,3 +179,27 @@ def test_historical_bootstrap_payload_is_process_serializable() -> None:
     historical = _historical_from_payload(round_tripped)
     assert historical.session == "2026-08-17"
     assert historical.cumulative_volume_baseline("AAA", 0) == ()
+
+
+def test_historical_bootstrap_provider_failure_is_process_serializable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingProvider:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def historical_bootstrap(self, *_args: object) -> object:
+            raise ProviderError("alpaca", "historical_timeout", True)
+
+    monkeypatch.setattr(
+        "institutional_signal_engine.live_session.AlpacaEquitiesProvider", FailingProvider
+    )
+    result = _historical_bootstrap_payload(
+        "https://historical", "https://events", "id", "secret", ("AAA",), "2026-08-18"
+    )
+    assert result == {
+        "status": "FAILED",
+        "error_type": "ProviderError",
+        "error_category": "historical_timeout",
+        "retryable": True,
+    }
