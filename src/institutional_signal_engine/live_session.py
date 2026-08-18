@@ -829,6 +829,7 @@ class LiveSessionEngine:
             epoch_sequence=sequence,
             completed_items=len(discovered),
             discovered_sha256=sha256([str(item) for item in discovered]),
+            provider_gaps=list(getattr(self.discovery, "unavailable_symbols", ())),
         )
         enrichment_start = self._append(
             JOURNAL_KIND_ENRICHMENT_START,

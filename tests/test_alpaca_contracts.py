@@ -251,6 +251,42 @@ async def test_alpaca_discovery_follows_all_pages(monkeypatch: pytest.MonkeyPatc
     assert len(pages) == 0
 
 
+@pytest.mark.asyncio
+async def test_alpaca_discovery_records_and_skips_invalid_underlying_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeResponse:
+        def __init__(self, status_code: int, body: dict[str, object]):
+            self.status_code = status_code
+            self.body = body
+
+        def json(self) -> dict[str, object]:
+            return self.body
+
+    responses = [
+        FakeResponse(422, {"message": "invalid underlying symbols: EQR"}),
+        FakeResponse(200, {"option_contracts": [payload()], "next_page_token": None}),
+    ]
+
+    class FakeClient:
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, path: str, **kwargs: object) -> FakeResponse:
+            assert path == "/v2/options/contracts"
+            assert "EQR" in str(kwargs["params"]) if len(responses) == 2 else "EQR" not in str(kwargs["params"])
+            return responses.pop(0)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    provider = AlpacaOptionsContractProvider("https://example.invalid", "key", "secret")
+    discovered = [item async for item in provider.discover_active_calls(("AAPL", "EQR"))]
+    assert [item.contract_id for item in discovered] == ["contract-1"]
+    assert provider.unavailable_symbols == {"EQR"}
+
+
 def test_theta_standard_plan_supports_trade_and_quote_without_bulk():
     contract_identity = ThetaContract("AAPL", 20260807, 310000, "C")
     provider = ThetaDataOptionsProvider(

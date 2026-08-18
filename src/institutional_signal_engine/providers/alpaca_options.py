@@ -1,5 +1,6 @@
 """Alpaca option-contract discovery with complete pagination."""
 
+import re
 from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, date, datetime
 
@@ -21,6 +22,7 @@ class AlpacaOptionsContractProvider:
         self.key_id = key_id
         self.secret_key = secret_key
         self.timeout = timeout
+        self.unavailable_symbols: set[str] = set()
 
     async def discover_active_calls(
         self,
@@ -30,8 +32,9 @@ class AlpacaOptionsContractProvider:
         expiration_date_lte: date | None = None,
     ) -> AsyncIterator[AlpacaOptionContract]:
         requested = tuple(sorted({symbol.upper() for symbol in symbols}))
+        pending = requested
         params: dict[str, str | int] = {
-            "underlying_symbols": ",".join(requested),
+            "underlying_symbols": ",".join(pending),
             "type": "call",
             "status": "active",
             "limit": limit,
@@ -56,6 +59,24 @@ class AlpacaOptionsContractProvider:
                 except httpx.HTTPError as exc:
                     raise ProviderError("alpaca", "contract_discovery_transport", True) from exc
                 if response.status_code != 200:
+                    if response.status_code == 422 and pending:
+                        try:
+                            message = str(response.json().get("message", ""))
+                        except (TypeError, ValueError):
+                            message = ""
+                        match = re.fullmatch(r"invalid underlying symbols: (.+)", message)
+                        invalid = (
+                            {item.strip().upper() for item in match.group(1).split(",")}
+                            if match
+                            else set()
+                        )
+                        invalid &= set(pending)
+                        if invalid and invalid < set(pending):
+                            self.unavailable_symbols.update(invalid)
+                            pending = tuple(symbol for symbol in pending if symbol not in invalid)
+                            params["underlying_symbols"] = ",".join(pending)
+                            token = None
+                            continue
                     raise ProviderError(
                         "alpaca", f"contract_discovery_http_{response.status_code}", False
                     )
