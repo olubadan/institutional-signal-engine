@@ -319,7 +319,9 @@ class UnifiedSessionPort(Protocol):
 
     async def transmit(self, request: SubscriptionRequest) -> None: ...
 
-    async def receive_until(self, boundary: datetime) -> InboundFrame: ...
+    async def receive_until(
+        self, boundary: datetime, *, acknowledgements_only: bool = False
+    ) -> InboundFrame: ...
 
 
 class ObservationRepository(Protocol):
@@ -508,7 +510,7 @@ class LiveSessionEngine:
                 )
                 deadline = self.clock.now() + self.acknowledgement_timeout
                 continue
-            frame = await self.provider.receive_until(deadline)
+            frame = await self.provider.receive_until(deadline, acknowledgements_only=True)
             if frame.kind == "clock":
                 if retry_count >= ACKNOWLEDGEMENT_RETRY_LIMIT:
                     raise LiveEvidenceFailure("ACKNOWLEDGEMENT_MISSING")
@@ -1659,6 +1661,8 @@ class UnifiedThetaSession:
         # by the serialized event-processing path.
         self._raw_inbound: asyncio.Queue[str | bytes | None] = asyncio.Queue()
         self._inbound: asyncio.Queue[InboundFrame] = asyncio.Queue()
+        self._control_inbound: asyncio.Queue[InboundFrame] = asyncio.Queue()
+        self._disconnected = False
         self._requests: dict[int, SubscriptionRequest] = {}
         self._normalizer = ThetaDataOptionsProvider(events_url, api_key, contracts=())
 
@@ -1685,6 +1689,7 @@ class UnifiedThetaSession:
         self._ws = websocket
         type(self)._active_owner = self
         self.connection_generation += 1
+        self._disconnected = False
         self._requests.clear()
         self._normalizer.connected = False
         self._reader_task = asyncio.create_task(self._read_loop(websocket))
@@ -1728,6 +1733,9 @@ class UnifiedThetaSession:
             while not self._inbound.empty():
                 with suppress(asyncio.QueueEmpty):
                     self._inbound.get_nowait()
+            while not self._control_inbound.empty():
+                with suppress(asyncio.QueueEmpty):
+                    self._control_inbound.get_nowait()
             self._ws = None
             if type(self)._active_owner is self:
                 type(self)._active_owner = None
@@ -1868,20 +1876,31 @@ class UnifiedThetaSession:
         while True:
             raw = await self._raw_inbound.get()
             if raw is None:
-                await self._inbound.put(
+                self._disconnected = True
+                await self._control_inbound.put(
                     InboundFrame("disconnect", datetime.now(ET), detail="socket_closed")
                 )
                 return
             frame = await self._decode_message(raw)
             if frame is not None:
-                await self._inbound.put(frame)
+                if frame.kind in {"ack", "disconnect", "terminated"}:
+                    if frame.kind == "disconnect":
+                        self._disconnected = True
+                    await self._control_inbound.put(frame)
+                else:
+                    await self._inbound.put(frame)
 
-    async def receive_until(self, boundary: datetime) -> InboundFrame:
+    async def receive_until(
+        self, boundary: datetime, *, acknowledgements_only: bool = False
+    ) -> InboundFrame:
         if self._ws is None:
             return InboundFrame("disconnect", datetime.now(ET), detail="socket_not_connected")
+        if self._disconnected:
+            return InboundFrame("disconnect", datetime.now(ET), detail="socket_closed")
         timeout = max(0.0, (boundary - datetime.now(ET)).total_seconds())
+        queue = self._control_inbound if acknowledgements_only else self._inbound
         try:
-            return await asyncio.wait_for(self._inbound.get(), timeout=timeout)
+            return await asyncio.wait_for(queue.get(), timeout=timeout)
         except TimeoutError:
             return InboundFrame("clock", boundary)
 

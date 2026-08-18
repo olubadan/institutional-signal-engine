@@ -197,7 +197,10 @@ class HarnessUnifiedSession(UnifiedSessionPort):
             )
         )
 
-    async def receive_until(self, boundary: datetime) -> InboundFrame:
+    async def receive_until(
+        self, boundary: datetime, *, acknowledgements_only: bool = False
+    ) -> InboundFrame:
+        del acknowledgements_only
         if self._acknowledgements:
             return self._acknowledgements.pop(0)
         if not self._connected:

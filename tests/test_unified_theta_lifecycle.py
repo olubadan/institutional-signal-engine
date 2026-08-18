@@ -140,3 +140,42 @@ async def test_receive_until_normalizes_market_frame_without_extra_socket(
     session._decoder_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await session._decoder_task
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_queue_isolated_from_market_event_backlog() -> None:
+    session = live_session.UnifiedThetaSession("ws://theta", "key")
+    session._ws = object()
+    session._decoder_task = asyncio.create_task(session._decode_loop())
+    for _ in range(100):
+        await session._raw_inbound.put(
+            json.dumps(
+                {
+                    "header": {"type": "TRADE"},
+                    "contract": {
+                        "root": "AAPL",
+                        "expiration": 20260821,
+                        "strike": 307500,
+                        "right": "C",
+                    },
+                    "trade": {
+                        "date": "20260814",
+                        "ms_of_day": 34200000,
+                        "size": 1,
+                        "price": 1.0,
+                    },
+                }
+            )
+        )
+    await session._raw_inbound.put(
+        json.dumps({"header": {"type": "REQ_RESPONSE", "req_id": 7, "response": "SUBSCRIBED"}})
+    )
+    frame = await session.receive_until(
+        datetime.now(UTC).astimezone() + timedelta(seconds=1),
+        acknowledgements_only=True,
+    )
+    assert frame.kind == "ack"
+    assert frame.request_id == 7
+    session._decoder_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session._decoder_task
