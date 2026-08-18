@@ -493,8 +493,21 @@ class LiveSessionEngine:
         pending = {request.request_id: request for request in requests}
         observed: set[int] = set()
         retry_count = 0
+        deadline_ns = monotonic_ns() + int(self.acknowledgement_timeout.total_seconds() * 1_000_000_000)
         deadline = self.clock.now() + self.acknowledgement_timeout
         while pending:
+            if monotonic_ns() >= deadline_ns:
+                if retry_count >= ACKNOWLEDGEMENT_RETRY_LIMIT:
+                    raise LiveEvidenceFailure("ACKNOWLEDGEMENT_MISSING")
+                retry_count += 1
+                for request in pending.values():
+                    await self.provider.transmit(request)
+                await asyncio.sleep(ACKNOWLEDGEMENT_RETRY_BACKOFF_SECONDS)
+                deadline_ns = monotonic_ns() + int(
+                    self.acknowledgement_timeout.total_seconds() * 1_000_000_000
+                )
+                deadline = self.clock.now() + self.acknowledgement_timeout
+                continue
             frame = await self.provider.receive_until(deadline)
             if frame.kind == "clock":
                 if retry_count >= ACKNOWLEDGEMENT_RETRY_LIMIT:
@@ -503,6 +516,9 @@ class LiveSessionEngine:
                 for request in pending.values():
                     await self.provider.transmit(request)
                 await asyncio.sleep(ACKNOWLEDGEMENT_RETRY_BACKOFF_SECONDS)
+                deadline_ns = monotonic_ns() + int(
+                    self.acknowledgement_timeout.total_seconds() * 1_000_000_000
+                )
                 deadline = self.clock.now() + self.acknowledgement_timeout
                 continue
             if frame.kind == "disconnect":
@@ -517,6 +533,8 @@ class LiveSessionEngine:
                 # before activation remain outside the active session.
                 if frame.event is not None and self.active_epoch is not None:
                     await asyncio.to_thread(self._process_theta_event, frame.event, True)
+                if monotonic_ns() >= deadline_ns:
+                    deadline = self.clock.now()
                 continue
             request_id = frame.request_id
             if request_id is None or request_id not in pending:
