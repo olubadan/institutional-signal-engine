@@ -97,6 +97,12 @@ REQUIRED_CHANNELS: Final = ("TRADE", "QUOTE")
 # correlated acknowledgement. This bounds request-transition pressure without
 # changing the selected contract population or acknowledgement semantics.
 SUBSCRIPTION_TRANSITION_PACING_SECONDS: Final = 0.25
+# Theta can lose a control response while the single socket continues to
+# deliver market traffic. Retransmit the same logical request a bounded number
+# of times. Reusing the request id preserves correlation and avoids creating a
+# second subscription command or authority.
+ACKNOWLEDGEMENT_RETRY_LIMIT: Final = 2
+ACKNOWLEDGEMENT_RETRY_BACKOFF_SECONDS: Final = 0.5
 
 
 class LiveEvidenceFailure(ValueError):
@@ -486,11 +492,19 @@ class LiveSessionEngine:
     ) -> None:
         pending = {request.request_id: request for request in requests}
         observed: set[int] = set()
+        retry_count = 0
         deadline = self.clock.now() + self.acknowledgement_timeout
         while pending:
             frame = await self.provider.receive_until(deadline)
             if frame.kind == "clock":
-                raise LiveEvidenceFailure("ACKNOWLEDGEMENT_MISSING")
+                if retry_count >= ACKNOWLEDGEMENT_RETRY_LIMIT:
+                    raise LiveEvidenceFailure("ACKNOWLEDGEMENT_MISSING")
+                retry_count += 1
+                for request in pending.values():
+                    await self.provider.transmit(request)
+                await asyncio.sleep(ACKNOWLEDGEMENT_RETRY_BACKOFF_SECONDS)
+                deadline = self.clock.now() + self.acknowledgement_timeout
+                continue
             if frame.kind == "disconnect":
                 raise LiveEvidenceFailure("DISCONNECT_DURING_TRANSITION")
             if frame.kind == "terminated":
@@ -534,6 +548,7 @@ class LiveSessionEngine:
                 channel=request.req_type,
                 response=frame.response or "",
                 accepted=accepted,
+                transmit_attempt=retry_count + 1,
             )
             if not accepted:
                 raise LiveEvidenceFailure("ACKNOWLEDGEMENT_REJECTED", frame.response or "")

@@ -137,13 +137,19 @@ class HarnessUnifiedSession(UnifiedSessionPort):
     request_types: tuple[str, ...] = ("TRADE", "QUOTE")
     supports_removal_acknowledgements = True
 
-    def __init__(self, clock: VirtualClock, frames: tuple[ScheduledFrame, ...]) -> None:
+    def __init__(
+        self,
+        clock: VirtualClock,
+        frames: tuple[ScheduledFrame, ...],
+        drop_first_ack: bool = False,
+    ) -> None:
         self.clock = clock
         self.connection_generation = 0
         self._next_request_id = 1
         self._connected = False
         self._acknowledgements: list[InboundFrame] = []
         self._frames = list(frames)
+        self._drop_first_ack = drop_first_ack
 
     async def connect(self) -> None:
         if self._connected:
@@ -178,6 +184,9 @@ class HarnessUnifiedSession(UnifiedSessionPort):
         return request
 
     async def transmit(self, request: SubscriptionRequest) -> None:
+        if self._drop_first_ack:
+            self._drop_first_ack = False
+            return
         response = "SUBSCRIBED" if request.add else "UNSUBSCRIBED"
         self._acknowledgements.append(
             InboundFrame(
@@ -233,6 +242,7 @@ async def run_harness(
     journal_repository_directory: Path,
     observation_repository: Path,
     repository_root: Path,
+    drop_first_ack: bool = False,
 ) -> dict[str, object]:
     settings = Settings()
     market_date = date(2026, 8, 11)
@@ -268,7 +278,7 @@ async def run_harness(
         discovery=HarnessDiscovery(),
         enrichment=HarnessEnrichment(),
         planner=HarnessPlanner(),
-        provider=HarnessUnifiedSession(clock, frames),
+        provider=HarnessUnifiedSession(clock, frames, drop_first_ack=drop_first_ack),
         repository=HarnessObservationRepository(observation_repository),
         writer=BundleWriter(bundle_directory),
         journal_repository=FileJournalRepository(journal_repository_directory),

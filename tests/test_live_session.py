@@ -57,6 +57,28 @@ def test_accelerated_harness_publishes_complete_bundle(tmp_path: Path) -> None:
     assert loaded.final_state["subscription_remove_commands"] > 0
 
 
+def test_missing_ack_is_retransmitted_with_same_logical_request(tmp_path: Path) -> None:
+    bundle = tmp_path / "ack-retry"
+    asyncio.run(
+        run_harness(
+            bundle,
+            tmp_path / "ack-retry-journals",
+            tmp_path / "ack-retry-observations.json",
+            Path.cwd(),
+            drop_first_ack=True,
+        )
+    )
+    journal = json.loads((bundle / "JOURNAL.json").read_text())
+    acknowledgements = [
+        record
+        for record in journal["records"]
+        if record["kind"] == "subscription.acknowledgement"
+    ]
+    assert acknowledgements
+    assert any(record["payload"].get("transmit_attempt") == 2 for record in acknowledgements)
+    assert not (bundle / "INCOMPLETE").exists()
+
+
 def test_two_accelerated_runs_have_byte_identical_deterministic_artifacts(tmp_path: Path) -> None:
     first = _run(tmp_path, "first")
     second = _run(tmp_path, "second")
