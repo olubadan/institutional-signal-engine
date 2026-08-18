@@ -430,8 +430,7 @@ async def historical_bootstrap_to_disk(
                         }
                     )
                 current = _rss_kb()
-                if current > peak_rss:
-                    peak_rss = current
+                peak_rss = max(peak_rss, current)
 
         workers = [
             asyncio.create_task(worker())

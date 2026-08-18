@@ -18,7 +18,6 @@ import subprocess
 import tempfile
 import threading
 from collections.abc import Mapping
-from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -31,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 import websockets
 
+from .bootstrap_checkpoints import BootstrapCheckpointError, load_historical_bootstrap
 from .config import Settings
 from .historical import HistoricalBootstrap
 from .journal import (
@@ -1986,23 +1986,47 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         repository_root,
     )
     boundaries = SessionBoundaries.for_market_date(date.fromisoformat(arguments.market_date))
+    checkpoint_value = arguments.bootstrap_checkpoint_dir or os.environ.get(
+        "STOL_BOOTSTRAP_CHECKPOINT_DIR"
+    )
+    if not checkpoint_value:
+        raise BootstrapCheckpointError("bootstrap checkpoint directory is required")
+    checkpoint_dir = Path(checkpoint_value).resolve()
+    historical = await asyncio.to_thread(
+        load_historical_bootstrap,
+        checkpoint_dir,
+        tuple(PILOT_SYMBOLS),
+        date.fromisoformat(arguments.market_date),
+    )
+    baseline_symbols = frozenset(
+        str(key[0]).upper() for key in historical.impact_baselines if isinstance(key, tuple)
+    )
+    if baseline_symbols != frozenset(PILOT_SYMBOLS):
+        raise BootstrapCheckpointError(
+            f"checkpoint impact-baseline coverage incomplete: {len(baseline_symbols)}/{len(PILOT_SYMBOLS)}"
+        )
+    _atomic_write(
+        arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json",
+        json.dumps(
+            {
+                "status": "SUCCESS",
+                "mode": "CHECKPOINT_LOAD",
+                "checkpoint_dir": str(checkpoint_dir),
+                "candidate_symbol_count": len(PILOT_SYMBOLS),
+                "baseline_symbol_count": len(baseline_symbols),
+                "coverage_complete": True,
+                "loaded_at": datetime.now(UTC).isoformat(),
+                "source": historical.source_provenance,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+    )
     alpaca = AlpacaEquitiesProvider(
         settings.alpaca_data_url,
         _secret(settings.alpaca_key_id),
         _secret(settings.alpaca_secret_key),
         timeout=30.0,
-    )
-    bootstrap_started = datetime.now(UTC)
-    bootstrap_pool = ProcessPoolExecutor(max_workers=1)
-    bootstrap_task = asyncio.get_running_loop().run_in_executor(
-        bootstrap_pool,
-        _historical_bootstrap_payload,
-        "https://data.alpaca.markets",
-        settings.alpaca_data_url,
-        _secret(settings.alpaca_key_id),
-        _secret(settings.alpaca_secret_key),
-        (*PILOT_SYMBOLS, "SPY", "XLK"),
-        arguments.market_date,
     )
     discovery, enrichment = _production_ports(settings)
     provider = UnifiedThetaSession(
@@ -2028,11 +2052,7 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         writer=writer,
         journal_repository=journal_repository,
         authority_key=authority_key,
-        # The 501-symbol historical bootstrap runs concurrently. The live
-        # observer may activate with an empty initial baseline set; once the
-        # immutable bootstrap completes, later epochs receive its symbols and
-        # the persisted status binds offline shadow scoring to this run.
-        baseline_symbols=frozenset(),
+        baseline_symbols=baseline_symbols,
         acknowledgement_timeout=timedelta(seconds=900),
         provider_identity={
             "discovery": "alpaca-options-contracts",
@@ -2053,72 +2073,10 @@ async def _run_production(arguments: argparse.Namespace) -> dict[str, object]:
         evidence_sink=engine._record_math_evidence,
     )
 
-    async def finish_bootstrap() -> object | None:
-        try:
-            payload = await bootstrap_task
-            if payload.get("status") == "FAILED":
-                status = {
-                    "status": "FAILED",
-                    "started_at": bootstrap_started.isoformat(),
-                    "finished_at": datetime.now(UTC).isoformat(),
-                    "candidate_symbol_count": len(PILOT_SYMBOLS),
-                    "error_type": payload.get("error_type", "BootstrapFailure"),
-                    "error_category": payload.get("error_category"),
-                    "retryable": payload.get("retryable"),
-                }
-                (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(
-                    json.dumps(status, sort_keys=True) + "\n"
-                )
-                return None
-            historical = _historical_from_payload(cast(Mapping[str, object], payload))
-            baseline_symbols = frozenset(
-                str(key[0]).upper()
-                for key in historical.impact_baselines
-                if isinstance(key, tuple) and len(key) == 2
-            )
-            candidate_symbols = frozenset(PILOT_SYMBOLS)
-            candidate_baselines = baseline_symbols.intersection(candidate_symbols)
-            engine.baseline_symbols = candidate_baselines
-            if engine.mathematical_pipeline is not None:
-                for key, baseline in historical.impact_baselines.items():
-                    engine.mathematical_pipeline.impact_engine.baselines[key] = baseline
-            status = {
-                "status": "COMPLETE"
-                if candidate_baselines == candidate_symbols
-                else "INCOMPLETE_BASELINE_COVERAGE",
-                "started_at": bootstrap_started.isoformat(),
-                "finished_at": datetime.now(UTC).isoformat(),
-                "candidate_symbol_count": len(PILOT_SYMBOLS),
-                "baseline_symbol_count": len(candidate_baselines),
-                "provider_baseline_symbol_count": len(baseline_symbols),
-                "auxiliary_baseline_symbol_count": len(baseline_symbols - candidate_symbols),
-                "coverage_complete": candidate_baselines == candidate_symbols,
-                "source": historical.source_provenance,
-            }
-            (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(
-                json.dumps(status, sort_keys=True) + "\n"
-            )
-            return historical
-        except Exception as exc:  # noqa: BLE001 - bootstrap status must capture sanitized failure
-            status = {
-                "status": "FAILED",
-                "started_at": bootstrap_started.isoformat(),
-                "finished_at": datetime.now(UTC).isoformat(),
-                "candidate_symbol_count": len(PILOT_SYMBOLS),
-                "error_type": type(exc).__name__,
-            }
-            (arguments.session_output / "HISTORICAL_BOOTSTRAP_STATUS.json").write_text(
-                json.dumps(status, sort_keys=True) + "\n"
-            )
-            return None
-
-    bootstrap_monitor = asyncio.create_task(finish_bootstrap())
-    try:
-        return await engine.execute()
-    finally:
-        if not bootstrap_monitor.done():
-            await bootstrap_monitor
-        bootstrap_pool.shutdown(wait=True, cancel_futures=True)
+    if engine.mathematical_pipeline is not None:
+        for key, baseline in historical.impact_baselines.items():
+            engine.mathematical_pipeline.impact_engine.baselines[key] = baseline
+    return await engine.execute()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2128,6 +2086,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--session-output", type=Path, required=True)
     run.add_argument("--market-date", required=True)
     run.add_argument("--expected-git-commit", required=True)
+    run.add_argument("--bootstrap-checkpoint-dir", type=Path, default=None)
     run.add_argument("--repository-root", type=Path, default=Path.cwd())
     validate = subparsers.add_parser("validate-environment")
     validate.add_argument("--session-output", type=Path, required=True)

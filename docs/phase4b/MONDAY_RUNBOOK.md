@@ -32,13 +32,19 @@ never redirected over an earlier artifact:
 
 ```sh
 SESSION_OUTPUT="/var/lib/institutional-signal-engine/sessions/${EXPECTED_HEAD}-$(date -u +%Y%m%dT%H%M%SZ)"
+BOOTSTRAP_CHECKPOINT_DIR="/var/lib/institutional-signal-engine/evidence/r1-bootstrap-v8-full"
 RUNTIME_ENV_FILE=/etc/institutional-signal-engine/runtime.env \
   uv run python -m institutional_signal_engine.live_session run \
   --session-output "${SESSION_OUTPUT}" \
   --market-date 2026-08-11 \
   --expected-git-commit "${EXPECTED_HEAD}" \
+  --bootstrap-checkpoint-dir "${BOOTSTRAP_CHECKPOINT_DIR}" \
   --repository-root /opt/institutional-signal-engine
 ```
+
+The checkpoint directory must contain valid, hashed per-symbol checkpoints for
+the complete candidate universe. The live observer loads these checkpoints and
+does not refetch historical bars through the monolithic bootstrap path.
 
 There is one production mode. The session loop targets 09:30–16:00
 America/New_York and stops intake at 16:00; it is not a nominal seconds run.

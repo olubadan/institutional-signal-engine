@@ -38,19 +38,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from stol_bootstrap_incremental import (  # noqa: E402
-    completed_symbols,
-    historical_bootstrap_to_disk,
-)
-
-from institutional_signal_engine.live_session import (  # noqa: E402
+from institutional_signal_engine.live_session import (
     _load_settings,
     _secret,
 )
-from institutional_signal_engine.providers.alpaca import (  # noqa: E402
+from institutional_signal_engine.providers.alpaca import (
     AlpacaEquitiesProvider,
 )
-from institutional_signal_engine.universe import PILOT_SYMBOLS  # noqa: E402
+from institutional_signal_engine.providers.common import ProviderError
+from institutional_signal_engine.universe import PILOT_SYMBOLS
+from stol_bootstrap_incremental import (
+    completed_symbols,
+    historical_bootstrap_to_disk,
+)
 
 
 def main() -> int:
@@ -125,7 +125,7 @@ def main() -> int:
             "summary": summary,
         }
         result = 0 if coverage_complete else 2
-    except Exception as exc:  # sanitized status only
+    except (OSError, ProviderError, TypeError, ValueError, TimeoutError) as exc:
         status = {
             "status": "FAILED",
             "started_at": started.isoformat(),
