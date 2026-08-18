@@ -196,8 +196,15 @@ class AlpacaEquitiesProvider:
                 # concurrent pressure.  A transient timeout on a large batch
                 # is retried as smaller batches rather than aborting the whole
                 # bootstrap.
-                batch_size = 20
-                semaphore = asyncio.Semaphore(3)
+                # Minute history is materially larger than daily history.  A
+                # multi-symbol minute batch retains every decoded bar until
+                # the batch completes, which can exhaust the host before the
+                # compact baseline reducer runs.  Keep the full universe but
+                # bound the in-memory raw-bar working set to one symbol for
+                # minute history.  Daily history remains batched because its
+                # response is small.
+                batch_size = 1 if timeframe == "1Min" else 20
+                semaphore = asyncio.Semaphore(1 if timeframe == "1Min" else 3)
 
                 async def fetch_batch_once(
                     batch: tuple[str, ...],
